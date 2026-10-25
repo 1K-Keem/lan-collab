@@ -6,6 +6,7 @@
 - Work on a short-lived branch from `main`, for example `feature/server-auth` or `feature/file-transfer`.
 - Submit a Pull Request with the issue link (`Closes #N`), test evidence, and an updated README/doc entry for new behavior.
 - One other team member reviews schema changes and any work crossing a module boundary.
+- Treat CP-A/B/C as integrated acceptance gates; review and merge small compatible PRs between gates.
 - Prefer small, frequent integrations over long-lived divergent branches.
 - Never commit passwords, private keys, real credentials, or downloaded user files.
 
@@ -13,9 +14,9 @@
 
 | Area | Primary reviewer |
 | --- | --- |
-| `server/` | TV1 |
-| `common/`, protocol and file transfer | TV2 |
-| `client/`, discovery and test harness | TV3 |
+| `lancollab/server/` | TV1 |
+| `lancollab/common/`, protocol and transfer core | TV2 |
+| `lancollab/client/`, client file I/O, discovery and test harness | TV3 |
 | `docs/`, cross-module changes | Entire team |
 
 ## Definition of Done for an Issue

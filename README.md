@@ -2,12 +2,13 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** v1.1 **design contract and dummy scaffold only**. Chat, authentication, TLS, file transfer and UDP are **not yet implemented**. Green CI currently means mock/schema checks passed, **not** that the assignment milestones passed.
+> **Status:** v1.2 **design contract and dummy scaffold only**. Chat, authentication, TLS, file transfer and UDP are **not yet implemented**. Green CI currently means mock/schema checks passed, **not** that the assignment milestones passed.
 
 ## Planned features
 
 - TLS-protected TCP login, global/private messages, server presence list, 20 concurrent clients.
 - Admin-provisioned user accounts, secure salted password hashes, HELLO/AUTH deadlines.
+- Session-bound transfers/events, globally unique active transfer IDs and explicit takeover cancellation.
 - Reliable streaming server file relay with **FILE_ACK receiver credit** (window 8 × 16KiB), SHA-256, safe filenames and nonblocking queues.
 - UDP broadcast discovery + unicast HEARTBEAT/HEARTBEAT_ACK RTT/loss estimates; manual host/IP fallback.
 - CLI with safe text rendering, file progress and timeout/disconnect handling.
@@ -17,10 +18,10 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 | Role | Owns | Can start without other implementations |
 | --- | --- | --- |
 | TV1 | Server, sessions/auth, chat routing, bounded queues | In-memory fake transport + protocol schema |
-| TV2 | Shared codec, TLS, file ACK/window and transfer security | Schema fixtures, codec and chunk tests |
-| TV3 | Client/CLI, UDP, integration testing | Fake server messages and mocked event streams |
+| TV2 | Codec/TLS and socket-independent transfer state/ACK/security core | Schema fixtures, codec and chunk tests |
+| TV3 | Client/CLI, file consent/disk I/O/streaming, UDP, integration testing | Fake server messages and mocked event streams |
 
-**Protocol:** [Design revision 1.1](docs/protocol-spec.md) supersedes v1.0, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.1). Do not merge incompatible handlers until the team confirms the contract.
+**Protocol:** [Design revision 1.2](docs/protocol-spec.md) supersedes v1.1, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.2). Do not merge incompatible handlers until the team confirms the contract.
 
 ## Layout
 
@@ -28,7 +29,7 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 lancollab/common/   # Typed contracts, message_schema.py, test dummy, TV2 transport TODO
 lancollab/server/   # TV1 server TODO and main CLI
 lancollab/client/   # TV3 client TODO and main CLI
-tests/fixtures/     # Synthetic v1.1 example messages, NO production tests
+tests/fixtures/     # Synthetic v1.2 example messages, NO production tests
 scripts/            # Mock-only demonstration
 docs/               # Architecture, protocol spec, diagrams, checkpoint gates
 ```

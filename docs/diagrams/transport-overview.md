@@ -1,4 +1,4 @@
-# Transport and architecture overview — design revision 1.1
+# Transport and architecture overview — design revision 1.2
 
 ```mermaid
 flowchart LR
