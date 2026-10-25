@@ -1,56 +1,39 @@
 # LAN Collab
 
-Secure, self-hosted LAN collaboration application for a **Network Application Development** assignment using **raw TCP/UDP sockets**.
+Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status: CONTRACT + DUMMY SCAFFOLD ONLY.** Authentication, networking, routing, file transfer and encryption are **not implemented**. Do not interpret green CI or mock examples as working application functionality.
+> **Status:** v1.1 **design contract and dummy scaffold only**. Chat, authentication, TLS, file transfer and UDP are **not yet implemented**. Green CI currently means mock/schema checks passed, **not** that the assignment milestones passed.
 
-## Requirements and scope
+## Planned features
 
-- Python **3.11+**, raw `socket`, `threading`, `ssl` for TCP/TLS; UDP discovery/presence/heartbeat.
-- Login, online users, global and private chat, 20 simultaneous clients.
-- Reliable file relay with chunking, SHA-256 verification and cancellation.
-- Timeouts, error handling, reconnect, and a clear CLI.
-- No Flask/Django/HTTP networking frameworks/WebSockets.
+- TLS-protected TCP login, global/private messages, server presence list, 20 concurrent clients.
+- Admin-provisioned user accounts, secure salted password hashes, HELLO/AUTH deadlines.
+- Reliable streaming server file relay with **FILE_ACK receiver credit** (window 8 × 16KiB), SHA-256, safe filenames and nonblocking queues.
+- UDP broadcast discovery + unicast HEARTBEAT/HEARTBEAT_ACK RTT/loss estimates; manual host/IP fallback.
+- CLI with safe text rendering, file progress and timeout/disconnect handling.
 
-See [assignment checklist](docs/assignment-checklist.md).
+## Team roles and independent development
 
-## Team roles (assign GitHub usernames later)
+| Role | Owns | Can start without other implementations |
+| --- | --- | --- |
+| TV1 | Server, sessions/auth, chat routing, bounded queues | In-memory fake transport + protocol schema |
+| TV2 | Shared codec, TLS, file ACK/window and transfer security | Schema fixtures, codec and chunk tests |
+| TV3 | Client/CLI, UDP, integration testing | Fake server messages and mocked event streams |
 
-| Role | Responsibilities |
-| --- | --- |
-| TV1 | Server listener, session/auth state, concurrency and message routing |
-| TV2 | Shared protocol/framing, TLS certificate integration, file relay |
-| TV3 | Client/CLI, UDP discovery/heartbeat and integration testing |
-
-All team members review protocol changes and cross-review the full codebase for oral defense.
+**Protocol:** [Design revision 1.1](docs/protocol-spec.md) supersedes v1.0, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.1). Do not merge incompatible handlers until the team confirms the contract.
 
 ## Layout
 
 ```text
-lancollab/
-  common/                # Typed contracts, FakeTransport + TV2 real transport TODO
-  server/                # TV1 server handler and module entry point TODO
-  client/                # TV3 client API and module entry point TODO
-tests/                   # Mock-only tests (real socket tests not yet written)
-scripts/                 # Mock-only smoke scenario
-docs/                    # Architecture, frozen v1 baseline, checkpoints, report
-.github/workflows/       # CI
+lancollab/common/   # Typed contracts, message_schema.py, test dummy, TV2 transport TODO
+lancollab/server/   # TV1 server TODO and main CLI
+lancollab/client/   # TV3 client TODO and main CLI
+tests/fixtures/     # Synthetic v1.1 example messages, NO production tests
+scripts/            # Mock-only demonstration
+docs/               # Architecture, protocol spec, diagrams, checkpoint gates
 ```
 
-## Protocol diagrams
-
-GitHub renders the Mermaid diagrams directly in these Markdown files.
-
-- [Transport and architecture overview](docs/diagrams/transport-overview.md)
-- [TCP framing and JSON envelope](docs/diagrams/tcp-framing.md)
-- [Connection, authentication and chat](docs/diagrams/connection-and-chat.md)
-- [File transfer sequence and state machine](docs/diagrams/file-transfer.md)
-- [Outbound queue fairness and backpressure](docs/diagrams/outbound-queues.md)
-- [Parallel work dependencies and checkpoints](docs/diagrams/parallel-work-dependencies.md)
-
-**Protocol status:** v1.0 frozen as implementation baseline by repository owner; individual TV1/TV2/TV3 reviews still need recording in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). This does not imply that the application is implemented.
-
-## Development setup
+## Developer setup (mock-only now)
 
 ```bash
 git clone https://github.com/1K-Keem/lan-collab.git
@@ -65,22 +48,19 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-`python -m lancollab.server` and `python -m lancollab.client` **intentionally fail with "not implemented"** until TV1 and TV3 complete the work. Update this section with actual run commands after implementation.
+The actual `python -m lancollab.server`, `python -m lancollab.client` and planned account creation `python -m lancollab.server --add-user alice` are TODOs, **not working commands**. Update README with real networking instructions once implemented.
 
-## Work in parallel (one week)
+## Architecture and diagrams (render on GitHub)
 
-1. **All three** review [protocol contract](docs/protocol-spec.md) and [architecture](docs/architecture.md) and approve Issue #2.
-2. **TV1** implements server handlers against the typed API and `FakeTransport` without depending on a real client.
-3. **TV2** implements length-prefixed TCP codec, TLS/SSL wrapping, file chunking and trust setup without depending on the real server handlers.
-4. **TV3** implements client/CLI using `FakeTransport` and synthetic server messages, plus UDP discovery and tests.
-5. Integrate and check [checkpoint gates](docs/checkpoints.md): **CP-A** (27 Oct), **CP-B** (29 Oct), **CP-C** (31 Oct), final packaging (1 Nov 2026).
+- [Transport overview](docs/diagrams/transport-overview.md)
+- [TCP length-prefix JSON](docs/diagrams/tcp-framing.md)
+- [Connection, global/private chat and liveness](docs/diagrams/connection-and-chat.md)
+- [FILE_ACK window, file states and sequence](docs/diagrams/file-transfer.md)
+- [Queue backpressure and FIFO ordering](docs/diagrams/outbound-queues.md)
+- [Parallel tasks and integration gates](docs/diagrams/parallel-work-dependencies.md)
+- [Integration checkpoints CP-A/B/C](docs/checkpoints.md)
+- [Mocks/contract documentation](docs/mock-development.md)
 
-Read [mock development guide](docs/mock-development.md) for example interfaces. Keep changes in short-lived PRs, with meaningful tests and attribution. The deadline in the assignment is only "suggested" and contradictory; the above is the team's **internal one-week target**.
+## Workflow and academic integrity
 
-## TLS and local LAN
-
-The final application must verify server identity with trusted certificates. Project plan: a certificate-generation helper will be added by TV2 and documented for Windows/macOS/Linux; no private keys should be committed. Use manual `--host` fallback when UDP broadcast is blocked.
-
-## Submission and academic integrity
-
-Deliver source, exact run commands, architecture/protocol/file/message diagrams, testing evidence, and report PDF. Instructor rules restrict AI to syntax/debugging assistance and require team members to explain **100% of the codebase**. Repository placeholders are coordination aids, not completed graded work.
+Contribute through short-lived branches/PRs with real authors and tests. Cross-review full codebase before oral defense. The assignment limits AI assistance to syntax references and debugging: mock scaffolding/documentation does **not** replace student-implemented networking logic. Clarify with lecturer whether TLS suffices for the encryption rubric and whether public/private repository submission is required.

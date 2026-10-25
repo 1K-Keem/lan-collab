@@ -1,20 +1,22 @@
-"""Shared interface CONTRACTS for parallel implementation.
+"""Stable typed interfaces for 3-way parallel implementation.
 
-These are typed data structures and ports, not network operations.
-TV1/TV2/TV3 must review docs/protocol-spec.md before changing fields.
+This module declares boundaries only. No TCP, TLS, UDP or real protocol
+validation is implemented here; see docs/protocol-spec.md revision 1.1.
 """
 
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 1  # Wire version remains 1; documentation revision is 1.1.
 MAX_JSON_BYTES = 262_144
 FILE_CHUNK_BYTES = 16 * 1024
+FILE_WINDOW_CHUNKS = 8
+FILE_ACK_INTERVAL_CHUNKS = 4
 
 
 @dataclass(frozen=True)
 class Envelope:
-    """Proposed v1 message envelope. Production code must validate input."""
+    """Versioned message envelope; real codec must validate its payload."""
 
     type: str
     request_id: str
@@ -24,7 +26,7 @@ class Envelope:
 
 @dataclass(frozen=True)
 class SessionIdentity:
-    """Server-side session context; username comes from authentication."""
+    """Server session identity, derived from authentication, not client payload."""
 
     remote_ip: str
     remote_port: int
@@ -33,7 +35,7 @@ class SessionIdentity:
 
 @dataclass(frozen=True)
 class OutboundEvent:
-    """Destination username + event to enqueue; not proof of delivery."""
+    """Event queued for a recipient; not proof of delivery/read."""
 
     recipient: str
     message: Envelope
@@ -41,7 +43,7 @@ class OutboundEvent:
 
 @runtime_checkable
 class MessageTransport(Protocol):
-    """One message per call; implementations own socket framing and TLS."""
+    """Exchange complete messages; TV2 provides real TLS/TCP implementation."""
 
     def send(self, message: Envelope) -> None: ...
 
@@ -51,7 +53,7 @@ class MessageTransport(Protocol):
 
 
 class ProtocolCodec(Protocol):
-    """Full TCP-frame encoder/decoder. TV2 implements production codec."""
+    """Encode/decode one complete framed TCP message (TV2 TODO)."""
 
     def encode(self, message: Envelope) -> bytes: ...
 

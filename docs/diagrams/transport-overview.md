@@ -1,6 +1,4 @@
-# Transport and architecture overview — baseline v1.0
-
-This is the **intended design**, not proof of a running network application. The server is the authenticated routing authority; file bytes are relayed and not stored on the server.
+# Transport and architecture overview — design revision 1.1
 
 ```mermaid
 flowchart LR
@@ -12,25 +10,19 @@ flowchart LR
         A <-->|"TCP/TLS :40000"| S
         B <-->|"TCP/TLS :40000"| S
         C <-->|"TCP/TLS :40000"| S
-        A -.->|"UDP discovery / beacon"| S
-        B -.->|"UDP discovery / beacon"| S
-        C -.->|"UDP discovery / beacon"| S
+        A -.->|"UDP DISCOVER / HEARTBEAT"| S
+        B -.->|"UDP DISCOVER / HEARTBEAT"| S
+        C -.->|"UDP DISCOVER / HEARTBEAT"| S
+        S -.->|"DISCOVER_REPLY / HEARTBEAT_ACK"| A
+        S -.->|"DISCOVER_REPLY / HEARTBEAT_ACK"| B
+        S -.->|"DISCOVER_REPLY / HEARTBEAT_ACK"| C
     end
-
     S --- AUTH["Authentication + Sessions"]
-    S --- MSG["Global / private routing"]
-    S --- RELAY["Streaming file relay"]
-    S --- ONLINE["Authoritative online users"]
+    S --- MSG["Chat + Presence routing"]
+    S --- RELAY["Bounded, ACK-controlled file relay"]
 ```
 
-## Transport allocation
-
-| Transport | Role | Security meaning |
-| --- | --- | --- |
-| TCP + TLS | Authentication, chats, file chunks, server ACKs, TCP PING/PONG | Client verifies server certificate; encrypted in transit |
-| UDP :40001 | DISCOVER/DISCOVER_REPLY, PRESENCE_BEACON, HEARTBEAT | Unauthenticated, never creates or renews a logged-in session |
-| Manual host/IP | Fallback to reach TCP service when UDP broadcast fails | TLS certificate identity must **still** be verified |
-
-The client may connect to a changing DHCP IP while verifying a fixed DNS identity such as `lan-collab.local` (only if the certificate is trusted and includes that DNS name in SAN).
-
-See [protocol v1.0](../protocol-spec.md) and [connection/chat flow](connection-and-chat.md).
+- Client UDP sockets bind **ephemeral source ports** (server listens on UDP 40001); discovery can use broadcast, heartbeat unicast.
+- UDP replies help measure RTT/loss. They have **no security or session-state authority**.
+- TCP/TLS carries authenticated presence, chat and file data; verified TLS server identity is independent of changing DHCP address.
+- See [protocol spec](../protocol-spec.md), [file transfer](file-transfer.md), [queue scheduler](outbound-queues.md).

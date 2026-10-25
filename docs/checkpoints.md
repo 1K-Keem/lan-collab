@@ -1,52 +1,39 @@
-# Checkpoints — one-week MVP (25 Oct–1 Nov 2026)
+# Integration checkpoints — 25 Oct to 1 Nov 2026 (internal target)
 
-Checkpoints are **integration gates**, not separate development phases. Members code simultaneously using the owner-frozen v1 contract and mocks. The assignee of a feature provides proof; the other two review. Mark gate complete only after real network tests.
+Each checkpoint is a **gate**, not an exclusive phase. All three members work in parallel with mocks and the revised contract. No gate can pass on in-memory mocks alone.
 
-## CP-A — Transport integration — target 27 Oct (Issue #16)
+## CP-A — real TCP framing/handshake — 27 Oct, Issue #16
 
-**Depends on:** #2 owner-frozen protocol v1 + teammate review tracked; #3 framing; #4 TCP server; #7 TCP client (minimal).
+- [ ] TV1/TV2/TV3 acknowledge v1.1 changes in Issue #2; declare any blocked fields before merging handlers.
+- [ ] Real server and client module commands connect with TCP; TLS integration can finish by CP-C, but handshake threading and timeouts must be designed now.
+- [ ] HELLO/HELLO_ACK with identical request_id and 4-byte length-framed JSON.
+- [ ] Two clients connect concurrently; fragmented and combined frame tests pass.
+- [ ] Codec follows declarative catalog and rejects unknown envelope/payload fields.
+- [ ] Commit SHA, tests, logs and cross-team walkthrough linked to Issue #16.
 
-**Must demonstrate:**
-- [ ] `python -m lancollab.server` starts a real TCP server; client launches and connects on localhost.
-- [ ] A verified TLS connection if available, or explicitly mark TLS pending and track #10 as a blocking task for CP-C.
-- [ ] HELLO -> HELLO_ACK round trip using shared frame encoding; fragmented/coalesced frames tested.
-- [ ] Two clients connect concurrently without blocking accept loop.
-- [ ] Test commands/logs linked in Issue #16; all three can explain the framing code.
+## CP-B — 3-client auth/chat/UDP — 29 Oct, Issue #17
 
-**Not met by:** `scripts/mock_contract_demo.py`; it only tests synthetic in-memory messages.
+- [ ] Admin provisions users; 3 accounts authenticate within HELLO/AUTH deadline.
+- [ ] Three clients see correct atomic USER_LIST and online/offline updates with IP/ephemeral port.
+- [ ] Global fan-out, private routing, CHAT_ACK request_id semantics and offline rejection work.
+- [ ] 3 failed logins, timed-out silent client, stale-session takeover and safe terminal output tested.
+- [ ] UDP DISCOVER/DISCOVER_REPLY and HEARTBEAT/HEARTBEAT_ACK measured, manual host fallback works.
+- [ ] TCP PING/PONG remains authoritative liveness.
+- [ ] Cross-team walkthrough and test logs attached to Issue #17.
 
-## CP-B — Multi-client auth/chat/presence — target 29 Oct (Issue #17)
+## CP-C — file flow control/TLS/20 clients — 31 Oct, Issue #18
 
-**Depends on:** CP-A + #5 auth + #6 routing + #7 CLI + basic #9 discovery.
+- [ ] File roles enforced against impersonation, UUID conflict rejected, receiver consent needed.
+- [ ] Sender window W=8, receiver cumulative FILE_ACK every 4 chunks/final partial, progress measured by ACK next_offset.
+- [ ] FILE_END always follows chunks in same FIFO; no reordered finalization, including heavy control traffic.
+- [ ] Saturated file queue cancels transfer without blocking peer reader or PONG; saturated control queue disconnects slow receiving session without silently dropping critical messages.
+- [ ] Empty file, binary file, rejected offer, interrupted transfer, post-accept timeout and verify timeout handled. Receiver verifies size/SHA-256, safe filename and no overwrite.
+- [ ] Verified TLS, invalid cert rejected, encrypted payload in Wireshark, 5s TLS handshake deadline.
+- [ ] 20 clients with recorded outcome; two-device LAN test; UDP can't create authenticated session.
+- [ ] All evidence and limitations linked to Issue #18.
 
-**Must demonstrate:**
-- [ ] Three clients authenticate with distinct users.
-- [ ] Online list updates on connect and disconnect.
-- [ ] Global chat reaches other online clients.
-- [ ] Private chat only reaches intended recipient and ACK semantics documented.
-- [ ] TCP liveness and basic UDP discovery/manual-IP fallback demonstrated.
-- [ ] Invalid auth, offline user and unexpected exit handled without killing server.
+## Final handoff — 1 Nov, Issues #14/#15
 
-## CP-C — End-to-end acceptance — target 31 Oct (Issue #18)
-
-**Depends on:** CP-B + #8 file transfer + #10 TLS + #11 resilience + #12 tests + #13 CLI progress.
-
-**Must demonstrate:**
-- [ ] Receiver offers/accepts file; receives binary bytes intact with matching size and SHA-256.
-- [ ] Chat/control still responsive while file is in progress; bounded queue/backpressure behavior observed.
-- [ ] Interrupting sender/receiver doesn't crash server; transfer ends FAILED or CANCELLED and cleans temp data.
-- [ ] Certificate validation actually enforced; capture shows encrypted application payload.
-- [ ] UDP beacon/heartbeat present, but cannot spoof authenticated presence.
-- [ ] Automated 20-client run with outcome log; at least two physical devices tested over LAN.
-- [ ] Report diagrams match implemented behavior; unfinished requirements are flagged.
-
-## Final packaging — target 1 Nov (Issues #14, #15)
-
-- [ ] Run CI format+lint+tests, clean clone run, and demo walkthrough.
-- [ ] Report PDF includes architecture, protocol, 2 sequence diagrams and challenges/solutions.
-- [ ] Confirm submission rules with lecturer; tag `checkpoint-a`, `checkpoint-b`, `checkpoint-c` only when each is verified.
-- [ ] Cross-review: each member can explain critical paths outside their main module.
-
-## Definition of evidence
-
-Every checkpoint Issue comment should include: commit SHA, test command, environment (OS, host IP modes), observed results and known failures. A green scaffold CI run is not evidence for a milestone. Prefer short PRs and integrate daily.
+- [ ] Real test + CI format/lint, clean clone, README, report diagrams, oral walkthrough.
+- [ ] Ask lecturer if TLS alone satisfies encryption milestone; confirm submission visibility and deadline.
+- [ ] Do not tag a checkpoint unless real socket integration and peer review pass.

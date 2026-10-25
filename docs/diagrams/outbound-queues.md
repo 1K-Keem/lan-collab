@@ -1,21 +1,27 @@
-# Serialized outbound writer and backpressure — baseline v1.0
-
-The same TCP/TLS connection carries both chat/control and file chunks. A **single writer** serializes complete frames to prevent byte interleaving; two bounded queues reduce application-level interference.
+# Nonblocking queue admission and single writer — design revision 1.1
 
 ```mermaid
 flowchart TB
-    CTRL["Chat / ACK / PING / PONG<br/>Control queue (max 128 frames)"]
-    FILE["FILE_CHUNK<br/>File queue (max 32 frames)"]
-    SCH{"Fair scheduler<br/>up to 4 controls, then 1 file"}
-    WRITER["One socket writer<br/>no concurrent frame writes"]
-    TLS["TLS over TCP<br/>one connection per client"]
-    BACK["Backpressure on file queue full<br/>pause producer, then timeout/cancel"]
-    CTRL --> SCH
-    FILE --> SCH
-    FILE -.-> BACK
-    SCH --> WRITER --> TLS
+    READER["Nonblocking per-client reader<br/>validate identity/state/window W=8"]
+    RECEIVERACK["Receiver FILE_ACK(next_offset)<br/>returns credit"]
+    CONTROL["Bounded control queue (128)<br/>CHAT / PING / PONG / FILE_ACK / CANCEL"]
+    FILE["Bounded ordered file queue (32)<br/>FILE_CHUNK then FILE_END (same FIFO)"]
+    SCHED{"Fair scheduler<br/>up to 4 controls, then 1 file"}
+    WRITER["Exactly one writer<br/>complete frames, never interleaved"]
+    TLS["TLS/TCP (transport HOL still possible)"]
+    FAIL["File queue full → FILE_CANCEL<br/>Control queue full → close slow session"]
+    READER -->|"put_nowait"| CONTROL
+    READER -->|"put_nowait"| FILE
+    RECEIVERACK -->|"control priority"| CONTROL
+    CONTROL --> SCHED
+    FILE --> SCHED
+    SCHED --> WRITER --> TLS
+    CONTROL -.-> FAIL
+    FILE -.-> FAIL
 ```
 
-The numbers and ratio are **initial design limits**, not benchmark-proven optimal values. The scheduler must avoid file starvation under continuous control traffic. TCP-level head-of-line blocking remains possible; benchmark chat/PING latency while transferring a large file.
-
-For the one-week MVP, do not open a second TCP connection unless the single-connection architecture fails acceptance tests.
+- Neither `queue.put()` nor socket send/receive may block a shared registry lock or a reader responsible for incoming PONG/chat.
+- Receiver sends `FILE_ACK` every four contiguous chunks or when final partial batch is complete. Sender may send at most eight unacknowledged chunks.
+- On cancellation, invalidate/purge chunks and END already waiting in queue; incoming late frames for terminal transfer are ignored/rejected.
+- Transfer progress shown as receiver-confirmed `next_offset`, not sender writes to local TCP.
+- These are design parameters, not measured throughput or implemented behavior.

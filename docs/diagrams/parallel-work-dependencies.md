@@ -1,18 +1,15 @@
-# Parallel work and integration checkpoints
-
-Three team members can implement independently using a shared message contract and in-memory `FakeTransport`. **Mocks alone do not satisfy any real networking milestone.**
+# Parallel development and checkpoint gates — v1.1
 
 ```mermaid
 flowchart TB
-    P["Protocol v1.0 baseline + typed contracts<br/>Owner has frozen design; team review pending"]
-    S["TV1: TCP server + sessions + routing<br/>Dummy MessageTransport first"]
-    CODEC["TV2: real framing + TLS + file chunking"]
-    C["TV3: client CLI + UDP + tests<br/>Dummy MessageTransport first"]
-    A["CP-A: real TCP framing + HELLO / HELLO_ACK"]
-    B["CP-B: 3-client authentication + chat + presence"]
-    D["CP-C: file transfer + TLS + resilience + 20 clients"]
-    FINAL["Report, reproducible README, oral walkthrough"]
-
+    P["v1.1 contract + schema catalog<br/>Owner revision, TV1/TV2/TV3 review pending"]
+    S["TV1: TCP server, sessions, routing<br/>FakeTransport first"]
+    CODEC["TV2: framing, TLS, file ACK/window"]
+    C["TV3: client, CLI, UDP, tests<br/>FakeTransport first"]
+    A["CP-A: real TCP framing + HELLO"]
+    B["CP-B: 3-client login/chat/presence"]
+    D["CP-C: file ACK/window, TLS, 20-client tests"]
+    FINAL["Report and oral walkthrough"]
     P --> S
     P --> CODEC
     P --> C
@@ -25,4 +22,4 @@ flowchart TB
     D --> FINAL
 ```
 
-**Gates:** [CP-A — Issue #16](https://github.com/1K-Keem/lan-collab/issues/16), [CP-B — Issue #17](https://github.com/1K-Keem/lan-collab/issues/17), [CP-C — Issue #18](https://github.com/1K-Keem/lan-collab/issues/18). Exact acceptance criteria are in [checkpoints.md](../checkpoints.md).
+The team reviews v1.1 contract in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). [CP-A #16](https://github.com/1K-Keem/lan-collab/issues/16), [CP-B #17](https://github.com/1K-Keem/lan-collab/issues/17), [CP-C #18](https://github.com/1K-Keem/lan-collab/issues/18) require **actual socket-based evidence**, not dummy-only CI.

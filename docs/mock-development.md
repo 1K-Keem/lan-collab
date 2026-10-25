@@ -1,30 +1,25 @@
-# Parallel development with dummy transports
+# Parallel development with contract v1.1 and in-memory dummies
 
-This repository includes **interfaces and in-memory test doubles only**, not working chat/file/network implementations. These deliberately separate the jobs of TV1/TV2/TV3.
+Only interfaces, declarative field catalog and synthetic examples are provided here. Real TCP/TLS, UDP, chat, authentication, flow-control and file-transfer implementations are **not** provided or tested.
 
-## Contract files
+- `lancollab/common/contracts.py`: `Envelope`, `MessageTransport`, `ProtocolCodec`, limits.
+- `lancollab/common/message_schema.py`: declarative message fields, directions and initial limits; **not** a runtime validator.
+- `lancollab/common/fake_transport.py`: in-memory peer queues, **not** TCP/UDP/TLS.
+- `lancollab/common/examples.py`: synthetic sample messages including `FILE_ACK`, new `CHAT_ACK`, presence fields.
+- `tests/fixtures/sample-messages.json`: test samples, no real passwords.
+- `lancollab/common/socket_transport.py`: TV2 implementation TODO.
+- `lancollab/server/application.py`: TV1 handler TODO.
+- `lancollab/client/application.py`: TV3 API TODO.
 
-- `lancollab/common/contracts.py`: `Envelope`, `MessageTransport`, `ProtocolCodec`, `SessionIdentity`.
-- `lancollab/common/fake_transport.py`: paired queue-backed `FakeTransport` for tests; **no TCP/UDP/TLS**.
-- `lancollab/common/examples.py`: representative typed fixture messages.
-- `lancollab/common/socket_transport.py`: production `SocketTransport` TODO for TV2.
-- `lancollab/server/application.py`: server handler TODO for TV1.
-- `lancollab/client/application.py`: client API TODO for TV3.
-- `scripts/mock_contract_demo.py`: smoke checks synthetic request/response messages. It is **not** a network demo.
+## Independent team work
 
-## TV1 workflow
+**TV1**: Server and session registry against fake messages. Model atomic presence snapshots, generations on login takeover, actor-authorized file transfer and nonblocking queues. Do not block readers waiting for queue capacity.
 
-Write `CollabServer.handle_message(message, session)` without opening sockets, using deterministic input from `example_messages()` or `FakeTransport`. Once `SocketTransport` is supplied by TV2, wire the same handler into a per-client reader loop. Test auth and private/global routing with fake authenticated sessions and real sockets later.
+**TV2**: Implement actual TCP length-prefixed JSON codec, schema/type/range validation, TLS wrapper and certificate tooling. Implement FILE_ACK cumulative receiver credit, strict `FILE_CHUNK`/`FILE_END` ordering and state machine in real network integration.
 
-## TV2 workflow
+**TV3**: Client/CLI against FakeTransport, UDP DISCOVER and HEARTBEAT_ACK RTT calculation, real network integration and tests; show receiver-confirmed transfer progress.
 
-Implement `SocketTransport` and `ProtocolCodec`: exact-byte TCP frame receiving; JSON serialization; frame-size checks; a serialized writer. Independently test file chunking/reassembly and TLS certificate validation. Keep the public methods stable.
-
-## TV3 workflow
-
-Implement `CollabClient` against `MessageTransport` (initially `FakeTransport`) and a CLI. Use fixtures as synthetic server events; do not wait for server. Write UDP discovery client and test harness separately. Later swap the fake transport for a real TLS socket implementation.
-
-## Smoke commands (now)
+## Mock-only smoke checks
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
@@ -33,4 +28,4 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-These commands **only** check interfaces/mocks/skeleton entry points until actual networking handlers are implemented. They must not be presented as completed rubric functionality.
+Do not report mock smoke checks as Checkpoint A/B/C successes. No actual application has been implemented at this point.

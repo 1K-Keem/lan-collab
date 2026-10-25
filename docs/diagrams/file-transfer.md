@@ -1,66 +1,71 @@
-# File transfer and verification — proposed sequence
+# File transfer + receiver-confirmed flow control — design revision 1.1
 
-**Design artifact** for Issues #2 and #8; not evidence that real sockets/files are working.
+**Design only.** This visual is not a passed networking acceptance test.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant A as Alice (sender)
-    participant S as Server relay
-    participant B as Bob (receiver)
+    participant A as Alice (authenticated sender)
+    participant S as Server (state, credit, relay)
+    participant B as Bob (authenticated receiver)
     A->>S: FILE_OFFER(transfer_id,to,name,size,sha256)
     S->>B: FILE_OFFER(transfer_id,from,name,size,sha256)
-    alt Bob accepts
-        B-->>S: FILE_ACCEPT(transfer_id)
-        S-->>A: FILE_ACCEPT(transfer_id)
-        loop Chunk stream (bounded, in order)
+    alt Receiver accepts
+        B->>S: FILE_ACCEPT(transfer_id)
+        S->>A: FILE_ACCEPT(transfer_id)
+        loop Window W=8: at most 8 unacknowledged chunks
             A->>S: FILE_CHUNK(transfer_id,seq,offset,data_b64)
-            S->>B: FILE_CHUNK(transfer_id,seq,offset,data_b64)
-            Note over S,B: File queue bounded; control frames prioritized
+            S->>B: FILE_CHUNK in ordered file FIFO
+            Note over B: Write contiguous bytes into temp file
+            opt After 4 chunks or final partial batch
+                B->>S: FILE_ACK(next_offset)
+                S->>A: FILE_ACK(next_offset) via priority control queue
+                Note over A: Advance cumulative receiver-ACK credit and progress
+            end
         end
         A->>S: FILE_END(total_chunks)
+        Note over S,B: FILE_END follows all chunks in SAME file FIFO
         S->>B: FILE_END(total_chunks)
-        Note over B: Check exact byte count and SHA-256 in temp file
-        alt Integrity OK
-            B-->>S: FILE_RESULT(ok=true)
-            S-->>A: FILE_RESULT(ok=true)
-        else Size/hash invalid
-            B-->>S: FILE_RESULT(ok=false,reason)
-            S-->>A: FILE_RESULT(ok=false,reason)
-        end
-    else Bob rejects
-        B-->>S: FILE_REJECT(transfer_id)
-        S-->>A: FILE_REJECT(transfer_id)
+        Note over B: Verify exact size, chunk count, SHA-256
+        B->>S: FILE_RESULT(ok=true / false)
+        S->>A: FILE_RESULT(ok=true / false)
+    else Receiver rejects
+        B->>S: FILE_REJECT(transfer_id)
+        S->>A: FILE_REJECT(transfer_id)
     end
-    opt Either endpoint disconnects/cancels
-        S-->>A: FILE_CANCEL or ERROR
-        S-->>B: FILE_CANCEL or ERROR
+    opt Timeout, disconnect, queue full or participant cancels
+        Note over S: Mark transfer terminal, discard queued chunks/end
+        S-->>A: FILE_CANCEL(reason) if still connected
+        S-->>B: FILE_CANCEL(reason) if still connected
     end
 ```
 
-## Transfer states
+## Sender/receiver/server state machine
 
 ```mermaid
 stateDiagram-v2
     [*] --> OFFERED
-    OFFERED --> ACCEPTED: FILE_ACCEPT
-    OFFERED --> CANCELLED: FILE_REJECT / FILE_CANCEL
-    OFFERED --> FAILED: Timeout / Offline
-    ACCEPTED --> TRANSFERRING: First FILE_CHUNK
-    ACCEPTED --> VERIFYING: Empty file FILE_END
-    TRANSFERRING --> TRANSFERRING: Ordered FILE_CHUNK
-    TRANSFERRING --> VERIFYING: FILE_END
-    TRANSFERRING --> CANCELLED: FILE_CANCEL
-    TRANSFERRING --> FAILED: Disconnect / Invalid offset
-    VERIFYING --> DONE: Receiver hash/size match
-    VERIFYING --> FAILED: Verification error
+    OFFERED --> ACCEPTED: Receiver accepts
+    OFFERED --> CANCELLED: Rejected or cancelled
+    OFFERED --> FAILED: Timeout or offline
+    ACCEPTED --> TRANSFERRING: First chunk
+    ACCEPTED --> VERIFYING: Empty file end
+    ACCEPTED --> CANCELLED: Participant cancels
+    ACCEPTED --> FAILED: First chunk timeout, disconnect
+    TRANSFERRING --> TRANSFERRING: Chunk + cumulative FILE_ACK
+    TRANSFERRING --> VERIFYING: FILE_END after prior chunks
+    TRANSFERRING --> CANCELLED: Cancel
+    TRANSFERRING --> FAILED: Invalid offset, stall, disconnect
+    VERIFYING --> DONE: Receiver FILE_RESULT ok + verified hash
+    VERIFYING --> FAILED: Hash/size failure, timeout, disconnect
+    VERIFYING --> CANCELLED: Explicit cancel
     DONE --> [*]
     FAILED --> [*]
     CANCELLED --> [*]
 ```
 
-The server relays streams only for an online, consenting recipient; no persistent server-side file storage. Server queue ACK and TCP send success do **not** prove file integrity. Only receiver `FILE_RESULT(ok=true)` closes transfer successfully.
+## Authorization
 
-## Shared socket scheduling
+Sender alone originates OFFER, CHUNK and END; receiver alone originates ACCEPT, REJECT, ACK and RESULT; both may CANCEL. Server binds every transfer to authenticated sender + receiver and verifies each operation before forwarding. Max one active incoming transfer per receiver in MVP.
 
-Use a serialized writer and two bounded queues; fairness between control and file frames. If a receiver is slow, pause/limit file production and fail the transfer after a defined timeout rather than growing memory indefinitely. This improves application scheduling but cannot remove inherent TCP-level head-of-line blocking.
+The `FILE_ACK` verifies cumulative bytes **written** by receiver, not final SHA-256 integrity. `FILE_RESULT(ok=true)` is the only successful terminal confirmation. A file is not stored on the server.
