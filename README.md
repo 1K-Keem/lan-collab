@@ -33,9 +33,22 @@ lancollab/
   client/                # TV3 client API and module entry point TODO
 tests/                   # Mock-only tests (real socket tests not yet written)
 scripts/                 # Mock-only smoke scenario
-docs/                    # Architecture, proposed v1 protocol, checkpoints, report
+docs/                    # Architecture, frozen v1 baseline, checkpoints, report
 .github/workflows/       # CI
 ```
+
+## Protocol diagrams
+
+GitHub renders the Mermaid diagrams directly in these Markdown files.
+
+- [Transport and architecture overview](docs/diagrams/transport-overview.md)
+- [TCP framing and JSON envelope](docs/diagrams/tcp-framing.md)
+- [Connection, authentication and chat](docs/diagrams/connection-and-chat.md)
+- [File transfer sequence and state machine](docs/diagrams/file-transfer.md)
+- [Outbound queue fairness and backpressure](docs/diagrams/outbound-queues.md)
+- [Parallel work dependencies and checkpoints](docs/diagrams/parallel-work-dependencies.md)
+
+**Protocol status:** v1.0 frozen as implementation baseline by repository owner; individual TV1/TV2/TV3 reviews still need recording in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). This does not imply that the application is implemented.
 
 ## Development setup
 

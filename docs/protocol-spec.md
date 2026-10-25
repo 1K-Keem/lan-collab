@@ -1,6 +1,6 @@
-# LAN Collab wire protocol v1.0 — proposed team contract
+# LAN Collab wire protocol v1.0 — frozen implementation baseline
 
-**Status: READY FOR TEAM REVIEW, NOT RATIFIED.** This document defines an explicit baseline so TV1/TV2/TV3 can use mocks and work in parallel. Before merging production handlers, all three must approve it in Issue #2. Change incompatible fields only through a reviewed PR.
+**Status: FROZEN FOR IMPLEMENTATION by repository owner (25 Oct 2026), pending individual team review.** The schema, message types, ACK meanings and wire framing are the shared v1.0 contract for TV1/TV2/TV3. The user has chosen to proceed with this baseline. Teammates must still record reviews in Issue #2; do not represent their approval as already obtained. Any incompatible change requires a jointly reviewed PR.
 
 ## Transport and framing
 
@@ -99,12 +99,23 @@ A successful TCP `send` or server queue admission is **not** proof that the rece
 - Proposed SQLite account store with salted password hash; duplicate usernames online -> `DUPLICATE_LOGIN`.
 - TCP `PING/PONG` is authoritative liveness input. Proposed interval 10s, missed 3 consecutive responses -> cleanup; also cleanup immediately on connection EOF/errors. UDP does not prolong sessions.
 
-## Version 1 acceptance and unratified choices
+## Protocol freeze and remaining reviews
 
-- [ ] TV1 approves server routing/ACK/session states.
-- [ ] TV2 approves codec, file offsets/chunks, TLS and queue limits.
-- [ ] TV3 approves client CLI, UDP/heartbeat and event envelopes.
-- [ ] All three agree final timeout values, duplicate-login policy, file caps and public/private repo settings.
+- [x] Repository owner freezes v1.0 protocol as the implementation baseline.
+- [ ] TV1 reviews server routing/ACK/session states.
+- [ ] TV2 reviews codec, file offsets/chunks, TLS and queue limits.
+- [ ] TV3 reviews client CLI, UDP/heartbeat and event envelopes.
+- [ ] All three confirm timeout values, duplicate-login policy, file caps and public/private repo settings.
+- [x] Baseline sequence/state diagrams documented (design only).
 - [ ] Sequence diagrams confirmed against actual integration.
 
 The small `lancollab.common` interfaces and `tests/fixtures/` are *test doubles/contracts*, not working network implementation. Do not claim rubric milestones complete until implementation + real socket tests pass.
+
+## Visual references
+
+- [Transport overview](diagrams/transport-overview.md)
+- [TCP framing](diagrams/tcp-framing.md)
+- [Connection/authentication/chat sequence](diagrams/connection-and-chat.md)
+- [File transfer sequence and states](diagrams/file-transfer.md)
+- [Outbound queue scheduler](diagrams/outbound-queues.md)
+- [Parallel development dependency graph](diagrams/parallel-work-dependencies.md)

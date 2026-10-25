@@ -1,10 +1,10 @@
 # Checkpoints — one-week MVP (25 Oct–1 Nov 2026)
 
-Checkpoints are **integration gates**, not separate development phases. Members code simultaneously using the fixed contract and mocks. The assignee of a feature provides proof; the other two review. Mark gate complete only after real network tests.
+Checkpoints are **integration gates**, not separate development phases. Members code simultaneously using the owner-frozen v1 contract and mocks. The assignee of a feature provides proof; the other two review. Mark gate complete only after real network tests.
 
 ## CP-A — Transport integration — target 27 Oct (Issue #16)
 
-**Depends on:** #2 proposed protocol signed off; #3 framing; #4 TCP server; #7 TCP client (minimal).
+**Depends on:** #2 owner-frozen protocol v1 + teammate review tracked; #3 framing; #4 TCP server; #7 TCP client (minimal).
 
 **Must demonstrate:**
 - [ ] `python -m lancollab.server` starts a real TCP server; client launches and connects on localhost.
