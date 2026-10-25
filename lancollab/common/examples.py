@@ -42,8 +42,12 @@ def example_messages() -> dict[str, Envelope]:
             },
         ),
         "file_accept": Envelope("FILE_ACCEPT", "req-accept", {"transfer_id": transfer_id}),
-        "file_end": Envelope("FILE_END", "req-end", {"transfer_id": transfer_id, "total_chunks": 1}),
-        "file_result": Envelope("FILE_RESULT", "req-result", {"transfer_id": transfer_id, "ok": True}),
+        "file_end": Envelope(
+            "FILE_END", "req-end", {"transfer_id": transfer_id, "total_chunks": 1}
+        ),
+        "file_result": Envelope(
+            "FILE_RESULT", "req-result", {"transfer_id": transfer_id, "ok": True}
+        ),
         "ping": Envelope("PING", "req-ping", {"nonce": "dummy-nonce"}),
         "pong": Envelope("PONG", "req-ping", {"nonce": "dummy-nonce"}),
     }
