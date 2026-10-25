@@ -1,4 +1,4 @@
-# Nonblocking queue admission and single writer — design revision 1.1
+# Nonblocking queue admission and single writer — design revision 1.2
 
 ```mermaid
 flowchart TB
@@ -22,6 +22,8 @@ flowchart TB
 
 - Neither `queue.put()` nor socket send/receive may block a shared registry lock or a reader responsible for incoming PONG/chat.
 - Receiver sends `FILE_ACK` every four contiguous chunks or when final partial batch is complete. Sender may send at most eight unacknowledged chunks.
+- Outbound events target exact session IDs; never redirect stale queued events to a replacement login.
+- END consumes no chunk credit and does not wait for final ACK; final ACK remains valid in VERIFYING.
 - On cancellation, invalidate/purge chunks and END already waiting in queue; incoming late frames for terminal transfer are ignored/rejected.
 - Transfer progress shown as receiver-confirmed `next_offset`, not sender writes to local TCP.
 - These are design parameters, not measured throughput or implemented behavior.

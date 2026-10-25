@@ -40,6 +40,6 @@ Source: *Assignment 1 — Distributed Client-Server Collaboration Application*, 
 2. Global message reaches online users; private message reaches only the intended recipient.
 3. Transfer a binary file, verify identical SHA-256 after receiving.
 4. Kill a client mid-transfer and confirm server stays alive, cleans up session and can accept reconnect.
-5. Simulate 20 clients; record pass/fail, response times, errors and resource usage.
+5. Run the 20-client chat/file workload and explicit latency/error/resource acceptance targets in checkpoints.md, including slow-consumer and reconnect cases.
 6. Run clients across two devices on the same LAN and verify TCP/TLS and discovery or manual IP fallback.
 7. Capture TLS traffic and verify no plaintext application payload is exposed.

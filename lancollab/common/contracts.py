@@ -1,13 +1,13 @@
 """Stable typed interfaces for 3-way parallel implementation.
 
 This module declares boundaries only. No TCP, TLS, UDP or real protocol
-validation is implemented here; see docs/protocol-spec.md revision 1.1.
+validation is implemented here; see docs/protocol-spec.md revision 1.2.
 """
 
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-PROTOCOL_VERSION = 1  # Wire version remains 1; documentation revision is 1.1.
+PROTOCOL_VERSION = 1  # Wire version remains 1; documentation revision is 1.2.
 MAX_JSON_BYTES = 262_144
 FILE_CHUNK_BYTES = 16 * 1024
 FILE_WINDOW_CHUNKS = 8
@@ -26,10 +26,11 @@ class Envelope:
 
 @dataclass(frozen=True)
 class SessionIdentity:
-    """Server session identity, derived from authentication, not client payload."""
+    """Concrete connection identity; session_id is server-local, never a wire field."""
 
     remote_ip: str
     remote_port: int
+    session_id: str
     username: str | None = None
 
 
@@ -37,7 +38,7 @@ class SessionIdentity:
 class OutboundEvent:
     """Event queued for a recipient; not proof of delivery/read."""
 
-    recipient: str
+    recipient: SessionIdentity
     message: Envelope
 
 

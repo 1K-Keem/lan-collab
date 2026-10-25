@@ -1,4 +1,4 @@
-# File transfer + receiver-confirmed flow control — design revision 1.1
+# File transfer + receiver-confirmed flow control — design revision 1.2
 
 **Design only.** This visual is not a passed networking acceptance test.
 
@@ -23,10 +23,13 @@ sequenceDiagram
                 Note over A: Advance cumulative receiver-ACK credit and progress
             end
         end
+        Note over A: Send END after all bytes; do not wait for final ACK
         A->>S: FILE_END(total_chunks)
         Note over S,B: FILE_END follows all chunks in SAME file FIFO
         S->>B: FILE_END(total_chunks)
         Note over B: Verify exact size, chunk count, SHA-256
+        B->>S: Final FILE_ACK(next_offset=size) if not already sent
+        Note over S: Final ACK remains valid in VERIFYING
         B->>S: FILE_RESULT(ok=true / false)
         S->>A: FILE_RESULT(ok=true / false)
     else Receiver rejects
@@ -56,7 +59,8 @@ stateDiagram-v2
     TRANSFERRING --> VERIFYING: FILE_END after prior chunks
     TRANSFERRING --> CANCELLED: Cancel
     TRANSFERRING --> FAILED: Invalid offset, stall, disconnect
-    VERIFYING --> DONE: Receiver FILE_RESULT ok + verified hash
+    VERIFYING --> VERIFYING: Valid final cumulative ACK
+    VERIFYING --> DONE: Receiver reports verified success
     VERIFYING --> FAILED: Hash/size failure, timeout, disconnect
     VERIFYING --> CANCELLED: Explicit cancel
     DONE --> [*]
@@ -66,6 +70,6 @@ stateDiagram-v2
 
 ## Authorization
 
-Sender alone originates OFFER, CHUNK and END; receiver alone originates ACCEPT, REJECT, ACK and RESULT; both may CANCEL. Server binds every transfer to authenticated sender + receiver and verifies each operation before forwarding. Max one active incoming transfer per receiver in MVP.
+Sender alone originates OFFER, CHUNK and END; receiver alone originates ACCEPT, REJECT, ACK and RESULT; both may CANCEL. Server keys active transfers by globally unique transfer_id and binds both exact participant session IDs. Retain terminal IDs per session (1024 admitted offers/session); reject reuse. Takeover cancels transfers for the replaced session. Server verifies each role, state, size/count and ACK boundary before forwarding. Max one active incoming transfer per receiver in MVP.
 
 The `FILE_ACK` verifies cumulative bytes **written** by receiver, not final SHA-256 integrity. `FILE_RESULT(ok=true)` is the only successful terminal confirmation. A file is not stored on the server.

@@ -1,4 +1,4 @@
-# TLS, authentication, global/private chat and liveness — design revision 1.1
+# TLS, authentication, global/private chat and liveness — design revision 1.2
 
 ```mermaid
 sequenceDiagram
@@ -14,7 +14,8 @@ sequenceDiagram
     A->>S: AUTH_REQUEST(username,password)
     Note over A,S: HELLO + AUTH within 10s of TLS
     alt Credentials correct
-        Note over S: Atomically register session + snapshot + event ordering
+        Note over S: Invalidate old session and cancel its transfers on takeover
+        Note over S: Register new session ID + snapshot + event ordering
         S-->>A: AUTH_RESULT(ok=true)
         S-->>A: USER_LIST(username,ip,ephemeral port)
         S-->>B: PRESENCE_UPDATE(Alice online,ip,port)
@@ -27,8 +28,8 @@ sequenceDiagram
         S-->>B: CHAT_PRIVATE(from=Alice,text)
         S-->>A: CHAT_ACK(status=queued)
         opt Periodic liveness
-            S->>A: PING(nonce)
-            A->>S: PONG(same nonce)
+            S->>A: PING(request_id,nonce)
+            A->>S: PONG(same request_id and nonce)
         end
     else Invalid credentials
         S-->>A: AUTH_RESULT(ok=false,error_code=AUTH_FAILED)

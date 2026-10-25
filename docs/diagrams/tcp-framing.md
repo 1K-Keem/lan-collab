@@ -1,4 +1,4 @@
-# TCP/TLS application frame — design revision 1.1
+# TCP/TLS application frame — design revision 1.2
 
 TCP transports bytes, **not** messages. Application framing is required even when a TLS socket is used.
 

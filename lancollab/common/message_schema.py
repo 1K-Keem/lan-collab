@@ -1,4 +1,4 @@
-"""Declarative field catalog for the v1.1 design (not a runtime validator).
+"""Declarative field catalog for the v1.2 design (not a runtime validator).
 
 Schema is data, shared by codec implementations and mock tests. Full state,
 type/range validation and authorization remain student implementation TODOs.
@@ -24,4 +24,6 @@ FIELD_LIMITS = {
     "file_ack_interval_chunks": 4,
     "control_queue_frames": 128,
     "file_queue_frames": 32,
+    "max_seen_transfer_ids_per_session": 1024,
+    "max_request_ids_per_session": 65536,
 }

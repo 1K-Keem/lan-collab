@@ -1,4 +1,4 @@
-# Parallel development with contract v1.1 and in-memory dummies
+# Parallel development with contract v1.2 and in-memory dummies
 
 Only interfaces, declarative field catalog and synthetic examples are provided here. Real TCP/TLS, UDP, chat, authentication, flow-control and file-transfer implementations are **not** provided or tested.
 
@@ -15,9 +15,17 @@ Only interfaces, declarative field catalog and synthetic examples are provided h
 
 **TV1**: Server and session registry against fake messages. Model atomic presence snapshots, generations on login takeover, actor-authorized file transfer and nonblocking queues. Do not block readers waiting for queue capacity.
 
-**TV2**: Implement actual TCP length-prefixed JSON codec, schema/type/range validation, TLS wrapper and certificate tooling. Implement FILE_ACK cumulative receiver credit, strict `FILE_CHUNK`/`FILE_END` ordering and state machine in real network integration.
+**TV2**: Implement actual TCP length-prefixed JSON codec, schema/type/range validation, TLS wrapper and certificate tooling. Provide the socket-independent transfer state/authorization/credit core and agree its API with TV1/TV3. Active UUIDs are globally unique; participants bind exact session IDs. END never waits for ACK drain; valid final ACK is accepted in VERIFYING.
 
-**TV3**: Client/CLI against FakeTransport, UDP DISCOVER and HEARTBEAT_ACK RTT calculation, real network integration and tests; show receiver-confirmed transfer progress.
+**TV3**: Client/CLI plus consent/disk I/O, sender worker, receiver ACK/hash/rename against fake events, UDP DISCOVER and HEARTBEAT_ACK RTT calculation, real network integration and tests; show receiver-confirmed transfer progress.
+
+## Shared contract migration
+
+- `SessionIdentity.session_id` is required, server-local and unique per connection. `OutboundEvent.recipient` is a concrete SessionIdentity. New-session takeover must not retarget old events.
+- `example_cases()` and JSON fixture wrappers provide `direction` plus `message`; only the message is serialized. `example_messages()` remains available for existing smoke callers. Select MESSAGE_FIELDS using exact `C:type` or `S:type`, not any matching message type.
+- FakeTransport intentionally receives immediately and raises TimeoutError when empty; it does not simulate real blocking deadlines, validation, TLS or EOF timing. Test those on SocketTransport at checkpoints. Keep handler contract cases reusable across adapters while keeping timing tests adapter-specific.
+- The old test requiring the codec to raise NotImplementedError has been removed. Issue #3 must add real framing/socket tests before CP-A; fixture checks do not establish codec correctness.
+- Basic verified TLS must be ready for CP-B. No real passwords over a plaintext development socket.
 
 ## Mock-only smoke checks
 

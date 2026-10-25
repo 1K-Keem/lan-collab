@@ -1,38 +1,50 @@
 [
   {
-    "version": 1,
-    "type": "HELLO",
-    "request_id": "req-hello",
-    "payload": {
-      "client_name": "fixture-client"
+    "direction": "C",
+    "message": {
+      "version": 1,
+      "type": "HELLO",
+      "request_id": "req-hello",
+      "payload": {
+        "client_name": "fixture-client"
+      }
     }
   },
   {
-    "version": 1,
-    "type": "CHAT_ACK",
-    "request_id": "req-msg-1",
-    "payload": {
-      "status": "queued"
+    "direction": "S",
+    "message": {
+      "version": 1,
+      "type": "CHAT_ACK",
+      "request_id": "req-msg-1",
+      "payload": {
+        "status": "queued"
+      }
     }
   },
   {
-    "version": 1,
-    "type": "FILE_ACK",
-    "request_id": "event-ack",
-    "payload": {
-      "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
-      "next_offset": 16384
+    "direction": "S",
+    "message": {
+      "version": 1,
+      "type": "FILE_ACK",
+      "request_id": "event-ack",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "next_offset": 16384
+      }
     }
   },
   {
-    "version": 1,
-    "type": "PRESENCE_UPDATE",
-    "request_id": "event-presence",
-    "payload": {
-      "username": "bob",
-      "status": "online",
-      "ip": "192.0.2.2",
-      "port": 52114
+    "direction": "S",
+    "message": {
+      "version": 1,
+      "type": "PRESENCE_UPDATE",
+      "request_id": "event-presence",
+      "payload": {
+        "username": "bob",
+        "status": "online",
+        "ip": "192.0.2.2",
+        "port": 52114
+      }
     }
   }
 ]
