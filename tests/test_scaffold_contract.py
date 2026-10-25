@@ -21,9 +21,7 @@ class ContractScaffoldTests(unittest.TestCase):
             self.assertIsInstance(message.payload, dict)
 
             candidates = [
-                layout
-                for key, layout in MESSAGE_FIELDS.items()
-                if key.endswith(":" + message.type)
+                layout for key, layout in MESSAGE_FIELDS.items() if key.endswith(":" + message.type)
             ]
             self.assertTrue(candidates, f"Missing schema for {message.type}")
             keys = set(message.payload)
