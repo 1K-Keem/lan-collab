@@ -24,9 +24,7 @@ def example_messages() -> dict[str, Envelope]:
         ),
         "auth_ok": Envelope("AUTH_RESULT", "req-auth", {"ok": True, "username": "alice"}),
         "global_chat": Envelope("CHAT_GLOBAL", "req-global", {"text": "Hello all"}),
-        "private_chat": Envelope(
-            "CHAT_PRIVATE", "req-private", {"to": "bob", "text": "Hello Bob"}
-        ),
+        "private_chat": Envelope("CHAT_PRIVATE", "req-private", {"to": "bob", "text": "Hello Bob"}),
         "chat_ack": Envelope(
             "CHAT_ACK",
             "req-private",
@@ -44,12 +42,8 @@ def example_messages() -> dict[str, Envelope]:
             },
         ),
         "file_accept": Envelope("FILE_ACCEPT", "req-accept", {"transfer_id": transfer_id}),
-        "file_end": Envelope(
-            "FILE_END", "req-end", {"transfer_id": transfer_id, "total_chunks": 1}
-        ),
-        "file_result": Envelope(
-            "FILE_RESULT", "req-result", {"transfer_id": transfer_id, "ok": True}
-        ),
+        "file_end": Envelope("FILE_END", "req-end", {"transfer_id": transfer_id, "total_chunks": 1}),
+        "file_result": Envelope("FILE_RESULT", "req-result", {"transfer_id": transfer_id, "ok": True}),
         "ping": Envelope("PING", "req-ping", {"nonce": "dummy-nonce"}),
         "pong": Envelope("PONG", "req-ping", {"nonce": "dummy-nonce"}),
     }

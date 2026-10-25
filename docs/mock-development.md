@@ -28,7 +28,7 @@ Implement `CollabClient` against `MessageTransport` (initially `FakeTransport`) 
 
 ```bash
 python -m unittest discover -s tests -p "test_*.py"
-python scripts/mock_contract_demo.py
+python -m scripts.mock_contract_demo
 python -m lancollab.server --help
 python -m lancollab.client --help
 ```

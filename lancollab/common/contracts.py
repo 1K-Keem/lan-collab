@@ -5,7 +5,7 @@ TV1/TV2/TV3 must review docs/protocol-spec.md before changing fields.
 """
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 PROTOCOL_VERSION = 1
 MAX_JSON_BYTES = 262_144
@@ -39,6 +39,7 @@ class OutboundEvent:
     message: Envelope
 
 
+@runtime_checkable
 class MessageTransport(Protocol):
     """One message per call; implementations own socket framing and TLS."""
 

@@ -1,80 +1,73 @@
 # LAN Collab
 
-A self-hosted LAN collaboration application for a **Network Application Development** course assignment.
+Secure, self-hosted LAN collaboration application for a **Network Application Development** assignment using **raw TCP/UDP sockets**.
 
-> **Status:** Planning / repository scaffold. Application features are **not yet implemented**.
+> **Status: CONTRACT + DUMMY SCAFFOLD ONLY.** Authentication, networking, routing, file transfer and encryption are **not implemented**. Do not interpret green CI or mock examples as working application functionality.
 
-## Project scope
+## Requirements and scope
 
-Build a distributed client-server collaboration application using **raw TCP/UDP sockets**, with:
+- Python **3.11+**, raw `socket`, `threading`, `ssl` for TCP/TLS; UDP discovery/presence/heartbeat.
+- Login, online users, global and private chat, 20 simultaneous clients.
+- Reliable file relay with chunking, SHA-256 verification and cancellation.
+- Timeouts, error handling, reconnect, and a clear CLI.
+- No Flask/Django/HTTP networking frameworks/WebSockets.
 
-- User authentication and live peer presence
-- Global chat and private messaging
-- Reliable file transfer with chunking and integrity verification
-- Concurrent clients (target: 20 active connections)
-- Network resilience (timeouts, disconnects and cleanup)
-- Encrypted TCP connections
-- Clear CLI, file-transfer progress and online user list
+See [assignment checklist](docs/assignment-checklist.md).
 
-No Flask, Django, HTTP frameworks or WebSockets. See [Assignment checklist](docs/assignment-checklist.md).
+## Team roles (assign GitHub usernames later)
 
-## Proposed technology
-
-Python 3.11+, `socket`, `threading`, `ssl`, `sqlite3`, `json`, `struct`, `hashlib`; optional `pytest` for tests. Prefer Python standard-library modules for networking.
-
-## Team ownership
-
-| Owner | Responsibility |
+| Role | Responsibilities |
 | --- | --- |
-| TV1 | TCP server, concurrency, authentication, session state, chat routing |
-| TV2 | Shared protocol, framing, file transfer, SHA-256 and TLS |
-| TV3 | TCP client, CLI, UDP discovery, automated integration testing |
+| TV1 | Server listener, session/auth state, concurrency and message routing |
+| TV2 | Shared protocol/framing, TLS certificate integration, file relay |
+| TV3 | Client/CLI, UDP discovery/heartbeat and integration testing |
 
-**TV1/TV2/TV3 are role placeholders.** Assign GitHub usernames after team members are added as collaborators. Everyone reviews interface changes and contributes to integration/testing/reporting.
+All team members review protocol changes and cross-review the full codebase for oral defense.
 
-## Project layout
+## Layout
 
 ```text
-client/            # Client networking, CLI, discovery, transfer UI
-server/            # TCP server, sessions, routing, file relay
-common/            # Shared wire protocol and codecs
-tests/             # Unit and integration tests
-docs/              # Architecture, protocol, report materials
-scripts/           # Multi-client simulation and demo helpers
-.github/           # CI and PR template
+lancollab/
+  common/                # Typed contracts, FakeTransport + TV2 real transport TODO
+  server/                # TV1 server handler and module entry point TODO
+  client/                # TV3 client API and module entry point TODO
+tests/                   # Mock-only tests (real socket tests not yet written)
+scripts/                 # Mock-only smoke scenario
+docs/                    # Architecture, proposed v1 protocol, checkpoints, report
+.github/workflows/       # CI
 ```
 
-## Getting started
+## Development setup
 
-1. Clone: `git clone https://github.com/1K-Keem/lan-collab.git`
-2. Enter: `cd lan-collab`
-3. Use Python 3.11+ and a virtual environment:
-   - Linux/macOS: `python3 -m venv .venv && source .venv/bin/activate`
-   - Windows PowerShell: `py -3 -m venv .venv; .venv\Scripts\Activate.ps1`
-4. For developer tools: `python -m pip install -r requirements-dev.txt`
-5. Run scaffold checks: `python -m compileall -q client server common tests`
-6. Run tests after implementation: `python -m unittest discover -s tests -p "test_*.py"`
+```bash
+git clone https://github.com/1K-Keem/lan-collab.git
+cd lan-collab
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+python -m unittest discover -s tests -p "test_*.py"
+python -m scripts.mock_contract_demo
+python -m lancollab.server --help
+python -m lancollab.client --help
+```
 
-**Server/client run commands will be documented after the team implements them.** The repository scaffold alone is not a working application.
+`python -m lancollab.server` and `python -m lancollab.client` **intentionally fail with "not implemented"** until TV1 and TV3 complete the work. Update this section with actual run commands after implementation.
 
-## Development workflow
+## Work in parallel (one week)
 
-- `main` should remain reviewable; create branches such as `feature/server-core`, `feature/protocol`, `feature/client-cli`, `test/integration`.
-- Open an Issue before substantial work; link your PR with `Closes #<issue>`.
-- Agree on message schemas in `docs/protocol-spec.md` before implementing handlers. Any incompatible change requires joint review.
-- Keep commits attributable to their actual authors; each member must understand and explain their own implementation.
+1. **All three** review [protocol contract](docs/protocol-spec.md) and [architecture](docs/architecture.md) and approve Issue #2.
+2. **TV1** implements server handlers against the typed API and `FakeTransport` without depending on a real client.
+3. **TV2** implements length-prefixed TCP codec, TLS/SSL wrapping, file chunking and trust setup without depending on the real server handlers.
+4. **TV3** implements client/CLI using `FakeTransport` and synthetic server messages, plus UDP discovery and tests.
+5. Integrate and check [checkpoint gates](docs/checkpoints.md): **CP-A** (27 Oct), **CP-B** (29 Oct), **CP-C** (31 Oct), final packaging (1 Nov 2026).
 
-## Documentation
+Read [mock development guide](docs/mock-development.md) for example interfaces. Keep changes in short-lived PRs, with meaningful tests and attribution. The deadline in the assignment is only "suggested" and contradictory; the above is the team's **internal one-week target**.
 
-- [Architecture and decisions](docs/architecture.md)
-- [Protocol draft (requires team approval)](docs/protocol-spec.md)
-- [Assignment milestones and validation](docs/assignment-checklist.md)
-- [Team contribution workflow](CONTRIBUTING.md)
+## TLS and local LAN
 
-## Submission
+The final application must verify server identity with trusted certificates. Project plan: a certificate-generation helper will be added by TV2 and documented for Windows/macOS/Linux; no private keys should be committed. Use manual `--host` fallback when UDP broadcast is blocked.
 
-Include client/server source, clear reproduction commands, Technical Explanation Report (PDF), sequence diagrams, protocol specification and network challenge/solution reflection. Confirm the official submission deadline and repository visibility with the instructor: the assignment document contains inconsistent statements.
+## Submission and academic integrity
 
-## Academic integrity
-
-The assignment permits AI assistance for **syntax reference and debugging**, but requires students to explain their implementation fully. This repository starts with organizational scaffolding only. Team members should write and understand the graded networking implementation themselves.
+Deliver source, exact run commands, architecture/protocol/file/message diagrams, testing evidence, and report PDF. Instructor rules restrict AI to syntax/debugging assistance and require team members to explain **100% of the codebase**. Repository placeholders are coordination aids, not completed graded work.
