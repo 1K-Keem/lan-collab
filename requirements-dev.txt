@@ -1,0 +1,2 @@
+# Developer tooling only; the application should use Python standard-library networking APIs.
+ruff>=0.6,<1.0
