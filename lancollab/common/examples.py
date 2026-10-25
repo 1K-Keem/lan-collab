@@ -35,9 +35,7 @@ def example_messages() -> dict[str, Envelope]:
             "PRESENCE_UPDATE", "event-3", {"username": "bob", "status": "offline"}
         ),
         "global_chat": Envelope("CHAT_GLOBAL", "req-global", {"text": "Hello all"}),
-        "private_chat": Envelope(
-            "CHAT_PRIVATE", "req-private", {"to": "bob", "text": "Hello Bob"}
-        ),
+        "private_chat": Envelope("CHAT_PRIVATE", "req-private", {"to": "bob", "text": "Hello Bob"}),
         "chat_ack": Envelope("CHAT_ACK", "req-private", {"status": "queued"}),
         "file_offer": Envelope(
             "FILE_OFFER",
