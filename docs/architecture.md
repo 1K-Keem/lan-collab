@@ -1,62 +1,78 @@
-# Architecture — working design draft
+# Architecture and parallel development decisions
 
-**Status:** PROPOSED; team review required before implementation.
+**Status:** Baseline proposal for one-week MVP; all team members must sign off in Issue #2.
 
-## Goal
-
-A self-hosted, single-server system for users on the same LAN (or network with IP reachability). A central server handles authentication, presence, messages and file relay. No direct peer-to-peer transport in the MVP.
+## Server-mediated collaboration (no direct P2P)
 
 ```text
-Client A --- TCP/TLS ---+
-Client B --- TCP/TLS ---+--- Collaboration Server
-Client C --- TCP/TLS ---+      | session registry
-                               | message routing
-Clients ---- UDP discovery --- | file relay
+Client A -- TCP/TLS control+file --+
+Client B -- TCP/TLS control+file --+ --> Single Server: auth/session, chat routing, file relay
+Client C -- TCP/TLS control+file --+
+          UDP broadcast discovery/presence and lightweight heartbeat
 ```
 
-## Module responsibilities
+The server never stores relayed files. Sender and receiver must both be online and receiver must accept first.
 
-- `common/`: wire envelope, message validation, frame encoder/decoder and shared constants.
-- `server/`: accept loop, authenticated session registry, global/private routing, file relay and cleanup.
-- `client/`: socket connection, reader/writer lifecycle, CLI, discovery, progress.
-- `tests/`: framing edge cases, routing, file integrity, concurrent clients and disconnect scenarios.
-
-## Proposed runtime
-
-- TCP for control messages and reliable file chunks.
-- TLS over TCP using Python `ssl`. Client must verify server identity/certificate; never disable certificate checks in the final implementation.
-- UDP broadcast for server discovery on LAN, with manual host/IP fallback.
-- Application heartbeat / timeout handling. Do not authenticate users based solely on spoofable UDP messages.
-- Thread-per-client or asynchronous I/O are allowed by the assignment. Initial decision: threaded server with a bounded outbound queue per connection and serialized socket writes.
-
-## Session lifecycle
+## Package boundaries (stable on main)
 
 ```text
-TCP_CONNECTED -> TLS_ESTABLISHED -> HELLO_DONE -> AUTHENTICATED -> ACTIVE
-      |                 |                 |              |           |
-      +-----------------+-----------------+--------------+-----------+
-                                 |
-                        DISCONNECTED / CLOSED
-                                 |
-                               CLEANUP
+lancollab/common/  # TV2: typed envelope, protocol codec, transport contract
+lancollab/server/  # TV1: TCP accept, sessions, auth, routing; TV2 integrates file relay/TLS
+lancollab/client/  # TV3: client connection, CLI, UDP discovery
+tests/             # TV3 leads; unit and integration tests owned by implementers
+scripts/           # test/dummy helpers (not production networking)
+docs/              # versioned decisions, checkpoints and report
 ```
 
-## Key constraints
+Run entry points (after implementation): `python -m lancollab.server`, `python -m lancollab.client`. Their current placeholder CLI only prints not-yet-implemented; this is intentional.
 
-- TCP is a byte stream; implement explicit application framing and exact-length reads.
-- Validate lengths/types before allocation/processing.
-- Never hold a global session lock across potentially blocking socket I/O.
-- Treat client-provided sender identifiers as untrusted; bind identity to authenticated session.
-- Use file transfer IDs, temporary destination paths, and a cryptographic hash for integrity.
-- Clearly distinguish server-mediated encryption (TLS) from end-to-end encryption.
+## How three members start in parallel
 
-## Team decisions to confirm
+1. Agree on `docs/protocol-spec.md` (proposed v1 contract), fixture messages, `MessageTransport` and the meaning of ACK; sign off in #2.
+2. TV1 creates socket listener and server handlers against `MessageTransport` using `FakeTransport` and fixture messages. **Do not wait** for TV2's real codec.
+3. TV2 implements real length-prefix JSON codec and TLS wrapper, plus file chunking/hash tested on in-memory bytes/temporary files.
+4. TV3 builds client/CLI/UDP and contract tests against `FakeTransport` or scripted peer. **Do not wait** for a real server.
+5. Replace dummy adapter with actual TCP/TLS transport at checkpoint A; integrate once per day, keep short PRs.
 
-- [ ] Thread-per-client + outbound writer queue versus `selectors`.
-- [ ] Authentication policy (registration or pre-provisioned accounts).
-- [ ] Duplicate login behavior and online/offline semantics.
-- [ ] Maximum message/file size; filename/path restrictions.
-- [ ] Whether UDP heartbeat is separate from TCP application heartbeat.
-- [ ] Manual server certificate distribution for LAN demo.
+All shared contract changes require approval from all three; do not hand-edit wire schemas independently.
 
-Architecture and sequence diagrams should be updated once actual behavior is implemented.
+## Decisions for one-week scope
+
+- Python 3.11+, raw sockets, Python threading, `ssl`, JSON + length-prefix, SQLite for account storage.
+- TLS before application login. Cert-generation script cross-platform; dev cert trusted locally, no bundled private keys.
+- Single TLS/TCP connection per client. Two bounded queues (control first, file fair scheduling), 16 KiB raw file chunks; backpressure on full file queue, no unbounded buffering.
+- UDP discovery + presence beacon/heartbeat best-effort; authoritative online status from authenticated TCP.
+- File transfer offer->accept->chunk->end->result; SHA-256 and size verification, temp files and sanitized basenames.
+- CLI first; no GUI, chat history, E2EE, multi-server or resumable transfer.
+- Integration check after every major merge; tags only after a checkpoint actually passes.
+
+## Dependency map
+
+```text
+Team protocol freeze (#2) ───> real codec (#3) ───┬──> server (#4,#5,#6)
+            ├──> TV1 server skeleton (FakeTransport)│
+            ├──> TV3 client skeleton (FakeTransport)└──> client (#7)
+            ├──> TV2 file/TLS offline tests ──────────> end-to-end #8/#10
+            └──> TV3 UDP + test harness ──────────────> #9/#12
+
+       Checkpoint A: TCP/TLS handshake integration
+               ↓
+       Checkpoint B: 3-client auth/chat/presence
+               ↓
+       Checkpoint C: file/TLS/resilience/20 clients
+               ↓
+       README / report / oral walkthrough
+```
+
+## Known technical risks
+
+- TLS handshake must be in a worker, not in accept loop (slow peers otherwise block new connections).
+- Every connection must serialize full frames; cannot assume `recv(n)` yields `n`.
+- Sender's file traffic cannot monopolize control frames; queue fullness must have defined handling.
+- UDP can be blocked; always provide manual server address.
+- `input()` can collide visually with incoming events; TV3 decides CLI display strategy early (e.g., `prompt_toolkit`).
+- CI green on dummy tests **does not** mean assignment is implemented.
+
+## Instructor clarifications
+
+Assignment itself inconsistently specifies 6 vs 8 weeks, a suggested 2026-11-17 deadline with wrong weekday, and public vs private repository submission. Internal schedule is one week from 2026-10-25 to 2026-11-01 unless changed by team.
