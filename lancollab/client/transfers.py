@@ -141,7 +141,11 @@ class TransferManager:
             raise TransferError("Client session closed")
         if self._accepted_offers >= MAX_TRANSFERS_PER_SESSION:
             raise TransferError("Session transfer ID limit reached; reconnect required")
-        if transfer_id in self.outgoing or transfer_id in self.incoming or transfer_id in self.terminal:
+        if (
+            transfer_id in self.outgoing
+            or transfer_id in self.incoming
+            or transfer_id in self.terminal
+        ):
             raise TransferError("Transfer UUID already used in this session")
 
     def offer(self, path: str | Path, recipient: str) -> str:
@@ -196,7 +200,9 @@ class TransferManager:
         if reject:
             self._send("FILE_REJECT", {"transfer_id": transfer_id, "reason": "RECIPIENT_BUSY"})
             return
-        self._announce(f"Incoming file from {payload['from']}: {name} ({size} bytes); /accept {transfer_id}")
+        self._announce(
+            f"Incoming file from {payload['from']}: {name} ({size} bytes); /accept {transfer_id}"
+        )
 
     def accept(self, transfer_id: str) -> None:
         checked_id(transfer_id)
@@ -212,7 +218,9 @@ class TransferManager:
             while candidate.exists():
                 candidate = self.downloads_dir / f"{base.stem} ({number}){base.suffix}"
                 number += 1
-            fd, temp_name = tempfile.mkstemp(prefix=".lancollab-", suffix=".part", dir=self.downloads_dir)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=".lancollab-", suffix=".part", dir=self.downloads_dir
+            )
             entry.handle = os.fdopen(fd, "wb")
             entry.temp_path = Path(temp_name)
             entry.final_path = candidate
@@ -268,7 +276,9 @@ class TransferManager:
             if self.outgoing[transfer_id].started:
                 return
             self.outgoing[transfer_id].started = True
-        Thread(target=self._stream, args=(transfer_id,), daemon=True, name="lancollab-file-sender").start()
+        Thread(
+            target=self._stream, args=(transfer_id,), daemon=True, name="lancollab-file-sender"
+        ).start()
 
     def _stream(self, transfer_id: str) -> None:
         """Only this worker waits on receiver ACK credit; input and receive loops never do."""
@@ -280,7 +290,10 @@ class TransferManager:
             with entry.path.open("rb") as source:
                 while True:
                     with self._cv:
-                        while transfer_id in self.outgoing and len(entry.outstanding) >= FILE_WINDOW_CHUNKS:
+                        while (
+                            transfer_id in self.outgoing
+                            and len(entry.outstanding) >= FILE_WINDOW_CHUNKS
+                        ):
                             self._cv.wait(timeout=0.25)
                         if transfer_id not in self.outgoing or self._closed:
                             return
@@ -299,8 +312,12 @@ class TransferManager:
                         entry.outstanding.append(entry.sent_bytes)
                     self._send(
                         "FILE_CHUNK",
-                        {"transfer_id": transfer_id, "seq": seq, "offset": offset,
-                         "data_b64": base64.b64encode(data).decode("ascii")},
+                        {
+                            "transfer_id": transfer_id,
+                            "seq": seq,
+                            "offset": offset,
+                            "data_b64": base64.b64encode(data).decode("ascii"),
+                        },
                     )
                 if entry.path.stat().st_size != entry.size:
                     raise TransferError("File changed while streaming")
@@ -313,7 +330,9 @@ class TransferManager:
         except Exception as error:
             if transfer_id not in self.terminal:
                 try:
-                    self._send("FILE_CANCEL", {"transfer_id": transfer_id, "reason": "SENDER_IO_ERROR"})
+                    self._send(
+                        "FILE_CANCEL", {"transfer_id": transfer_id, "reason": "SENDER_IO_ERROR"}
+                    )
                 except Exception:
                     pass
                 self._announce(f"File sender error: {error}")
@@ -396,7 +415,11 @@ class TransferManager:
                 raise TransferError("Unknown incoming transfer")
             if entry.handle is None:
                 raise TransferError("FILE_END before consent")
-            ok = count == entry.chunks and entry.written == entry.size and entry.hasher.hexdigest() == entry.sha256
+            ok = (
+                count == entry.chunks
+                and entry.written == entry.size
+                and entry.hasher.hexdigest() == entry.sha256
+            )
             # Flush final data and close temp file before committing to final path.
             entry.handle.flush()
             entry.handle.close()
@@ -426,7 +449,11 @@ class TransferManager:
     def on_terminal(self, kind: str, payload: dict[str, Any]) -> None:
         transfer_id = checked_id(payload.get("transfer_id"))
         if kind == "FILE_RESULT":
-            if type(payload.get("ok")) is not bool or not set(payload) <= {"transfer_id", "ok", "reason"}:
+            if type(payload.get("ok")) is not bool or not set(payload) <= {
+                "transfer_id",
+                "ok",
+                "reason",
+            }:
                 raise TransferError("Invalid FILE_RESULT")
             with self._cv:
                 entry = self.outgoing.get(transfer_id)
@@ -436,7 +463,9 @@ class TransferManager:
                     raise TransferError("Unexpected FILE_RESULT")
                 if payload["ok"] and (not entry.end_sent or entry.ack_bytes != entry.size):
                     raise TransferError("Premature success FILE_RESULT")
-            message = "File transfer verified successfully" if payload["ok"] else "File transfer failed"
+            message = (
+                "File transfer verified successfully" if payload["ok"] else "File transfer failed"
+            )
         elif kind == "FILE_REJECT":
             if not set(payload) <= {"transfer_id", "reason"}:
                 raise TransferError("Invalid FILE_REJECT")

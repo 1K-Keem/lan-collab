@@ -50,7 +50,7 @@ def run(args: argparse.Namespace) -> Metrics:
     accounts = json.loads(Path(args.accounts).read_text(encoding="utf-8"))
     if not isinstance(accounts, list) or len(accounts) < args.clients:
         raise ValueError("Provide a separate account for every concurrent client")
-    if len({item["username"] for item in accounts[:args.clients]}) != args.clients:
+    if len({item["username"] for item in accounts[: args.clients]}) != args.clients:
         raise ValueError("Account usernames must be unique to avoid takeover")
     data_dir = TemporaryDirectory(prefix="lancollab-smoke-")
     active: list[tuple[CollabClient, Event, Thread]] = []
@@ -71,15 +71,23 @@ def run(args: argparse.Namespace) -> Metrics:
         try:
             req = client.send_hello(f"probe-{index}")
             del req
-            _wait(lambda: client.state in {ClientState.WAIT_AUTH, ClientState.CLOSED},
-                  seconds=max(0.01, deadline - monotonic()), context="HELLO_ACK timeout")
+            _wait(
+                lambda: client.state in {ClientState.WAIT_AUTH, ClientState.CLOSED},
+                seconds=max(0.01, deadline - monotonic()),
+                context="HELLO_ACK timeout",
+            )
             if client.state is ClientState.CLOSED:
                 raise ConnectionError("HELLO rejected")
             credentials = accounts[index]
             client.login(credentials["username"], credentials["password"])
-            _wait(lambda: client.state in {ClientState.AUTHENTICATED, ClientState.CLOSED,
-                                           ClientState.WAIT_AUTH},
-                  seconds=max(0.01, deadline - monotonic()), context="AUTH_RESULT timeout")
+            _wait(
+                lambda: (
+                    client.state
+                    in {ClientState.AUTHENTICATED, ClientState.CLOSED, ClientState.WAIT_AUTH}
+                ),
+                seconds=max(0.01, deadline - monotonic()),
+                context="AUTH_RESULT timeout",
+            )
             if client.state is not ClientState.AUTHENTICATED:
                 raise ConnectionError("AUTH failed or disconnected")
         except Exception:
@@ -102,8 +110,11 @@ def run(args: argparse.Namespace) -> Metrics:
                 for i in range(args.messages):
                     started = monotonic()
                     rid = client.send_global(f"TV3 smoke {i}")
-                    _wait(lambda: rid not in client._pending or client.state is ClientState.CLOSED,
-                          seconds=args.timeout, context="CHAT_ACK timed out")
+                    _wait(
+                        lambda: rid not in client._pending or client.state is ClientState.CLOSED,
+                        seconds=args.timeout,
+                        context="CHAT_ACK timed out",
+                    )
                     if client.state is ClientState.CLOSED:
                         raise ConnectionError("Client disconnected during chat")
                     durations.append((monotonic() - started) * 1000)
@@ -118,20 +129,29 @@ def run(args: argparse.Namespace) -> Metrics:
                 raise ValueError("CP-C workload requires >= 10 MiB file")
             sender, receiver = active[0][0], active[1][0]
             file_id = sender.offer_file(file_path, receiver.username)
-            _wait(lambda: file_id in receiver.files.incoming,
-                  seconds=args.timeout, context="FILE_OFFER not relayed")
+            _wait(
+                lambda: file_id in receiver.files.incoming,
+                seconds=args.timeout,
+                context="FILE_OFFER not relayed",
+            )
             receiver.files.accept(file_id)
-            _wait(lambda: file_id in sender.files.terminal and file_id in receiver.files.terminal,
-                  seconds=max(args.timeout, 60), context="FILE_RESULT/ACK incomplete")
+            _wait(
+                lambda: file_id in sender.files.terminal and file_id in receiver.files.terminal,
+                seconds=max(args.timeout, 60),
+                context="FILE_RESULT/ACK incomplete",
+            )
             # The actual directory uses connection index; locate the verified file safely.
             candidates = list(Path(data_dir.name).glob(f"client*/{file_path.name}"))
             if not candidates or all(x.read_bytes() != file_path.read_bytes() for x in candidates):
                 raise AssertionError("Receiver file missing or hash differs")
             verified = file_path.stat().st_size
         return Metrics(
-            clients=len(active), chat_requests=args.clients * args.messages,
-            chat_ack_samples=len(samples), ack_mean_ms=mean(samples),
-            ack_p95_ms=_percentile_95(samples), ack_max_ms=max(samples),
+            clients=len(active),
+            chat_requests=args.clients * args.messages,
+            chat_ack_samples=len(samples),
+            ack_mean_ms=mean(samples),
+            ack_p95_ms=_percentile_95(samples),
+            ack_max_ms=max(samples),
             file_bytes_verified=verified,
         )
     finally:

@@ -50,11 +50,24 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_ephemeral_source_and_discover(self):
         self.assertEqual(self.sock.bound, ("", 0))
-        self.sock.queue({"version": 1, "type": "DISCOVER_REPLY", "instance_id": "wrong",
-                         "server_name": "other", "tcp_port": 1})
-        self.sock.queue({"version": 1, "type": "DISCOVER_REPLY",
-                         "instance_id": self.client.instance_id,
-                         "server_name": "test-server", "tcp_port": 40000})
+        self.sock.queue(
+            {
+                "version": 1,
+                "type": "DISCOVER_REPLY",
+                "instance_id": "wrong",
+                "server_name": "other",
+                "tcp_port": 1,
+            }
+        )
+        self.sock.queue(
+            {
+                "version": 1,
+                "type": "DISCOVER_REPLY",
+                "instance_id": self.client.instance_id,
+                "server_name": "test-server",
+                "tcp_port": 40000,
+            }
+        )
         found = self.client.discover()
         self.assertEqual(found, ServerEndpoint("192.0.2.21", 40000, "test-server", True))
         self.assertEqual(self.sock.sent[0][0]["type"], "DISCOVER")
@@ -74,8 +87,14 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIsNone(_decode(b"[123]"))
 
     def test_heartbeat_ack_and_lost_packet(self):
-        self.sock.queue({"version": 1, "type": "HEARTBEAT_ACK",
-                         "instance_id": self.client.instance_id, "seq": 1})
+        self.sock.queue(
+            {
+                "version": 1,
+                "type": "HEARTBEAT_ACK",
+                "instance_id": self.client.instance_id,
+                "seq": 1,
+            }
+        )
         quality = self.client.heartbeat("192.0.2.21")
         self.assertEqual((quality.sent, quality.received), (1, 1))
         self.assertEqual(quality.loss_percent, 0)
@@ -86,8 +105,15 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(self.sock.sent[1][0]["seq"], 2)
 
     def test_wrong_udp_host_does_not_count(self):
-        self.sock.queue({"version": 1, "type": "HEARTBEAT_ACK",
-                         "instance_id": self.client.instance_id, "seq": 1}, ip="192.0.2.254")
+        self.sock.queue(
+            {
+                "version": 1,
+                "type": "HEARTBEAT_ACK",
+                "instance_id": self.client.instance_id,
+                "seq": 1,
+            },
+            ip="192.0.2.254",
+        )
         quality = self.client.heartbeat("192.0.2.21")
         self.assertEqual(quality.received, 0)
 

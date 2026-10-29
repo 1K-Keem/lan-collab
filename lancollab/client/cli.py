@@ -116,7 +116,9 @@ class ConsoleSession:
         self.client.close()
         raise TimeoutError(f"Timed out awaiting {state.value}")
 
-    def authenticate(self, username: str, password: str, *, client_name: str = "lan-collab-cli") -> None:
+    def authenticate(
+        self, username: str, password: str, *, client_name: str = "lan-collab-cli"
+    ) -> None:
         self.start_reader()
         deadline = monotonic() + 10
         self.client.send_hello(client_name)
@@ -139,13 +141,17 @@ class ConsoleSession:
                 self.output(f"TCP/TLS: {self.client.state.value}")
                 if self.udp is not None:
                     q = self.udp.quality
-                    self.output(f"UDP: {q.received}/{q.sent}, loss {q.loss_percent:.1f}%, RTT {q.last_rtt_ms}")
+                    self.output(
+                        f"UDP: {q.received}/{q.sent}, loss {q.loss_percent:.1f}%, RTT {q.last_rtt_ms}"
+                    )
             elif command.name == "/net":
                 if self.udp is None or not self.server_host:
                     self.output("UDP unavailable; use --host or --discover")
                 else:
                     q = self.udp.heartbeat(self.server_host)
-                    self.output(f"UDP heartbeat: {q.received}/{q.sent}, loss {q.loss_percent:.1f}%, RTT {q.last_rtt_ms}")
+                    self.output(
+                        f"UDP heartbeat: {q.received}/{q.sent}, loss {q.loss_percent:.1f}%, RTT {q.last_rtt_ms}"
+                    )
             elif command.name == "/all":
                 self.client.send_global(command.args[0])
             elif command.name == "/msg":

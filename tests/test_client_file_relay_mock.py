@@ -23,11 +23,16 @@ class MockFileRelayTests(unittest.TestCase):
                 def alice_send(kind, payload):
                     history.append(("alice", kind, payload))
                     if kind == "FILE_OFFER":
-                        bob.handle_event("FILE_OFFER", {
-                            "transfer_id": payload["transfer_id"], "from": "alice",
-                            "name": payload["name"], "size": payload["size"],
-                            "sha256": payload["sha256"],
-                        })
+                        bob.handle_event(
+                            "FILE_OFFER",
+                            {
+                                "transfer_id": payload["transfer_id"],
+                                "from": "alice",
+                                "name": payload["name"],
+                                "size": payload["size"],
+                                "sha256": payload["sha256"],
+                            },
+                        )
                     else:
                         bob.handle_event(kind, payload)
 
@@ -45,8 +50,10 @@ class MockFileRelayTests(unittest.TestCase):
                         sleep(0.01)
                     self.assertIn(transfer_id, alice.terminal)
                     self.assertEqual((base / "bob" / "binary.dat").read_bytes(), data)
-                    self.assertEqual(hashlib.sha256(data).hexdigest(), hashlib.sha256(
-                        (base / "bob" / "binary.dat").read_bytes()).hexdigest())
+                    self.assertEqual(
+                        hashlib.sha256(data).hexdigest(),
+                        hashlib.sha256((base / "bob" / "binary.dat").read_bytes()).hexdigest(),
+                    )
                     self.assertTrue(any("verified successfully" in n for n in send_state))
                     types = [kind for _, kind, _ in history]
                     self.assertLess(types.index("FILE_END"), types.index("FILE_RESULT"))

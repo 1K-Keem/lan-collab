@@ -31,12 +31,28 @@ class TransferTests(unittest.TestCase):
         self.temp.cleanup()
 
     def offer_payload(self, content=b"hi", name="hello.txt"):
-        return {"transfer_id": str(uuid4()), "from": "alice", "name": name,
-                "size": len(content), "sha256": hashlib.sha256(content).hexdigest()}
+        return {
+            "transfer_id": str(uuid4()),
+            "from": "alice",
+            "name": name,
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
 
     def test_unsafe_names_rejected(self):
-        for name in ("../a.txt", "CON", "con.txt", "foo/evil", "evil\\file", "bad.",
-                     "bad ", "bad:name", "x\x1b.txt", ".", ".."):
+        for name in (
+            "../a.txt",
+            "CON",
+            "con.txt",
+            "foo/evil",
+            "evil\\file",
+            "bad.",
+            "bad ",
+            "bad:name",
+            "x\x1b.txt",
+            ".",
+            "..",
+        ):
             with self.subTest(name=name), self.assertRaises(TransferError):
                 checked_filename(name)
 
@@ -66,10 +82,17 @@ class TransferTests(unittest.TestCase):
         target.write_bytes(b"old")
         self.transfer.accept(payload["transfer_id"])
         self.assertEqual(self.sent[-1][0], "FILE_ACCEPT")
-        self.transfer.on_chunk({"transfer_id": payload["transfer_id"], "seq": 0,
-                                "offset": 0, "data_b64": base64.b64encode(b"abc").decode()})
-        self.assertEqual(self.sent[-1], ("FILE_ACK", {"transfer_id": payload["transfer_id"],
-                                                       "next_offset": 3}))
+        self.transfer.on_chunk(
+            {
+                "transfer_id": payload["transfer_id"],
+                "seq": 0,
+                "offset": 0,
+                "data_b64": base64.b64encode(b"abc").decode(),
+            }
+        )
+        self.assertEqual(
+            self.sent[-1], ("FILE_ACK", {"transfer_id": payload["transfer_id"], "next_offset": 3})
+        )
         self.transfer.on_end({"transfer_id": payload["transfer_id"], "total_chunks": 1})
         self.assertEqual(self.sent[-1][1]["ok"], True)
         self.assertEqual(target.read_bytes(), b"old")
@@ -90,8 +113,14 @@ class TransferTests(unittest.TestCase):
         payload = self.offer_payload(b"correct")
         self.transfer.on_offer(payload)
         self.transfer.accept(payload["transfer_id"])
-        self.transfer.on_chunk({"transfer_id": payload["transfer_id"], "seq": 0,
-                                "offset": 0, "data_b64": base64.b64encode(b"incorrect"[:7]).decode()})
+        self.transfer.on_chunk(
+            {
+                "transfer_id": payload["transfer_id"],
+                "seq": 0,
+                "offset": 0,
+                "data_b64": base64.b64encode(b"incorrect"[:7]).decode(),
+            }
+        )
         self.transfer.on_end({"transfer_id": payload["transfer_id"], "total_chunks": 1})
         self.assertFalse(self.sent[-1][1]["ok"])
         self.assertEqual(list((self.root / "downloads").iterdir()), [])
@@ -100,12 +129,14 @@ class TransferTests(unittest.TestCase):
         payload = self.offer_payload()
         self.transfer.on_offer(payload)
         with self.assertRaises(TransferError):
-            self.transfer.on_chunk({"transfer_id": payload["transfer_id"], "seq": 0,
-                                    "offset": 0, "data_b64": "YQ=="})
+            self.transfer.on_chunk(
+                {"transfer_id": payload["transfer_id"], "seq": 0, "offset": 0, "data_b64": "YQ=="}
+            )
         self.transfer.accept(payload["transfer_id"])
         with self.assertRaises(TransferError):
-            self.transfer.on_chunk({"transfer_id": payload["transfer_id"], "seq": 1,
-                                    "offset": 0, "data_b64": "YQ=="})
+            self.transfer.on_chunk(
+                {"transfer_id": payload["transfer_id"], "seq": 1, "offset": 0, "data_b64": "YQ=="}
+            )
 
     def test_cancel_removes_temp(self):
         payload = self.offer_payload()

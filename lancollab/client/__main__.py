@@ -31,10 +31,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="LAN Collab portable client (TV3)")
     parser.add_argument("--host", help="Explicit server IP/hostname (skips discovery)")
     parser.add_argument("--port", type=int, default=40000)
-    parser.add_argument("--server-name", default="lan-collab.local", help="TLS verified DNS identity")
+    parser.add_argument(
+        "--server-name", default="lan-collab.local", help="TLS verified DNS identity"
+    )
     parser.add_argument("--ca-file", required=True, help="CA/certificate file for verified TLS")
     parser.add_argument("--udp-port", type=int, default=40001)
-    parser.add_argument("--discover", action="store_true", help="Broadcast for server if --host omitted")
+    parser.add_argument(
+        "--discover", action="store_true", help="Broadcast for server if --host omitted"
+    )
     parser.add_argument("--downloads-dir", type=Path, default=Path("downloads"))
     args = parser.parse_args(argv)
     if not args.host and not args.discover:
@@ -51,12 +55,16 @@ def main(argv: list[str] | None = None) -> int:
             endpoint = select_server(found, host=args.host, port=args.port)
             # Manual IP does not bypass certificate verification of --server-name.
             transport = connect_verified_transport(
-                host=endpoint.host, port=endpoint.tcp_port,
-                server_name=args.server_name, ca_file=args.ca_file,
+                host=endpoint.host,
+                port=endpoint.tcp_port,
+                server_name=args.server_name,
+                ca_file=args.ca_file,
             )
             shell = ConsoleSession(
-                transport, downloads_dir=args.downloads_dir,
-                udp=discovery, server_host=endpoint.host,
+                transport,
+                downloads_dir=args.downloads_dir,
+                udp=discovery,
+                server_host=endpoint.host,
             )
             try:
                 shell.authenticate(username, password)
