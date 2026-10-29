@@ -2,9 +2,9 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** v1.2 **design contract and dummy scaffold only**. Chat, authentication, TLS, file transfer and UDP are **not yet implemented**. Green CI currently means mock/schema checks passed, **not** that the assignment milestones passed.
+> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV1 server, TV2 verified TLS/codec/core and real LAN integration remain pending. Green CI does **not** imply acceptance of real networking milestones.
 
-## Planned features
+## Target system features and integration dependencies
 
 - TLS-protected TCP login, global/private messages, server presence list, 20 concurrent clients.
 - Admin-provisioned user accounts, secure salted password hashes, HELLO/AUTH deadlines.
@@ -28,9 +28,9 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 ```text
 lancollab/common/   # Typed contracts, message_schema.py, test dummy, TV2 transport TODO
 lancollab/server/   # TV1 server TODO and main CLI
-lancollab/client/   # TV3 client TODO and main CLI
-tests/fixtures/     # Synthetic v1.2 example messages, NO production tests
-scripts/            # Mock-only demonstration
+lancollab/client/   # TV3 client logic, CLI, discovery and file I/O; TV2 TLS adapter still pending
+tests/              # Synthetic and unit/mock tests, NOT production/LAN proof
+scripts/            # Mock demo plus opt-in real smoke harness (requires TV1/TV2)
 docs/               # Architecture, protocol spec, diagrams, checkpoint gates
 ```
 
@@ -49,7 +49,17 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-The actual `python -m lancollab.server`, `python -m lancollab.client` and planned account creation `python -m lancollab.server --add-user alice` are TODOs, **not working commands**. Update README with real networking instructions once implemented.
+The server and admin account creation commands are still TV1 TODOs. The TV3 client CLI now parses commands and UDP/discovery options, but `python -m lancollab.client` deliberately **fails closed** until TV2 implements `SocketTransport.connect_verified` with verified TLS. Never use real credentials with FakeTransport or plaintext TCP.
+
+## TV3 implementation and report handoff
+
+- [TV3 implementation and current integration limits](docs/tv3-implementation.md)
+- [Client state diagram](docs/diagrams/client-issue7-state.md)
+- [Request correlation diagram](docs/diagrams/client-issue7-requests.md)
+- [Concurrent client worker diagram](docs/diagrams/client-issue7-concurrency.md)
+- [UDP probe diagram](docs/diagrams/client-udp-probes.md)
+- [Client file transfer diagram](docs/diagrams/client-file-transfer.md)
+- [Test coverage and gates](docs/diagrams/client-test-matrix.md)
 
 ## Architecture and diagrams (render on GitHub)
 
