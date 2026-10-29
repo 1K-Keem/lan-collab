@@ -1,8 +1,12 @@
 """Example mock tests for Issue #7; not real TCP/TLS acceptance tests."""
+
 import unittest
 
 from lancollab.client.application import (
-    ClientState, CollabClient, ProtocolViolation, safe_display,
+    ClientState,
+    CollabClient,
+    ProtocolViolation,
+    safe_display,
 )
 from lancollab.common.contracts import Envelope
 from lancollab.common.fake_transport import FakeTransport
@@ -17,15 +21,22 @@ class ClientLogicTests(unittest.TestCase):
     def authenticate(self):
         hello_id = self.client.send_hello("mock-client")
         self.assertEqual(self.server_end.receive().type, "HELLO")
-        self.client.handle_event(Envelope(
-            "HELLO_ACK", hello_id,
-            {"server_name": "mock-server", "protocol_version": 1},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "HELLO_ACK",
+                hello_id,
+                {"server_name": "mock-server", "protocol_version": 1},
+            )
+        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
-        self.client.handle_event(Envelope(
-            "AUTH_RESULT", auth_id, {"ok": True, "username": "alice"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "AUTH_RESULT",
+                auth_id,
+                {"ok": True, "username": "alice"},
+            )
+        )
         self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
 
     def test_hello_and_auth_state(self):
@@ -40,40 +51,59 @@ class ClientLogicTests(unittest.TestCase):
     def test_wrong_hello_ack_id_closes_client(self):
         self.client.send_hello("mock-client")
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "HELLO_ACK", "wrong-id", {"server_name": "x", "protocol_version": 1},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "HELLO_ACK",
+                    "wrong-id",
+                    {"server_name": "x", "protocol_version": 1},
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_hello_error_closes_transport(self):
         req = self.client.send_hello("mock-client")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "ERROR", req, {"code": "INVALID_MESSAGE", "message": "bad hello"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "ERROR",
+                req,
+                {"code": "INVALID_MESSAGE", "message": "bad hello"},
+            )
+        )
         self.assertEqual(self.client.state, ClientState.CLOSED)
         with self.assertRaises(BrokenPipeError):
             self.server_end.send(Envelope("PING", "x", {"nonce": "hi"}))
 
     def test_presence_before_auth_is_rejected(self):
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "PRESENCE_UPDATE", "event-1",
-                {"username": "bob", "status": "online", "ip": "192.0.2.1", "port": 50001},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "PRESENCE_UPDATE",
+                    "event-1",
+                    {"username": "bob", "status": "online", "ip": "192.0.2.1", "port": 50001},
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_auth_failure_can_retry(self):
         req = self.client.send_hello("mock-client")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "HELLO_ACK", req, {"server_name": "mock", "protocol_version": 1},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "HELLO_ACK",
+                req,
+                {"server_name": "mock", "protocol_version": 1},
+            )
+        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "AUTH_RESULT", auth_id, {"ok": False, "error_code": "AUTH_FAILED"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "AUTH_RESULT",
+                auth_id,
+                {"ok": False, "error_code": "AUTH_FAILED"},
+            )
+        )
         self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
 
     def test_chat_payload_and_ack(self):
@@ -91,24 +121,31 @@ class ClientLogicTests(unittest.TestCase):
 
     def test_user_list_and_presence(self):
         self.authenticate()
-        self.client.handle_event(Envelope(
-            "USER_LIST", "server-event-1", {"users": [
-                {"username": "bob", "ip": "192.0.2.5", "port": 50000}
-            ]},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "USER_LIST",
+                "server-event-1",
+                {"users": [{"username": "bob", "ip": "192.0.2.5", "port": 50000}]},
+            )
+        )
         self.assertEqual(self.client.online_users["bob"], ("192.0.2.5", 50000))
-        self.client.handle_event(Envelope(
-            "PRESENCE_UPDATE", "server-event-2",
-            {"username": "bob", "status": "offline"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "PRESENCE_UPDATE",
+                "server-event-2",
+                {"username": "bob", "status": "offline"},
+            )
+        )
         self.assertNotIn("bob", self.client.online_users)
 
     def test_server_ping_is_answered_with_matching_id_and_nonce(self):
         self.authenticate()
         self.client.handle_event(Envelope("PING", "server-ping-1", {"nonce": "random"}))
         pong = self.server_end.receive()
-        self.assertEqual((pong.type, pong.request_id, pong.payload),
-                         ("PONG", "server-ping-1", {"nonce": "random"}))
+        self.assertEqual(
+            (pong.type, pong.request_id, pong.payload),
+            ("PONG", "server-ping-1", {"nonce": "random"}),
+        )
 
     def test_requires_auth_security_explicitly(self):
         insecure_end, _ = FakeTransport.pair()
@@ -120,20 +157,26 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(safe_display("bob\x1b[31m"), "bob\\u001b[31m")
         self.assertEqual(safe_display("hi\nthere"), "hi\\u000athere")
 
-
     def test_auth_success_username_must_match_request(self):
         hello_id = self.client.send_hello("mock-client")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "HELLO_ACK", hello_id,
-            {"server_name": "mock-server", "protocol_version": 1},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "HELLO_ACK",
+                hello_id,
+                {"server_name": "mock-server", "protocol_version": 1},
+            )
+        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         with self.assertRaisesRegex(ProtocolViolation, "username mismatch"):
-            self.client.handle_event(Envelope(
-                "AUTH_RESULT", auth_id, {"ok": True, "username": "mallory"},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "AUTH_RESULT",
+                    auth_id,
+                    {"ok": True, "username": "mallory"},
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
         self.assertIsNone(self.client.username)
         self.assertIsNone(self.client._requested_username)
@@ -150,10 +193,13 @@ class ClientLogicTests(unittest.TestCase):
                 client = CollabClient(client_end, auth_allowed=True)
                 hello_id = client.send_hello("mock-client")
                 server_end.receive()
-                client.handle_event(Envelope(
-                    "HELLO_ACK", hello_id,
-                    {"server_name": "mock-server", "protocol_version": 1},
-                ))
+                client.handle_event(
+                    Envelope(
+                        "HELLO_ACK",
+                        hello_id,
+                        {"server_name": "mock-server", "protocol_version": 1},
+                    )
+                )
                 auth_id = client.login("alice", "synthetic-password-only")
                 server_end.receive()
                 with self.assertRaises(ProtocolViolation):
@@ -163,35 +209,53 @@ class ClientLogicTests(unittest.TestCase):
     def test_auth_fail_drops_requested_identity(self):
         hello_id = self.client.send_hello("mock-client")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "HELLO_ACK", hello_id,
-            {"server_name": "mock-server", "protocol_version": 1},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "HELLO_ACK",
+                hello_id,
+                {"server_name": "mock-server", "protocol_version": 1},
+            )
+        )
         req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "AUTH_RESULT", req, {"ok": False, "error_code": "AUTH_FAILED"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "AUTH_RESULT",
+                req,
+                {"ok": False, "error_code": "AUTH_FAILED"},
+            )
+        )
         self.assertIsNone(self.client._requested_username)
         req2 = self.client.login("bob", "synthetic-password-only")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "AUTH_RESULT", req2, {"ok": True, "username": "bob"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "AUTH_RESULT",
+                req2,
+                {"ok": True, "username": "bob"},
+            )
+        )
         self.assertEqual(self.client.username, "bob")
 
     def test_auth_error_drops_requested_identity(self):
         hello_id = self.client.send_hello("mock-client")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "HELLO_ACK", hello_id,
-            {"server_name": "mock-server", "protocol_version": 1},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "HELLO_ACK",
+                hello_id,
+                {"server_name": "mock-server", "protocol_version": 1},
+            )
+        )
         req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
-        self.client.handle_event(Envelope(
-            "ERROR", req, {"code": "INVALID_STATE", "message": "retry"},
-        ))
+        self.client.handle_event(
+            Envelope(
+                "ERROR",
+                req,
+                {"code": "INVALID_STATE", "message": "retry"},
+            )
+        )
         self.assertIsNone(self.client._requested_username)
         self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
 
@@ -199,46 +263,62 @@ class ClientLogicTests(unittest.TestCase):
         req = self.client.send_hello("mock-client")
         self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "HELLO_ACK", req,
-                {"server_name": "mock", "protocol_version": True},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "HELLO_ACK",
+                    req,
+                    {"server_name": "mock", "protocol_version": True},
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_chat_ack_unmatched_is_rejected(self):
         self.authenticate()
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "CHAT_ACK", "not-a-request", {"status": "queued"},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "CHAT_ACK",
+                    "not-a-request",
+                    {"status": "queued"},
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_presence_invalid_online_port_is_rejected(self):
         self.authenticate()
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "PRESENCE_UPDATE", "server-event-x",
-                {"username": "bob", "status": "online", "ip": "192.0.2.1", "port": True},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "PRESENCE_UPDATE",
+                    "server-event-x",
+                    {"username": "bob", "status": "online", "ip": "192.0.2.1", "port": True},
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_presence_offline_cannot_include_ip(self):
         self.authenticate()
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "PRESENCE_UPDATE", "server-event-x",
-                {"username": "bob", "status": "offline", "ip": "192.0.2.1"},
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "PRESENCE_UPDATE",
+                    "server-event-x",
+                    {"username": "bob", "status": "offline", "ip": "192.0.2.1"},
+                )
+            )
 
     def test_event_version_must_be_int_one(self):
         self.client.send_hello("mock-client")
         self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(Envelope(
-                "HELLO_ACK", "req-1",
-                {"server_name": "mock", "protocol_version": 1},
-                version=True,
-            ))
+            self.client.handle_event(
+                Envelope(
+                    "HELLO_ACK",
+                    "req-1",
+                    {"server_name": "mock", "protocol_version": 1},
+                    version=True,
+                )
+            )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_close_idempotent_and_clears_pending(self):
@@ -277,7 +357,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertLessEqual(len(second), 64)
         self.assertEqual(len(self.client._pending), 2)
-
 
     def test_logout_emits_message_and_closes(self):
         self.authenticate()

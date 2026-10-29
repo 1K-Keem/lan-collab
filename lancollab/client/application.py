@@ -21,7 +21,7 @@ _MAX_REQUESTS_PER_SESSION = 65536
 
 
 class ClientState(str, Enum):
-    READY = "READY"                   # usable transport is supplied
+    READY = "READY"  # usable transport is supplied
     WAIT_HELLO_ACK = "WAIT_HELLO_ACK"
     WAIT_AUTH = "WAIT_AUTH"
     WAIT_AUTH_RESULT = "WAIT_AUTH_RESULT"
@@ -51,7 +51,7 @@ def safe_display(text: str) -> str:
     for char in text:
         if category(char) in {"Cc", "Cf", "Cs"}:
             n = ord(char)
-            rendered.append(f"\\u{n:04x}" if n <= 0xffff else f"\\U{n:08x}")
+            rendered.append(f"\\u{n:04x}" if n <= 0xFFFF else f"\\U{n:08x}")
         else:
             rendered.append(char)
     return "".join(rendered)
