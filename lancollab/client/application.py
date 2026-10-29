@@ -8,12 +8,14 @@ with real credentials until your connection bootstrap has verified TLS.
 from dataclasses import dataclass
 from enum import Enum
 from threading import Event, RLock
+from pathlib import Path
 from typing import Any
 from unicodedata import category
 from uuid import uuid4
 import re
 
 from lancollab.common.contracts import Envelope, MessageTransport
+from lancollab.client.transfers import TransferManager, TransferError
 
 _USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
 _MAX_CHAT_BYTES = 4096
@@ -21,7 +23,7 @@ _MAX_REQUESTS_PER_SESSION = 65536
 
 
 class ClientState(str, Enum):
-    READY = "READY"  # usable transport is supplied
+    READY = "READY"                   # usable transport is supplied
     WAIT_HELLO_ACK = "WAIT_HELLO_ACK"
     WAIT_AUTH = "WAIT_AUTH"
     WAIT_AUTH_RESULT = "WAIT_AUTH_RESULT"
@@ -51,7 +53,7 @@ def safe_display(text: str) -> str:
     for char in text:
         if category(char) in {"Cc", "Cf", "Cs"}:
             n = ord(char)
-            rendered.append(f"\\u{n:04x}" if n <= 0xFFFF else f"\\U{n:08x}")
+            rendered.append(f"\\u{n:04x}" if n <= 0xffff else f"\\U{n:08x}")
         else:
             rendered.append(char)
     return "".join(rendered)
@@ -63,6 +65,7 @@ class CollabClient:
         transport: MessageTransport,
         *,
         auth_allowed: bool = False,
+        downloads_dir: str | Path = "downloads",
     ) -> None:
         self.transport = transport
         # Real application must set this True ONLY after verified TLS.
@@ -73,11 +76,32 @@ class CollabClient:
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
         self._pending: dict[str, str] = {}  # request_id -> message type, never passwords
+        self._file_requests: dict[str, str] = {}  # request_id -> transfer_id for ERROR
         self._issued_count = 0
         self._request_prefix = uuid4().hex  # random per-client/session prefix
         self._notices: list[Notice] = []
         self._lock = RLock()
         self._send_lock = RLock()  # TV2's writer/transport must serialize frame bytes
+        self.files = TransferManager(self._send_file, downloads_dir, notify=self._file_notice)
+
+    def _file_notice(self, message: str) -> None:
+        with self._lock:
+            self._notices.append(Notice("file", safe_display(message)))
+
+    def _send_file(self, kind: str, payload: dict[str, Any]) -> None:
+        """File control correlates by transfer_id; no pending direct reply."""
+        with self._lock:
+            if self.state is not ClientState.AUTHENTICATED:
+                raise RuntimeError("Authenticate before file transfer")
+            request = self._new_request(kind, payload)
+            self._file_requests[request.request_id] = payload["transfer_id"]
+        self._send(request)
+
+    def offer_file(self, path: str | Path, recipient: str) -> str:
+        with self._lock:
+            if self.state is not ClientState.AUTHENTICATED:
+                raise RuntimeError("Authenticate before file transfer")
+        return self.files.offer(path, recipient)
 
     def _new_request(self, kind: str, payload: dict[str, Any]) -> Envelope:
         if self._issued_count >= _MAX_REQUESTS_PER_SESSION:
@@ -167,6 +191,8 @@ class CollabClient:
         Tests with FakeTransport exercise state transitions, not codec validation.
         """
         reply: Envelope | None = None
+        file_event: tuple[str, dict[str, Any]] | None = None
+        rejected_file_transfer: str | None = None
         should_close = False
         try:
             with self._lock:
@@ -310,6 +336,12 @@ class CollabClient:
                         self.state = ClientState.WAIT_AUTH
                     elif expected == "HELLO":
                         should_close = True
+                    elif expected.startswith("FILE_"):
+                        rejected_file_transfer = self._file_requests.pop(event.request_id, None)
+
+                elif isinstance(kind, str) and kind.startswith("FILE_"):
+                    self._require_authenticated(kind)
+                    file_event = (kind, payload)
 
                 elif kind == "PING":
                     self._require_authenticated(kind)
@@ -326,6 +358,21 @@ class CollabClient:
             raise ProtocolViolation("Invalid server event payload") from error
         if should_close:
             self.close()
+        if rejected_file_transfer is not None:
+            self.files.abort(rejected_file_transfer, "Server rejected file request")
+        if file_event is not None:
+            kind, payload = file_event
+            try:
+                self.files.handle_event(kind, payload)
+            except TransferError as error:
+                self._file_notice(f"Rejected {kind}: {error}")
+                # Local transfer errors must not take down unrelated chats.
+                transfer_id = payload.get("transfer_id")
+                if isinstance(transfer_id, str):
+                    try:
+                        self.files.cancel(transfer_id, "INVALID_TRANSFER_EVENT")
+                    except (TransferError, RuntimeError, ConnectionError):
+                        pass
         if reply is not None:
             self._send(reply)
 
@@ -354,6 +401,7 @@ class CollabClient:
                 try:
                     event = self.transport.receive(timeout=poll_timeout)
                 except TimeoutError:
+                    stop.wait(min(poll_timeout, 0.05))
                     continue
                 self.handle_event(event)
         except (EOFError, ConnectionError, OSError) as error:
@@ -383,4 +431,6 @@ class CollabClient:
             self._requested_username = None
             self.online_users.clear()
             self._pending.clear()
+            self._file_requests.clear()
+        self.files.close()
         self.transport.close()

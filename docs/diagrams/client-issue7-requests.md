@@ -1,44 +1,36 @@
-# Client Issue #7 — message correlation and test boundary
-
-This sequence describes the **implemented `CollabClient` message logic** tested with `FakeTransport.pair()`. The server-side fixture below is simulated; real TCP framing/TLS/server routing are **not** evidenced by these tests.
+# TV3 HELLO, AUTH and chat correlation — implemented state / planned socket wiring
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as CLI caller (not yet wired)
-    participant C as CollabClient (TV3)
-    participant T as MessageTransport (Fake in tests)
-    participant F as Simulated server endpoint
-    U->>C: send_hello(client_name)
-    C->>C: Generate request_id H; pending[H]=HELLO
-    C->>T: send(HELLO,H)
-    T->>F: Envelope HELLO
-    F-->>T: Envelope HELLO_ACK(H)
-    T-->>C: handle_event(HELLO_ACK,H)
-    C->>C: pop H; state=WAIT_AUTH
-    U->>C: login(username,password)
-    Note over U,T: Real credentials require verified TLS; mock tests use synthetic values
-    C->>C: Generate request_id A; remember requested username
-    C->>T: send(AUTH_REQUEST,A)
-    F-->>T: AUTH_RESULT(A,ok=true,username)
-    T-->>C: handle_event(AUTH_RESULT,A)
-    C->>C: Validate username and A; state=AUTHENTICATED
-    U->>C: send_private(bob,text)
-    C->>T: send(CHAT_PRIVATE,CID,to=bob,text)
-    F-->>T: CHAT_ACK(CID,status=queued)
-    T-->>C: handle_event(CHAT_ACK,CID)
-    Note over C,F: ACK means queued at server, not delivered/read
-    opt Unsolicited PING from server
-      F-->>T: PING(PID,nonce)
-      T-->>C: handle_event(PING,PID)
-      C->>T: PONG(PID,same nonce)
+    participant U as Terminal User
+    participant C as TV3 Client
+    participant T as MessageTransport
+    participant S as Server or Fake
+    Note over T,S: In tests transport and server are simulated
+    U->>C: connect and login
+    C->>T: HELLO with request H
+    T->>S: HELLO
+    S-->>T: HELLO_ACK with H
+    T-->>C: HELLO_ACK
+    C->>T: AUTH_REQUEST with request A
+    T->>S: AUTH_REQUEST
+    S-->>T: AUTH_RESULT with A
+    T-->>C: AUTH_RESULT
+    Note over C: Validate exact requested username
+    U->>C: private message to bob
+    C->>T: CHAT_PRIVATE with request C1
+    T->>S: CHAT_PRIVATE
+    S-->>T: CHAT_ACK with C1
+    T-->>C: CHAT_ACK
+    Note over C: Queued is not delivered or read
+    opt Server checks liveness
+        S-->>T: PING with request P
+        T-->>C: PING
+        C->>T: PONG with request P
     end
 ```
 
-## Negative test cases
-
-- Incorrect HELLO_ACK request ID, malformed required fields, or invalid state => `ProtocolViolation` and cleanup.
-- AUTH_RESULT with a different authenticated username => reject (prevents client-side identity confusion).
-- CHAT_ACK with an unknown request ID => reject rather than treating as successful delivery.
-- USER_LIST or presence before authentication => reject.
-- See [test_client_logic.py](../../tests/test_client_logic.py) for deterministic dummy evidence; do not claim real transport coverage.
+- Request IDs are unique per session; direct responses must match the pending request ID. File events are correlated by transfer UUID; server ERROR replies can still correlate to the original file request ID.
+- Source: `lancollab/client/application.py`; tests: `tests/test_client_logic.py`, `tests/test_client_cli.py`.
+- The diagram shows application messages, **not** evidence of functioning TV1/TV2 real networking.
