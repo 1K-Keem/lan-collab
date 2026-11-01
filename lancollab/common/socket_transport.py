@@ -3,11 +3,10 @@
 Do not use this placeholder in production or as grading evidence.
 """
 
-from .contracts import Envelope
-
-
 import json
 import struct
+import socket
+import ssl
 from .contracts import Envelope
 
 MIN_PAYLOAD = 1
@@ -67,8 +66,7 @@ class JsonFrameCodec:
         )
 
 
-import socket
-import ssl
+
 
 class SocketTransport:
     """Implements MessageTransport over a socket connection using JsonFrameCodec[cite: 1]."""
