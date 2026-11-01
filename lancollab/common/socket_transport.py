@@ -12,6 +12,7 @@ from .contracts import Envelope
 MIN_PAYLOAD = 1
 MAX_PAYLOAD = 262144
 
+
 class JsonFrameCodec:
     def encode(self, message: Envelope) -> bytes:
         payload_dict = {
@@ -21,13 +22,13 @@ class JsonFrameCodec:
             "payload": message.payload,
         }
         json_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-        
+
         if not (MIN_PAYLOAD <= len(json_bytes) <= MAX_PAYLOAD):
             raise ValueError("Payload size out of bounds")
-            
+
         header = struct.pack(">I", len(json_bytes))
         return header + json_bytes
-    
+
     def decode(self, frame: bytes) -> Envelope:
         # 1. Check size limits
         if not (MIN_PAYLOAD <= len(frame) <= MAX_PAYLOAD):
@@ -64,8 +65,6 @@ class JsonFrameCodec:
             request_id=data["request_id"],
             payload=data["payload"],
         )
-
-
 
 
 class SocketTransport:
@@ -117,16 +116,18 @@ class SocketTransport:
         finally:
             self._socket.close()
 
+
 # --- TLS Helpers for Issue #10 ---
 
-HANDSHAKE_TIMEOUT = 5.0  
+HANDSHAKE_TIMEOUT = 5.0
+
 
 def wrap_server_socket(raw_sock: socket.socket, certfile: str, keyfile: str) -> ssl.SSLSocket:
     """Wraps server socket with a 5s deadline[cite: 1, 2]."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2  # Fixed: added 'v'
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-    
+
     raw_sock.settimeout(HANDSHAKE_TIMEOUT)
     try:
         return context.wrap_socket(raw_sock, server_side=True)
@@ -134,14 +135,17 @@ def wrap_server_socket(raw_sock: socket.socket, certfile: str, keyfile: str) -> 
         raw_sock.close()
         raise ConnectionError(f"TLS handshake failed: {err}") from err
 
-def wrap_client_socket(raw_sock: socket.socket, cafile: str, server_hostname: str = "lan-collab.local") -> ssl.SSLSocket:
+
+def wrap_client_socket(
+    raw_sock: socket.socket, cafile: str, server_hostname: str = "lan-collab.local"
+) -> ssl.SSLSocket:
     """Wraps client socket, enforcing strict CA validation and hostname checks[cite: 1, 2]."""
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.minimum_version = ssl.TLSVersion.TLSv1_2  # Fixed: added 'v'
     context.verify_mode = ssl.CERT_REQUIRED
     context.check_hostname = True
     context.load_verify_locations(cafile=cafile)
-    
+
     raw_sock.settimeout(HANDSHAKE_TIMEOUT)
     try:
         return context.wrap_socket(raw_sock, server_side=False, server_hostname=server_hostname)

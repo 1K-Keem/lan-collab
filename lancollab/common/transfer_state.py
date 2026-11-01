@@ -6,6 +6,7 @@ CHUNK_BYTES = 16384
 MAX_IN_FLIGHT_BYTES = WINDOW_CHUNKS * CHUNK_BYTES
 STALL_TIMEOUT_SEC = 15.0
 
+
 class FileTransferState:
     """Socket-independent core for tracking flow control and state transitions."""
 
@@ -14,7 +15,7 @@ class FileTransferState:
         self.sender = sender
         self.receiver = receiver
         self.size = size
-        
+
         self.state = "OFFERED"  # OFFERED -> ACCEPTED -> TRANSFERRING -> VERIFYING -> DONE/FAILED/CANCELLED[cite: 1]
         self.sent_bytes = 0
         self.acked_bytes = 0
@@ -45,12 +46,12 @@ class FileTransferState:
         """Processes a FILE_ACK and returns the newly acknowledged bytes[cite: 1]."""
         if next_offset > self.size or next_offset < self.acked_bytes:
             raise ValueError(f"Invalid ACK offset: {next_offset}")
-            
+
         new_bytes = next_offset - self.acked_bytes
         if new_bytes > 0:
             self.acked_bytes = next_offset
             self.last_progress_time = time.monotonic()  # Reset the 15s stall timer[cite: 1]
-            
+
         # If all bytes are ACKed, wait for FILE_RESULT to move to DONE[cite: 1]
         return new_bytes
 
