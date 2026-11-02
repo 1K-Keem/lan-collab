@@ -1,154 +1,250 @@
-"""TV2 TODO: raw TCP/TLS transport and length-prefixed JSON codec.
+"""Raw TCP/TLS transport: exact-read framing, absolute deadlines, one serialized writer.
 
-Do not use this placeholder in production or as grading evidence.
+``SocketTransport`` implements :class:`lancollab.common.contracts.MessageTransport` on top of
+a connected (normally TLS) stream socket:
+
+* the socket is switched to non-blocking mode; every deadline is absolute and measured with
+  ``time.monotonic()`` (a trickle of bytes cannot extend it);
+* ``receive`` reads exactly the 4-byte prefix, validates the length *before* reading or
+  allocating the body, then reads exactly the body, so fragmented and coalesced TCP reads
+  both work;
+* ``send`` serializes whole frames (no interleaving between threads) and enforces the
+  5 second complete-frame write deadline;
+* a reader thread and a writer thread may use one transport concurrently; individual
+  non-blocking socket calls are serialized with a short lock because OpenSSL objects are
+  not safe for concurrent use.
 """
 
-import json
-import struct
+from __future__ import annotations
+
+import selectors
 import socket
 import ssl
+import threading
+import time
+from typing import Literal
+
+from .codec import JsonFrameCodec, LENGTH_PREFIX, ProtocolError, Role, check_frame_length
 from .contracts import Envelope
+from .tls import (
+    HANDSHAKE_TIMEOUT,
+    SERVER_HOSTNAME,
+    accept_tls,
+    connect_tls,
+    create_client_context,
+)
 
-MIN_PAYLOAD = 1
-MAX_PAYLOAD = 262144
+__all__ = ["JsonFrameCodec", "SocketTransport"]
 
+FRAME_READ_TIMEOUT = 10.0  # absolute, from the first prefix byte of a frame
+FRAME_WRITE_TIMEOUT = 5.0  # absolute, for one complete frame
+_POLL_SECONDS = 0.2  # how often blocked waiters notice close()
+_READ_CHUNK = 65536
 
-class JsonFrameCodec:
-    def encode(self, message: Envelope) -> bytes:
-        payload_dict = {
-            "version": message.version,
-            "type": message.type,
-            "request_id": message.request_id,
-            "payload": message.payload,
-        }
-        json_bytes = json.dumps(payload_dict, separators=(",", ":")).encode("utf-8")
-
-        if not (MIN_PAYLOAD <= len(json_bytes) <= MAX_PAYLOAD):
-            raise ValueError("Payload size out of bounds")
-
-        header = struct.pack(">I", len(json_bytes))
-        return header + json_bytes
-
-    def decode(self, frame: bytes) -> Envelope:
-        # 1. Check size limits
-        if not (MIN_PAYLOAD <= len(frame) <= MAX_PAYLOAD):
-            raise ValueError("Frame size out of bounds")
-
-        # 2. Parse JSON
-        try:
-            data = json.loads(frame.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise ValueError("Invalid UTF-8 or JSON payload")
-
-        # 3. Validate required fields and types
-        if not isinstance(data, dict):
-            raise ValueError("Top-level envelope must be a JSON object")
-
-        # Validate request_id string constraints (printable ASCII, 1-64 chars)
-        req_id = data.get("request_id")
-        if not isinstance(req_id, str) or not (1 <= len(req_id) <= 64):
-            raise ValueError("request_id must be a string of 1-64 characters")
-        if not all(0x21 <= ord(c) <= 0x7E for c in req_id):
-            raise ValueError("request_id contains invalid non-printable characters")
-
-        # Validate version and type
-        if data.get("version") != 1 or isinstance(data.get("version"), bool):
-            raise ValueError("Invalid protocol version")
-        if not isinstance(data.get("type"), str):
-            raise ValueError("Envelope 'type' must be a string")
-        if not isinstance(data.get("payload"), dict):
-            raise ValueError("Envelope 'payload' must be a JSON object")
-
-        return Envelope(
-            version=data["version"],
-            type=data["type"],
-            request_id=data["request_id"],
-            payload=data["payload"],
-        )
+_Want = Literal["read", "write"]
 
 
 class SocketTransport:
-    """Implements MessageTransport over a socket connection using JsonFrameCodec[cite: 1]."""
+    """Message transport over a connected stream socket (use TLS in production)."""
 
-    def __init__(self, tls_socket: socket.socket, codec: JsonFrameCodec | None = None) -> None:
-        self._socket = tls_socket
-        self._codec = codec if codec is not None else JsonFrameCodec()
+    def __init__(
+        self,
+        sock: socket.socket,
+        role: Role,
+        *,
+        codec: JsonFrameCodec | None = None,
+        write_timeout: float = FRAME_WRITE_TIMEOUT,
+        frame_read_timeout: float = FRAME_READ_TIMEOUT,
+    ) -> None:
+        self._sock = sock
+        self._sock.setblocking(False)
+        self._codec = codec or JsonFrameCodec(role)
+        self._write_timeout = write_timeout
+        self._frame_read_timeout = frame_read_timeout
+        self._io_lock = threading.Lock()  # one non-blocking socket call at a time
+        self._send_lock = threading.Lock()  # one whole frame at a time
+        self._recv_lock = threading.Lock()  # one reader at a time
+        self._rx = bytearray()
+        self._closed = threading.Event()
+        try:
+            self.peer_address: tuple[str, int] | None = sock.getpeername()[:2]
+        except OSError:
+            self.peer_address = None
 
-    def _recv_exact(self, n_bytes: int) -> bytes:
-        """Loops socket.recv() until exactly n_bytes are collected to handle TCP fragmentation[cite: 1, 2]."""
-        buffer = bytearray()
-        while len(buffer) < n_bytes:
-            chunk = self._socket.recv(n_bytes - len(buffer))
-            if not chunk:
-                raise ConnectionError("Connection closed by peer before full frame received.")
-            buffer.extend(chunk)
-        return bytes(buffer)
+    # ------------------------------------------------------------------ constructors
+    @classmethod
+    def connect_verified(
+        cls,
+        host: str,
+        port: int,
+        ca_file: str | None = None,
+        *,
+        server_hostname: str = SERVER_HOSTNAME,
+        timeout: float = HANDSHAKE_TIMEOUT,
+        context: ssl.SSLContext | None = None,
+    ) -> SocketTransport:
+        """Client side: TCP connect + verified TLS (certificate and hostname checked)."""
+        ctx = context or create_client_context(ca_file)
+        tls = connect_tls(host, port, ctx, server_hostname=server_hostname, timeout=timeout)
+        return cls(tls, "client")
 
+    @classmethod
+    def accept_verified(
+        cls,
+        context: ssl.SSLContext,
+        raw_sock: socket.socket,
+        *,
+        timeout: float = HANDSHAKE_TIMEOUT,
+    ) -> SocketTransport:
+        """Server side: bounded TLS handshake for an accepted socket (call from a worker)."""
+        return cls(accept_tls(context, raw_sock, timeout=timeout), "server")
+
+    # --------------------------------------------------------------------- properties
+    @property
+    def closed(self) -> bool:
+        return self._closed.is_set()
+
+    @property
+    def tls_version(self) -> str | None:
+        return self._sock.version() if isinstance(self._sock, ssl.SSLSocket) else None
+
+    # ------------------------------------------------------------------ socket plumbing
+    def _wait(self, want: _Want, deadline: float | None) -> bool:
+        """Block until the socket is ready for ``want``; ``False`` when the deadline passes."""
+        event = selectors.EVENT_READ if want == "read" else selectors.EVENT_WRITE
+        while True:
+            if self._closed.is_set():
+                raise ConnectionError("transport closed")
+            if deadline is None:
+                slice_seconds = _POLL_SECONDS
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                slice_seconds = min(_POLL_SECONDS, remaining)
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(self._sock, event)
+                    if selector.select(slice_seconds):
+                        return True
+            except (OSError, ValueError) as exc:  # socket closed under us
+                raise ConnectionError("transport closed") from exc
+
+    def _recv_some(self) -> tuple[bytes, _Want]:
+        """One non-blocking read attempt: ``(data, _)`` or ``(b"", what_to_wait_for)``."""
+        with self._io_lock:
+            if self._closed.is_set():
+                raise ConnectionError("transport closed")
+            try:
+                data = self._sock.recv(_READ_CHUNK)
+            except ssl.SSLWantReadError:
+                return b"", "read"
+            except ssl.SSLWantWriteError:
+                return b"", "write"
+            except BlockingIOError:
+                return b"", "read"
+            except (ssl.SSLZeroReturnError, ssl.SSLEOFError) as exc:
+                raise ConnectionError("peer closed the connection") from exc
+            except OSError as exc:
+                raise ConnectionError(f"receive failed: {exc.__class__.__name__}") from exc
+        if not data:
+            raise ConnectionError("peer closed the connection")
+        return data, "read"
+
+    def _send_some(self, view: memoryview) -> tuple[int, _Want]:
+        with self._io_lock:
+            if self._closed.is_set():
+                raise ConnectionError("transport closed")
+            try:
+                return self._sock.send(view), "write"
+            except ssl.SSLWantWriteError:
+                return 0, "write"
+            except ssl.SSLWantReadError:
+                return 0, "read"
+            except BlockingIOError:
+                return 0, "write"
+            except OSError as exc:
+                raise ConnectionError(f"send failed: {exc.__class__.__name__}") from exc
+
+    def _fill(self, needed: int, deadline: float | None) -> bool:
+        """Grow the receive buffer to ``needed`` bytes; ``False`` if the deadline passed."""
+        while len(self._rx) < needed:
+            data, want = self._recv_some()
+            if data:
+                self._rx += data
+            elif not self._wait(want, deadline):
+                return False
+        return True
+
+    # -------------------------------------------------------------------- public API
     def send(self, message: Envelope) -> None:
-        """Serializes and pushes complete length-prefixed bytes over the socket[cite: 1, 2]."""
-        framed_bytes = self._codec.encode(message)
-        self._socket.sendall(framed_bytes)
+        """Validate, frame and write ``message`` as one uninterleaved frame."""
+        view = memoryview(self._codec.encode(message))
+        with self._send_lock:
+            deadline = time.monotonic() + self._write_timeout
+            sent = 0
+            while sent < len(view):
+                written, want = self._send_some(view[sent:])
+                if written:
+                    sent += written
+                elif not self._wait(want, deadline):
+                    self.close()  # a partial frame may be on the wire: stream is unusable
+                    raise TimeoutError("frame write deadline exceeded")
 
     def receive(self, *, timeout: float | None = None) -> Envelope:
-        """Receives an exact framed message, enforcing timeout and frame length limits[cite: 1, 2]."""
-        original_timeout = self._socket.gettimeout()
-        if timeout is not None:
-            self._socket.settimeout(timeout)
+        """Return the next validated message.
 
-        try:
-            # 1. Read 4-byte header
-            header_bytes = self._recv_exact(4)
-            payload_len = struct.unpack(">I", header_bytes)[0]
+        ``TimeoutError`` with nothing consumed means no frame started within ``timeout``
+        (the transport stays usable). ``ConnectionError`` means EOF/reset/closed. A
+        :class:`~lancollab.common.codec.FrameError` closes the transport; a
+        :class:`~lancollab.common.codec.MessageError` leaves it open and in sync so the caller
+        can reply with ``ERROR``.
+        """
+        with self._recv_lock:
+            first = None if timeout is None else time.monotonic() + timeout
+            if not self._fill(1, first):
+                raise TimeoutError("no frame available")
+            frame_deadline = time.monotonic() + self._frame_read_timeout
+            try:
+                if not self._fill(LENGTH_PREFIX.size, frame_deadline):
+                    raise self._frame_timeout()
+                (length,) = LENGTH_PREFIX.unpack_from(self._rx)
+                check_frame_length(length)  # before reading/allocating the body
+                if not self._fill(LENGTH_PREFIX.size + length, frame_deadline):
+                    raise self._frame_timeout()
+            except ProtocolError:
+                self.close()
+                raise
+            body = bytes(self._rx[LENGTH_PREFIX.size : LENGTH_PREFIX.size + length])
+            del self._rx[: LENGTH_PREFIX.size + length]
+            try:
+                return self._codec.decode_body(body)
+            except ProtocolError as exc:
+                if exc.fatal:
+                    self.close()
+                raise
 
-            # 2. Read exact payload bytes and decode
-            payload_bytes = self._recv_exact(payload_len)
-            return self._codec.decode(payload_bytes)
-        finally:
-            if timeout is not None:
-                self._socket.settimeout(original_timeout)
+    def _frame_timeout(self) -> TimeoutError:
+        self.close()
+        return TimeoutError("frame read deadline exceeded")
 
     def close(self) -> None:
-        """Safely shuts down and closes the socket endpoint[cite: 1]."""
-        try:
-            self._socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        finally:
-            self._socket.close()
+        """Idempotent; wakes blocked readers/writers within one poll interval."""
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        with self._io_lock:
+            try:
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
 
+    def __enter__(self) -> SocketTransport:
+        return self
 
-# --- TLS Helpers for Issue #10 ---
-
-HANDSHAKE_TIMEOUT = 5.0
-
-
-def wrap_server_socket(raw_sock: socket.socket, certfile: str, keyfile: str) -> ssl.SSLSocket:
-    """Wraps server socket with a 5s deadline[cite: 1, 2]."""
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2  # Fixed: added 'v'
-    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-
-    raw_sock.settimeout(HANDSHAKE_TIMEOUT)
-    try:
-        return context.wrap_socket(raw_sock, server_side=True)
-    except (ssl.SSLError, TimeoutError, OSError) as err:
-        raw_sock.close()
-        raise ConnectionError(f"TLS handshake failed: {err}") from err
-
-
-def wrap_client_socket(
-    raw_sock: socket.socket, cafile: str, server_hostname: str = "lan-collab.local"
-) -> ssl.SSLSocket:
-    """Wraps client socket, enforcing strict CA validation and hostname checks[cite: 1, 2]."""
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.minimum_version = ssl.TLSVersion.TLSv1_2  # Fixed: added 'v'
-    context.verify_mode = ssl.CERT_REQUIRED
-    context.check_hostname = True
-    context.load_verify_locations(cafile=cafile)
-
-    raw_sock.settimeout(HANDSHAKE_TIMEOUT)
-    try:
-        return context.wrap_socket(raw_sock, server_side=False, server_hostname=server_hostname)
-    except (ssl.SSLError, TimeoutError, OSError) as err:
-        raw_sock.close()
-        raise ConnectionError(f"TLS verification failed: {err}") from err
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()

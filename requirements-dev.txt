@@ -1,2 +1,4 @@
 # Developer tooling only; the application should use Python standard-library networking APIs.
 ruff>=0.6,<1.0
+# Needed only to generate development certificates (lancollab.common.devcerts) and run TLS tests.
+cryptography>=42
