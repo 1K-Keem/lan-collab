@@ -2,7 +2,7 @@
 
 Usage (needs the developer-only ``cryptography`` package, see requirements-dev.txt)::
 
-    python -m lancollab.common.devcerts --out certs
+    python -m lancollab.common.devcerts --out certs --bundle-ca
 
 Creates ``ca.pem`` (give this to clients via ``--ca-file``), ``server.pem`` and
 ``server-key.pem`` (server only) and ``ca-key.pem`` (keep offline). The server certificate
@@ -20,7 +20,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .tls import SERVER_HOSTNAME
+from .tls import BUNDLED_CA_FILE, SERVER_HOSTNAME, validate_ca_file
 
 
 @dataclass(frozen=True)
@@ -154,14 +154,32 @@ def generate_dev_certs(
     return paths
 
 
+def install_bundled_ca(
+    ca_pem: str | Path, destination: Path = BUNDLED_CA_FILE, *, force: bool = False
+) -> Path:
+    """Copy the *public* CA certificate into the client package so every client carries it."""
+    source = Path(validate_ca_file(ca_pem))  # refuses anything containing a private key
+    data = source.read_bytes()
+    if destination.exists() and destination.read_bytes() != data and not force:
+        raise FileExistsError(f"{destination} holds a different CA (use --force to replace it)")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    return destination
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "Certificate generator")
     parser.add_argument("--out", default="certs", help="output directory (default: certs)")
     parser.add_argument(
         "--san", action="append", default=[], help="extra DNS name for the server certificate"
     )
     parser.add_argument(
         "--ip", action="append", default=[], help="extra IP address SAN (optional convenience)"
+    )
+    parser.add_argument(
+        "--bundle-ca",
+        action="store_true",
+        help="also copy the public ca.pem into lancollab/client/ so clients ship with it",
     )
     parser.add_argument("--force", action="store_true", help="overwrite existing files")
     args = parser.parse_args(argv)
@@ -174,6 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"CA certificate (distribute to clients): {paths.ca_cert}")
     print(f"Server certificate / key (server only): {paths.server_cert} / {paths.server_key}")
     print(f"CA private key (keep offline):          {paths.ca_key}")
+    if args.bundle_ca:
+        bundled = install_bundled_ca(paths.ca_cert, force=args.force)
+        print(f"Bundled public CA into the client:      {bundled}  (commit this file)")
     return 0
 
 

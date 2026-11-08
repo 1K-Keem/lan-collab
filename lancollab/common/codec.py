@@ -314,7 +314,8 @@ _CONDITIONAL_RULES: dict[str, Callable[[dict[str, Any]], None]] = {
 }
 
 _COMPILED: dict[str, _CompiledMessage] = {
-    key: _CompiledMessage(spec, _CONDITIONAL_RULES.get(key)) for key, spec in MESSAGE_FIELDS.items()
+    key: _CompiledMessage(spec, _CONDITIONAL_RULES.get(key))
+    for key, spec in MESSAGE_FIELDS.items()
 }  # fails at import time if the catalog uses a spec this codec does not implement
 
 

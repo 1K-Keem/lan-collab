@@ -9,13 +9,63 @@ system trust store is never modified.
 
 from __future__ import annotations
 
+import os
 import selectors
 import socket
 import ssl
 import time
+from collections.abc import Mapping
+from pathlib import Path
 
 SERVER_HOSTNAME = "lan-collab.local"
 HANDSHAKE_TIMEOUT = 5.0  # seconds, absolute, protocol-spec section 7
+
+# The public CA certificate shipped inside the client. It is committed to Git (see .gitignore)
+# so every copy of the app carries its own trust anchor; it never contains a private key.
+BUNDLED_CA_FILE = Path(__file__).resolve().parents[1] / "client" / "ca.pem"
+CA_ENV_VAR = "LANCOLLAB_CA_FILE"
+_PRIVATE_KEY_MARKER = "PRIVATE KEY-----"
+
+
+def validate_ca_file(path: str | Path) -> str:
+    """Return ``path`` as a string after checking it is a loadable, *public* CA file."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="ascii")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"CA file not found: {path}") from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"cannot read CA file {path}: {exc.__class__.__name__}") from exc
+    if _PRIVATE_KEY_MARKER in text:
+        raise ValueError(f"{path} contains a private key; give clients only the public ca.pem")
+    try:
+        ssl.create_default_context(cafile=str(path))
+    except ssl.SSLError as exc:
+        raise ValueError(f"{path} is not a valid PEM certificate file") from exc
+    return str(path)
+
+
+def resolve_ca_file(
+    explicit: str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    bundled: Path | None = None,
+) -> str | None:
+    """Pick the CA file clients trust: ``--ca-file``, then ``$LANCOLLAB_CA_FILE``, then bundled.
+
+    Returns ``None`` only when none is configured, in which case the operating-system trust
+    store is used (right for a publicly trusted certificate, wrong for the development CA).
+    An explicitly named file that is missing or invalid is an error, never silently skipped.
+    """
+    env = os.environ if environ is None else environ
+    if explicit:
+        return validate_ca_file(explicit)
+    if env.get(CA_ENV_VAR):
+        return validate_ca_file(env[CA_ENV_VAR])
+    candidate = BUNDLED_CA_FILE if bundled is None else bundled
+    if candidate.is_file():
+        return validate_ca_file(candidate)
+    return None
 
 
 def create_server_context(

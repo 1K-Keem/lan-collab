@@ -4,21 +4,49 @@ The client always verifies the server certificate **and** the name `lan-collab.l
 when it connects to a raw IP address. There is no `CERT_NONE` mode. Trust is a CA file passed
 explicitly; nothing is installed into the operating-system trust store.
 
-## 1. Generate development certificates
+## 1. Generate development certificates (once, on one machine)
 
 ```bash
 python -m pip install -r requirements-dev.txt   # provides the 'cryptography' generator
-python -m lancollab.common.devcerts --out certs
+python -m lancollab.common.devcerts --out certs --bundle-ca
+git add lancollab/client/ca.pem                 # the PUBLIC CA only, see section 1b
 ```
 
 | File | Who gets it | Secret? |
 | --- | --- | --- |
-| `certs/ca.pem` | every client (`--ca-file certs/ca.pem`) | no |
+| `certs/ca.pem` | every client, via the bundled `lancollab/client/ca.pem` (or `--ca-file`) | no |
 | `certs/server.pem`, `certs/server-key.pem` | the server only | **key is secret** |
 | `certs/ca-key.pem` | nobody; keep offline | **secret** |
 
 `certs/`, `*.pem` and `*.key` are in `.gitignore`. Never commit keys. Add
 `--san other.name` or `--ip 192.168.1.20` for extra names; `--force` overwrites.
+
+## 1b. How clients get `ca.pem` (no copying by hand)
+
+`--bundle-ca` copies the public `ca.pem` to `lancollab/client/ca.pem`. Commit it: every clone,
+download or release of the client then carries its own trust anchor, so 20 or 1000 clients need
+no extra step. The server never sends it over the network (an attacker in the middle could swap
+it); clients trust it because it came with the app.
+
+The client picks its CA in this order:
+
+1. `--ca-file PATH` (explicit; a missing or invalid file is an error, never skipped)
+2. the `LANCOLLAB_CA_FILE` environment variable
+3. the bundled `lancollab/client/ca.pem`
+4. nothing found: the operating-system trust store (right for a publicly trusted certificate,
+   wrong for this development CA, so the connection fails with a certificate error)
+
+Safety rails: `.gitignore` ignores `*.pem` but explicitly allows `lancollab/client/ca.pem`;
+a file containing a private key is refused as a trust anchor; `tests/test_trust_anchor.py`
+fails if any private key text appears anywhere in the source tree, and checks with `git
+check-ignore` that the CA can be committed while every key file stays ignored.
+
+Never run `--bundle-ca` with a CA you did not generate yourself. If the CA key leaks or you
+regenerate the CA: run step 1 again with `--force` (it refuses to replace a different bundled CA
+otherwise), commit the new `ca.pem`, and ship a new client. Clients holding the old CA will
+reject the new server certificate, which is the intended behaviour. Packaging note: the project
+runs from source today; if you later build a wheel or exe, include `lancollab/client/ca.pem`
+as package data.
 
 ## 2. Without Python's `cryptography` (OpenSSL 1.1.1+ / 3.x)
 
@@ -46,10 +74,12 @@ from lancollab.common.socket_transport import SocketTransport
 
 # server (per accepted socket, inside a worker thread, never the accept loop)
 ctx = create_server_context("certs/server.pem", "certs/server-key.pem")
-transport = SocketTransport.accept_verified(ctx, raw_socket)  # 5 s absolute deadline
+transport = SocketTransport.accept_verified(ctx, raw_socket)          # 5 s absolute deadline
 
-# client: connect by IP, verify the name lan-collab.local against ca.pem
-transport = SocketTransport.connect_verified("192.168.1.20", 40000, "certs/ca.pem")
+# client: connect by IP, verify the name lan-collab.local against the bundled/chosen CA
+from lancollab.common.tls import resolve_ca_file
+ca_file = resolve_ca_file(args.ca_file)          # --ca-file > $LANCOLLAB_CA_FILE > bundled
+transport = SocketTransport.connect_verified("192.168.1.20", 40000, ca_file)
 ```
 
 ## 4. What a failure looks like
