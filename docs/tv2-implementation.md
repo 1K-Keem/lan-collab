@@ -17,13 +17,13 @@ Everything here is implemented against protocol revision 1.2 and covered by real
 ```python
 try:
     msg = transport.receive(timeout=...)
-except MessageError as exc:        # valid envelope + request_id, bad content; stream still in sync
-    transport.send(exc.to_error_envelope())      # ERROR copying the same request_id
-except FrameError:                 # unparsable / no trustworthy request_id; transport already closed
-    ...                            # just clean the session up, do NOT send ERROR
-except TimeoutError:               # nothing arrived in `timeout`; nothing consumed (or, for a
-    ...                            # half-received frame / stalled write, transport was closed)
-except ConnectionError:            # EOF, reset or closed => session cleanup
+except MessageError as exc:  # valid envelope + request_id, bad content; stream still in sync
+    transport.send(exc.to_error_envelope())  # ERROR copying the same request_id
+except FrameError:  # unparsable / no trustworthy request_id; transport already closed
+    ...  # just clean the session up, do NOT send ERROR
+except TimeoutError:  # nothing arrived in `timeout`; nothing consumed (or, for a
+    ...  # half-received frame / stalled write, transport was closed)
+except ConnectionError:  # EOF, reset or closed => session cleanup
     ...
 ```
 

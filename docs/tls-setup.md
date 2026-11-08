@@ -74,11 +74,12 @@ from lancollab.common.socket_transport import SocketTransport
 
 # server (per accepted socket, inside a worker thread, never the accept loop)
 ctx = create_server_context("certs/server.pem", "certs/server-key.pem")
-transport = SocketTransport.accept_verified(ctx, raw_socket)          # 5 s absolute deadline
+transport = SocketTransport.accept_verified(ctx, raw_socket)  # 5 s absolute deadline
 
 # client: connect by IP, verify the name lan-collab.local against the bundled/chosen CA
 from lancollab.common.tls import resolve_ca_file
-ca_file = resolve_ca_file(args.ca_file)          # --ca-file > $LANCOLLAB_CA_FILE > bundled
+
+ca_file = resolve_ca_file(args.ca_file)  # --ca-file > $LANCOLLAB_CA_FILE > bundled
 transport = SocketTransport.connect_verified("192.168.1.20", 40000, ca_file)
 ```
 

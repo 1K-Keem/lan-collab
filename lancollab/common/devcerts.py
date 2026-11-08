@@ -168,7 +168,9 @@ def install_bundled_ca(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "Certificate generator")
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0] if __doc__ else "Certificate generator"
+    )
     parser.add_argument("--out", default="certs", help="output directory (default: certs)")
     parser.add_argument(
         "--san", action="append", default=[], help="extra DNS name for the server certificate"

@@ -83,9 +83,7 @@ class ResolutionTests(unittest.TestCase):
             validate_ca_file(both)
 
     def test_bundled_ca_is_enough_to_connect_and_a_foreign_one_is_not(self) -> None:
-        server_ctx = create_server_context(
-            str(self.good.server_cert), str(self.good.server_key)
-        )
+        server_ctx = create_server_context(str(self.good.server_cert), str(self.good.server_key))
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen(2)
