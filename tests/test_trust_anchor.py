@@ -51,7 +51,7 @@ class ResolutionTests(unittest.TestCase):
 
         self.assertEqual(
             {path.name for path in self.good.server_cert.parent.iterdir()},
-            {"server.pem", "server-key.pem"},
+            {"server-public.pem", "server-secret.pem"},
         )
         cert = x509.load_pem_x509_certificate(self.good.server_cert.read_bytes())
         cert.verify_directly_issued_by(cert)
@@ -74,14 +74,14 @@ class ResolutionTests(unittest.TestCase):
         self.assertEqual(resolve_trusted_cert(None, environ={}, bundled=bundled), str(bundled))
 
     def test_missing_trust_fails_closed(self) -> None:
-        missing = Path(self.tmp.name) / "no-such-server.pem"
+        missing = Path(self.tmp.name) / "no-such-server-public.pem"
         with self.assertRaises(FileNotFoundError):
             resolve_trusted_cert(None, environ={}, bundled=missing)
 
     def test_named_but_bad_files_are_errors_not_fallbacks(self) -> None:
         bundled = self.good.server_cert
         with self.assertRaises(FileNotFoundError):
-            resolve_trusted_cert("/nonexistent/server.pem", environ={}, bundled=bundled)
+            resolve_trusted_cert("/nonexistent/server-public.pem", environ={}, bundled=bundled)
         with self.assertRaises(FileNotFoundError):
             resolve_trusted_cert(None, environ={TRUST_ENV_VAR: "/nonexistent"}, bundled=bundled)
         junk = Path(self.tmp.name) / "junk.pem"
@@ -123,7 +123,7 @@ class ResolutionTests(unittest.TestCase):
         threading.Thread(target=serve, daemon=True).start()
         port = listener.getsockname()[1]
 
-        bundled = Path(self.tmp.name) / "client" / "server.pem"
+        bundled = Path(self.tmp.name) / "client" / "server-public.pem"
         install_bundled_cert(self.good.server_cert, bundled)
         trusted = resolve_trusted_cert(None, environ={}, bundled=bundled)
         with SocketTransport.connect_verified("127.0.0.1", port, trusted) as transport:
@@ -135,7 +135,7 @@ class ResolutionTests(unittest.TestCase):
             SocketTransport.connect_verified("127.0.0.1", port, foreign)
 
     def test_install_bundled_cert_rules(self) -> None:
-        dest = Path(self.tmp.name) / "inst" / "client" / "server.pem"
+        dest = Path(self.tmp.name) / "inst" / "client" / "server-public.pem"
         install_bundled_cert(self.good.server_cert, dest)
         self.assertEqual(dest.read_bytes(), self.good.server_cert.read_bytes())
         install_bundled_cert(self.good.server_cert, dest)  # same certificate again: fine
@@ -200,13 +200,14 @@ class RepositoryHygieneTests(unittest.TestCase):
                 return result.returncode == 0
 
             self.assertFalse(
-                ignored("lancollab/client/server.pem"), "server.pem must be committable"
+                ignored("lancollab/client/server-public.pem"),
+                "server-public.pem must be committable",
             )
             for secret in (
-                "certs/direct-trust/server-key.pem",
-                "certs/direct-trust/server.pem",
-                "lancollab/client/server-key.pem",
-                "server-key.pem",
+                "certs/direct-trust/server-secret.pem",
+                "certs/direct-trust/server-public.pem",
+                "lancollab/client/server-secret.pem",
+                "server-secret.pem",
                 "lancollab/server/server.key",
             ):
                 with self.subTest(secret=secret):

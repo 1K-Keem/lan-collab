@@ -19,7 +19,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--trusted-cert",
-        help="Trusted server certificate (default: LANCOLLAB_TRUSTED_CERT or bundled server.pem)",
+        help="Trusted server certificate (default: LANCOLLAB_TRUSTED_CERT or bundled server-public.pem)",
     )
     parser.add_argument("--udp-port", type=int, default=40001)
     parser.add_argument(

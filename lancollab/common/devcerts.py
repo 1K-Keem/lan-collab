@@ -1,7 +1,7 @@
 """Generate a self-signed server certificate and its private key.
 
 Run: python -m lancollab.common.devcerts --out certs/direct-trust --bundle-cert
-Only server.pem is distributed to clients. Keep server-key.pem private.
+Only server-public.pem is distributed to clients. Keep server-secret.pem private.
 No separate CA or CA key is created. TLS runtime uses the standard ssl module;
 this provisioning command requires the development dependency cryptography.
 """
@@ -58,7 +58,7 @@ def generate_dev_certs(
 
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    paths = DevCerts(out / "server.pem", out / "server-key.pem")
+    paths = DevCerts(out / "server-public.pem", out / "server-secret.pem")
     targets = (paths.server_cert, paths.server_key)
     existing = [p for p in targets if p.exists()]
     if existing and not force:
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--bundle-cert",
         action="store_true",
-        help="also copy the public server.pem into lancollab/client/ so clients ship with it",
+        help="also copy the public server-public.pem into lancollab/client/ so clients ship with it",
     )
     parser.add_argument("--force", action="store_true", help="overwrite existing files")
     args = parser.parse_args(argv)

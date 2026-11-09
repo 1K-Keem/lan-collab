@@ -1,8 +1,10 @@
 # TLS setup: directly trusted self-signed server certificate
 
 The admin and clients agree on a trusted repository containing the app and public
-`lancollab/client/server.pem`. Clients trust that certificate locally, without contacting
+`lancollab/client/server-public.pem`. Clients trust that certificate locally, without contacting
 GitHub during a handshake. The server proves possession of the matching private key.
+Despite its filename, `server-public.pem` contains a complete X.509 certificate, not a raw
+public key. `server-secret.pem` contains the private identity key, not TLS session keys.
 This is direct certificate trust, not raw public-key pinning. No separate CA is created.
 
 ## Generate and distribute
@@ -18,9 +20,9 @@ The generator creates only:
 
 | File | Usage |
 | --- | --- |
-| `certs/direct-trust/server.pem` | Public self-signed server certificate |
-| `certs/direct-trust/server-key.pem` | Private server key; never distribute or commit |
-| `lancollab/client/server.pem` | Public copy installed by `--bundle-cert`; distribute with app |
+| `certs/direct-trust/server-public.pem` | Public self-signed server certificate |
+| `certs/direct-trust/server-secret.pem` | Private server key; never distribute or commit |
+| `lancollab/client/server-public.pem` | Public copy installed by `--bundle-cert`; distribute with app |
 
 The certificate uses EC P-256, SHA-256, SAN `DNS:lan-collab.local`, serverAuth usage,
 and `BasicConstraints(ca=False)`. It is valid for 365 days. Extra `--san` and `--ip` options
@@ -34,7 +36,7 @@ provisioning and tests.
 
 1. `--trusted-cert PATH`
 2. `LANCOLLAB_TRUSTED_CERT`
-3. Bundled `lancollab/client/server.pem`
+3. Bundled `lancollab/client/server-public.pem`
 
 Missing or invalid trust is an error. No fallback to system trust, plaintext TCP or disabled
 verification. Public certificate files containing private keys are rejected.
@@ -42,7 +44,7 @@ verification. Public certificate files containing private keys are rejected.
 ```bash
 python -m lancollab.client --host SERVER_IP
 python -m lancollab.client --discover
-python -m lancollab.client --host SERVER_IP --trusted-cert path/to/server.pem
+python -m lancollab.client --host SERVER_IP --trusted-cert path/to/server-public.pem
 ```
 
 The full CLI still requires the TV1 production server. The hostname verified is
@@ -56,7 +58,7 @@ from lancollab.common.tls import create_server_context, resolve_trusted_cert
 from lancollab.common.socket_transport import SocketTransport
 
 context = create_server_context(
-    "certs/direct-trust/server.pem", "certs/direct-trust/server-key.pem"
+    "certs/direct-trust/server-public.pem", "certs/direct-trust/server-secret.pem"
 )
 # After listener.accept(), in a server worker:
 transport = SocketTransport.accept_verified(context, raw_socket)
@@ -98,7 +100,7 @@ other files. For two machines use server `--host 0.0.0.0` and client `--host SER
 ## Migration from the old CA model
 
 The bundled CA has been removed. Use the self-signed pair in `certs/direct-trust` and
-distribute only `lancollab/client/server.pem`. Old deployments should retire their CA files
+distribute only `lancollab/client/server-public.pem`. Old deployments should retire their CA files
 and CA-signed server pair after switching to the new identity. Replace `--ca-file` with
 `--trusted-cert`, `LANCOLLAB_CA_FILE` with `LANCOLLAB_TRUSTED_CERT`, and `--bundle-ca` with
 `--bundle-cert`. Python callers use `trusted_cert`, `resolve_trusted_cert`,
@@ -128,3 +130,25 @@ Keep old keys until rollout is planned; do not use `--force` casually.
 Do not use CERT_NONE, disable hostname checking, or treat UDP replies as proof of identity.
 These certificates work across Windows/macOS/Linux through Python/OpenSSL without installing
 anything into the operating-system trust store.
+
+## What authenticates the server?
+
+1. Clients obtain the app and `server-public.pem` from the repository agreed with the admin.
+   That trusted distribution establishes identity; a self-signature alone does not.
+2. The client resolves an IP, connects by TCP, and starts TLS. Discovery supplies an address,
+   never a new trust anchor.
+3. OpenSSL verifies the presented certificate using the locally trusted certificate, checks
+   its validity and the expected hostname, and verifies the server's handshake proof.
+4. In a full certificate-authenticated TLS 1.3 handshake, CertificateVerify signs the handshake
+   transcript using the server's long-lived private identity key from `server-secret.pem`.
+   Copying the public certificate is insufficient to create that proof.
+5. Ephemeral (EC)DHE key exchange establishes a shared secret. HKDF derives separate traffic
+   keys; Finished authenticates the handshake. Application records use authenticated symmetric
+   encryption (the negotiated cipher), not direct encryption with the identity public key.
+6. Only after verified TLS completes does the client send AUTH_REQUEST. The CA-free runtime
+   performs these cryptographic operations through Python ssl/OpenSSL, not custom crypto code.
+
+The generator's identity key is EC P-256 and the certificate is self-signed with ECDSA/SHA-256.
+The ephemeral exchange group and traffic cipher are negotiated separately. TLS 1.2 is also
+allowed; the description above specifically illustrates TLS 1.3, as used in the local demo.
+See [RFC 8446, authentication and key schedule](https://www.rfc-editor.org/rfc/rfc8446.html).

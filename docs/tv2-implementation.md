@@ -56,7 +56,7 @@ whole-frame; a reader thread and a writer thread can share one transport.
 ## For TV3 (client)
 
 * `trusted_cert = resolve_trusted_cert(args.trusted_cert)` (already parsed by `python -m lancollab.client`:
-  `--trusted-cert`, then `$LANCOLLAB_TRUSTED_CERT`, then the bundled `lancollab/client/server.pem`), then
+  `--trusted-cert`, then `$LANCOLLAB_TRUSTED_CERT`, then the bundled `lancollab/client/server-public.pem`), then
   `SocketTransport.connect_verified(host, port, trusted_cert)`; send `AUTH_REQUEST` directly and wait for the matching `AUTH_RESULT`.
   Show a certificate failure (`ssl.SSLCertVerificationError`) as "server identity could not be
   verified" and never offer to continue anyway.

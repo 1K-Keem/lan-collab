@@ -36,7 +36,7 @@ class CLITests(unittest.TestCase):
             patch("sys.stderr"),
             self.assertRaises(SystemExit) as error,
         ):
-            main(["--host", "127.0.0.1", "--trusted-cert", "/nonexistent/server.pem"])
+            main(["--host", "127.0.0.1", "--trusted-cert", "/nonexistent/server-public.pem"])
         self.assertEqual(error.exception.code, 2)
         prompt.assert_not_called()
 

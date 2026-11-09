@@ -31,8 +31,8 @@ ruff format --check .
 ## Real CLI after TV1/TV2 integration
 
 ```bash
-python -m lancollab.client --host 192.0.2.10 --port 40000 --server-name lan-collab.local --trusted-cert path/to/server.pem --downloads-dir downloads
-python -m lancollab.client --discover --server-name lan-collab.local --trusted-cert path/to/server.pem
+python -m lancollab.client --host 192.0.2.10 --port 40000 --server-name lan-collab.local --trusted-cert path/to/server-public.pem --downloads-dir downloads
+python -m lancollab.client --discover --server-name lan-collab.local --trusted-cert path/to/server-public.pem
 ```
 
 - `--discover` requires a TV1 UDP responder; use explicit `--host` when UDP broadcast is blocked.
@@ -45,7 +45,7 @@ python -m lancollab.client --discover --server-name lan-collab.local --trusted-c
 Create a **local untracked file** `accounts.local.json` containing 20 unique server-provisioned accounts, e.g. `[ {"username":"user1","password":"***"}, ... ]`. Never commit it or paste real secrets into reports. Prepare a non-sensitive >= 10 MiB test file.
 
 ```bash
-python -m scripts.tv3_real_smoke --accounts accounts.local.json --host 192.0.2.10 --server-name lan-collab.local --trusted-cert path/to/server.pem --clients 20 --messages 5 --file data/sample10m.bin --output tv3_smoke_result.json
+python -m scripts.tv3_real_smoke --accounts accounts.local.json --host 192.0.2.10 --server-name lan-collab.local --trusted-cert path/to/server-public.pem --clients 20 --messages 5 --file data/sample10m.bin --output tv3_smoke_result.json
 ```
 
 The resulting report provides queued-chat ACK timing and file equality if completed. These metrics **do not measure peer delivery/read latency**, and the run itself does not prove PONG latency, CPU/RSS or two-host LAN coverage; add real measurements separately before CP-C.

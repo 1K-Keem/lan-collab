@@ -78,7 +78,7 @@ Contribute through short-lived branches/PRs with real authors and tests. Cross-r
 
 ## Server identity
 
-The client trusts the public self-signed `lancollab/client/server.pem` distributed with the app
+The client trusts the public self-signed `lancollab/client/server-public.pem` distributed with the app
 from the group's agreed repository. No separate CA is required. The administrator keeps the
 matching private key on the server. See [TLS setup and migration](docs/tls-setup.md) for
 `--bundle-cert`, `--trusted-cert`, certificate renewal and the two-terminal handshake test.

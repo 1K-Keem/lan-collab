@@ -22,7 +22,7 @@ HANDSHAKE_TIMEOUT = 5.0  # seconds, absolute, protocol-spec section 7
 
 # The public self-signed server certificate shipped with the client (see .gitignore).
 # so every copy of the app carries its own trust anchor; it never contains a private key.
-BUNDLED_SERVER_CERT = Path(__file__).resolve().parents[1] / "client" / "server.pem"
+BUNDLED_SERVER_CERT = Path(__file__).resolve().parents[1] / "client" / "server-public.pem"
 TRUST_ENV_VAR = "LANCOLLAB_TRUSTED_CERT"
 _PRIVATE_KEY_MARKER = "PRIVATE KEY-----"
 
@@ -37,7 +37,9 @@ def validate_trusted_cert(path: str | Path) -> str:
     except (OSError, UnicodeDecodeError) as exc:
         raise ValueError(f"cannot read certificate file {path}: {exc.__class__.__name__}") from exc
     if _PRIVATE_KEY_MARKER in text:
-        raise ValueError(f"{path} contains a private key; give clients only the public server.pem")
+        raise ValueError(
+            f"{path} contains a private key; give clients only the public server-public.pem"
+        )
     try:
         ssl.create_default_context(cafile=str(path))
     except ssl.SSLError as exc:
@@ -51,7 +53,7 @@ def resolve_trusted_cert(
     environ: Mapping[str, str] | None = None,
     bundled: Path | None = None,
 ) -> str:
-    """Resolve --trusted-cert, LANCOLLAB_TRUSTED_CERT, then bundled server.pem.
+    """Resolve --trusted-cert, LANCOLLAB_TRUSTED_CERT, then bundled server-public.pem.
 
     Missing trust is an error: never fall back to unrelated system trust roots.
     """
@@ -64,7 +66,7 @@ def resolve_trusted_cert(
     if candidate.is_file():
         return validate_trusted_cert(candidate)
     raise FileNotFoundError(
-        "No trusted server certificate; use --trusted-cert or bundle server.pem"
+        "No trusted server certificate; use --trusted-cert or bundle server-public.pem"
     )
 
 
