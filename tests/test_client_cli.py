@@ -6,10 +6,10 @@ from lancollab.common.fake_transport import FakeTransport
 
 
 class CLITests(unittest.TestCase):
-    def test_startup_uses_bundled_ca_without_flag(self):
+    def test_startup_uses_bundled_certificate_without_flag(self):
         from unittest.mock import patch
         from lancollab.client.__main__ import main
-        from lancollab.common.tls import BUNDLED_CA_FILE
+        from lancollab.common.tls import BUNDLED_SERVER_CERT
 
         with (
             patch.dict("os.environ", {}, clear=True),
@@ -23,11 +23,11 @@ class CLITests(unittest.TestCase):
                 host="127.0.0.1",
                 port=40000,
                 server_hostname="lan-collab.local",
-                ca_file=str(BUNDLED_CA_FILE),
+                trusted_cert=str(BUNDLED_SERVER_CERT),
             )
             session.return_value.authenticate.assert_called_once_with("alice", "test")
 
-    def test_invalid_explicit_ca_fails_before_credentials(self):
+    def test_invalid_explicit_certificate_fails_before_credentials(self):
         from unittest.mock import patch
         from lancollab.client.__main__ import main
 
@@ -36,7 +36,7 @@ class CLITests(unittest.TestCase):
             patch("sys.stderr"),
             self.assertRaises(SystemExit) as error,
         ):
-            main(["--host", "127.0.0.1", "--ca-file", "/nonexistent/ca.pem"])
+            main(["--host", "127.0.0.1", "--trusted-cert", "/nonexistent/server.pem"])
         self.assertEqual(error.exception.code, 2)
         prompt.assert_not_called()
 

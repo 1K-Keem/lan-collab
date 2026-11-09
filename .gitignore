@@ -33,7 +33,7 @@ temp/
 certs/
 *.key
 *.pem
-!lancollab/client/ca.pem
+!lancollab/client/server.pem
 *.p12
 *.pfx
 

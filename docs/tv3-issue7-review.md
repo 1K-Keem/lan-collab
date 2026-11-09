@@ -14,7 +14,7 @@
 
 ## Explicit dependency boundaries (not implemented by TV3)
 
-1. TV2: `SocketTransport.connect_verified(host, port, ca_file=..., server_hostname=...)` establishes hostname-verified TLS and returns a `SocketTransport` implementing `MessageTransport`. The CLI and real smoke harness call this implemented method directly. TV2 also owns real TCP length-prefix framing and strict JSON schema validation; TV3 never falls back to plaintext TCP.
+1. TV2: `SocketTransport.connect_verified(host, port, trusted_cert=..., server_hostname=...)` establishes hostname-verified TLS and returns a `SocketTransport` implementing `MessageTransport`. The CLI and real smoke harness call this implemented method directly. TV2 also owns real TCP length-prefix framing and strict JSON schema validation; TV3 never falls back to plaintext TCP.
 2. TV1: server-side login/auth, chat/presence routing, UDP DISCOVER_REPLY/HEARTBEAT_ACK, queues, file offer/accept/ACK/RESULT relay and session takeover/cleanup.
 3. TV2: common transfer-core protocol/credit validation (including server-side window and UUID/session authorization), coordinated with TV1's relay; this client module does not replace that core.
 4. Real 3-client and two-host LAN evidence, 20 concurrent clients, 10 MiB simultaneous file/chat workload, CPU/RSS and 100+ latency samples **pending until the server is available**.
@@ -31,21 +31,21 @@ ruff format --check .
 ## Real CLI after TV1/TV2 integration
 
 ```bash
-python -m lancollab.client --host 192.0.2.10 --port 40000 --server-name lan-collab.local --ca-file path/to/trusted-ca.pem --downloads-dir downloads
-python -m lancollab.client --discover --server-name lan-collab.local --ca-file path/to/trusted-ca.pem
+python -m lancollab.client --host 192.0.2.10 --port 40000 --server-name lan-collab.local --trusted-cert path/to/server.pem --downloads-dir downloads
+python -m lancollab.client --discover --server-name lan-collab.local --trusted-cert path/to/server.pem
 ```
 
 - `--discover` requires a TV1 UDP responder; use explicit `--host` when UDP broadcast is blocked.
 - `--server-name` remains the trusted TLS identity even if host/IP is discovered dynamically; the username/password are collected before TCP/TLS to meet deadline.
 - The verified TLS connector is implemented. Connection or certificate failures stop startup; there is no plaintext fallback. The production server remains pending.
-- The CLI resolves `--ca-file`, then `LANCOLLAB_CA_FILE`, then the bundled CA. With the bundled CA, use `python -m lancollab.client --host SERVER_IP` or `python -m lancollab.client --discover`.
+- The CLI resolves `--trusted-cert`, then `LANCOLLAB_TRUSTED_CERT`, then the bundled server certificate. With the bundled server certificate, use `python -m lancollab.client --host SERVER_IP` or `python -m lancollab.client --discover`.
 
 ## Real workload harness after TV1/TV2 integration
 
 Create a **local untracked file** `accounts.local.json` containing 20 unique server-provisioned accounts, e.g. `[ {"username":"user1","password":"***"}, ... ]`. Never commit it or paste real secrets into reports. Prepare a non-sensitive >= 10 MiB test file.
 
 ```bash
-python -m scripts.tv3_real_smoke --accounts accounts.local.json --host 192.0.2.10 --server-name lan-collab.local --ca-file path/to/trusted-ca.pem --clients 20 --messages 5 --file data/sample10m.bin --output tv3_smoke_result.json
+python -m scripts.tv3_real_smoke --accounts accounts.local.json --host 192.0.2.10 --server-name lan-collab.local --trusted-cert path/to/server.pem --clients 20 --messages 5 --file data/sample10m.bin --output tv3_smoke_result.json
 ```
 
 The resulting report provides queued-chat ACK timing and file equality if completed. These metrics **do not measure peer delivery/read latency**, and the run itself does not prove PONG latency, CPU/RSS or two-host LAN coverage; add real measurements separately before CP-C.

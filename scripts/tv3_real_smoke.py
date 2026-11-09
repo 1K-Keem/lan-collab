@@ -57,7 +57,10 @@ def run(args: argparse.Namespace) -> Metrics:
 
     def connect(index: int) -> tuple[CollabClient, Event, Thread]:
         transport = SocketTransport.connect_verified(
-            host=args.host, port=args.port, server_hostname=args.server_name, ca_file=args.ca_file
+            host=args.host,
+            port=args.port,
+            server_hostname=args.server_name,
+            trusted_cert=args.trusted_cert,
         )
         client = CollabClient(
             transport,
@@ -159,7 +162,7 @@ def main() -> None:
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=40000)
     parser.add_argument("--server-name", default="lan-collab.local")
-    parser.add_argument("--ca-file", required=True)
+    parser.add_argument("--trusted-cert", required=True)
     parser.add_argument("--clients", type=int, default=20)
     parser.add_argument("--messages", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=10)

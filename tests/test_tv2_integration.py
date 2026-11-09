@@ -261,7 +261,7 @@ class IntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.relay = MiniRelay(self.ctx)
         self.addCleanup(self.relay.close)
-        self.ca = str(self.certs.ca_cert)
+        self.ca = str(self.certs.server_cert)
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
 

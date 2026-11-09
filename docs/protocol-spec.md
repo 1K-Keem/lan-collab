@@ -156,6 +156,17 @@ UDP datagrams are independent JSON objects (not 4-byte TCP framing), up to **120
 
 `instance_id` is an ephemeral random client-process identifier, **not an authentication credential** and is not included in TCP authentication. No UDP packet may authenticate, alter the server's online list or extend authenticated TCP session lifetime. Manual IP/port remains mandatory fallback if UDP broadcast fails. TCP `PING/PONG` determines authoritative liveness.
 
+## TLS identity provisioning
+
+Clients directly trust the server's self-signed certificate distributed with the application
+through the repository agreed with the administrator. There is no separate CA key or signing
+service. The generator creates `server.pem` (public) and `server-key.pem` (private); only
+`server.pem` is bundled in `lancollab/client/`. Standard-library `ssl` verifies the certificate,
+validity and expected hostname before AUTH. Missing trust or failed verification closes/fails
+the connection; no system trust fallback or automatic acceptance of a discovered certificate.
+This is direct certificate trust, not raw public-key pinning. Certificate/key rotation requires
+coordinated distribution of the replacement trusted certificate. See [TLS setup](tls-setup.md).
+
 ## 7. Deadlines, errors and limits
 
 | Setting | Value / handling |

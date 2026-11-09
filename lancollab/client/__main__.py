@@ -6,7 +6,7 @@ import sys
 
 from lancollab.client.cli import ConsoleSession, prompt_identity
 from lancollab.client.discovery import DiscoveryClient, select_server
-from lancollab.common.tls import resolve_ca_file
+from lancollab.common.tls import resolve_trusted_cert
 from lancollab.common.socket_transport import SocketTransport
 
 
@@ -18,7 +18,8 @@ def main(argv: list[str] | None = None) -> int:
         "--server-name", default="lan-collab.local", help="TLS verified DNS identity"
     )
     parser.add_argument(
-        "--ca-file", help="Override trusted CA (default: LANCOLLAB_CA_FILE or bundled ca.pem)"
+        "--trusted-cert",
+        help="Trusted server certificate (default: LANCOLLAB_TRUSTED_CERT or bundled server.pem)",
     )
     parser.add_argument("--udp-port", type=int, default=40001)
     parser.add_argument(
@@ -31,7 +32,7 @@ def main(argv: list[str] | None = None) -> int:
     if not 1 <= args.port <= 65535:
         parser.error("Invalid TCP port")
     try:
-        ca_file = resolve_ca_file(args.ca_file)
+        trusted_cert = resolve_trusted_cert(args.trusted_cert)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     try:
@@ -45,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
                 host=endpoint.host,
                 port=endpoint.tcp_port,
                 server_hostname=args.server_name,
-                ca_file=ca_file,
+                trusted_cert=trusted_cert,
             )
             shell = ConsoleSession(
                 transport,

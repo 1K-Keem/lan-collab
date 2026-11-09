@@ -79,7 +79,7 @@ class TlsTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         base = Path(cls.tmp.name)
         cls.good = generate_dev_certs(base / "good")
-        cls.other_ca = generate_dev_certs(base / "other")  # unrelated CA
+        cls.other_server = generate_dev_certs(base / "other")  # unrelated server key
         cls.wrong_name = generate_dev_certs(base / "wrong", hostnames=("other.example",))
         cls.ctx = create_server_context(str(cls.good.server_cert), str(cls.good.server_key))
 
@@ -97,7 +97,7 @@ class TlsTests(unittest.TestCase):
     def test_trusted_certificate_connects_by_ip_and_exchanges_messages(self) -> None:
         server = self.listener()
         transport = SocketTransport.connect_verified(
-            "127.0.0.1", server.port, str(self.good.ca_cert)
+            "127.0.0.1", server.port, str(self.good.server_cert)
         )
         with transport:
             self.assertIn(transport.tls_version, ("TLSv1.2", "TLSv1.3"))
@@ -107,35 +107,50 @@ class TlsTests(unittest.TestCase):
         self.assertEqual(server.received[0].payload["text"], "hello")
         self.assertEqual(server.errors, [])
 
-    def test_untrusted_ca_is_rejected(self) -> None:
+    def test_untrusted_server_certificate_is_rejected(self) -> None:
         server = self.listener()
         with self.assertRaises(ssl.SSLCertVerificationError):
-            SocketTransport.connect_verified("127.0.0.1", server.port, str(self.other_ca.ca_cert))
+            SocketTransport.connect_verified(
+                "127.0.0.1", server.port, str(self.other_server.server_cert)
+            )
 
     def test_certificate_for_another_hostname_is_rejected(self) -> None:
         server = self.listener(self.wrong_name)
         with self.assertRaises(ssl.SSLCertVerificationError):
-            SocketTransport.connect_verified("127.0.0.1", server.port, str(self.wrong_name.ca_cert))
+            SocketTransport.connect_verified(
+                "127.0.0.1", server.port, str(self.wrong_name.server_cert)
+            )
+
+    def test_expired_trusted_certificate_is_rejected(self) -> None:
+        certs = generate_dev_certs(Path(self.tmp.name) / "expired", leaf_days=0)
+        server = self.listener(certs)
+        with self.assertRaises(ssl.SSLCertVerificationError):
+            SocketTransport.connect_verified("127.0.0.1", server.port, str(certs.server_cert))
+        self.assertEqual(server.received, [])
+
+    def test_certificate_without_matching_private_key_cannot_start_server(self) -> None:
+        with self.assertRaises(ssl.SSLError):
+            create_server_context(str(self.good.server_cert), str(self.other_server.server_key))
 
     def test_hostname_override_is_verified_not_the_ip(self) -> None:
         server = self.listener()
-        ctx = create_client_context(str(self.good.ca_cert))
+        ctx = create_client_context(str(self.good.server_cert))
         with self.assertRaises(ssl.SSLCertVerificationError):
             connect_tls("127.0.0.1", server.port, ctx, server_hostname="evil.example")
 
     def test_insecure_client_context_is_refused(self) -> None:
-        ctx = create_client_context(str(self.good.ca_cert))
+        ctx = create_client_context(str(self.good.server_cert))
         ctx.check_hostname = False
         with self.assertRaises(ValueError):
             connect_tls("127.0.0.1", 1, ctx)
-        ctx = create_client_context(str(self.good.ca_cert))
+        ctx = create_client_context(str(self.good.server_cert))
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         with self.assertRaises(ValueError):
             connect_tls("127.0.0.1", 1, ctx)
 
     def test_contexts_enforce_modern_tls(self) -> None:
-        client = create_client_context(str(self.good.ca_cert))
+        client = create_client_context(str(self.good.server_cert))
         self.assertEqual(client.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(client.check_hostname)
         self.assertGreaterEqual(client.minimum_version, ssl.TLSVersion.TLSv1_2)
@@ -222,7 +237,7 @@ class TlsTests(unittest.TestCase):
 
         threading.Thread(target=run_relay, daemon=True).start()
         with SocketTransport.connect_verified(
-            "127.0.0.1", relay.getsockname()[1], str(self.good.ca_cert)
+            "127.0.0.1", relay.getsockname()[1], str(self.good.server_cert)
         ) as transport:
             transport.send(Envelope("CHAT_GLOBAL", "r1", {"text": SECRET}))
             transport.receive(timeout=3)

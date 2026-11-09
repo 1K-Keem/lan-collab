@@ -2,7 +2,7 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV1 server, TV2 verified TLS/codec/core and real LAN integration remain pending. Green CI does **not** imply acceptance of real networking milestones.
+> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV2 verified TLS/codec/core are implemented. TV1 server and real LAN acceptance remain pending. Green CI does **not** imply acceptance of real networking milestones.
 
 ## Target system features and integration dependencies
 
@@ -26,15 +26,15 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 ## Layout
 
 ```text
-lancollab/common/   # Typed contracts, message_schema.py, test dummy, TV2 transport TODO
+lancollab/common/   # Typed contracts, message_schema.py, test dummy, verified TLS transport and validators
 lancollab/server/   # TV1 server TODO and main CLI
-lancollab/client/   # TV3 client logic, CLI, discovery and file I/O; TV2 TLS adapter still pending
+lancollab/client/   # TV3 client logic, CLI, discovery and file I/O
 tests/              # Synthetic and unit/mock tests, NOT production/LAN proof
 scripts/            # Mock demo plus opt-in real smoke harness (requires TV1/TV2)
 docs/               # Architecture, protocol spec, diagrams, checkpoint gates
 ```
 
-## Developer setup (mock-only now)
+## Developer setup
 
 ```bash
 git clone https://github.com/1K-Keem/lan-collab.git
@@ -49,7 +49,7 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-The server and admin account creation commands are still TV1 TODOs. The TV3 client CLI now parses commands and UDP/discovery options, but `python -m lancollab.client` deliberately **fails closed** until TV2 implements `SocketTransport.connect_verified` with verified TLS. Never use real credentials with FakeTransport or plaintext TCP.
+The server and admin account creation commands are still TV1 TODOs. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and an implemented server. Never use real credentials with FakeTransport or plaintext TCP.
 
 ## TV3 implementation and report handoff
 
@@ -75,3 +75,10 @@ The server and admin account creation commands are still TV1 TODOs. The TV3 clie
 ## Workflow and academic integrity
 
 Contribute through short-lived branches/PRs with real authors and tests. Cross-review full codebase before oral defense. The assignment limits AI assistance to syntax references and debugging: mock scaffolding/documentation does **not** replace student-implemented networking logic. Clarify with lecturer whether TLS suffices for the encryption rubric and whether public/private repository submission is required.
+
+## Server identity
+
+The client trusts the public self-signed `lancollab/client/server.pem` distributed with the app
+from the group's agreed repository. No separate CA is required. The administrator keeps the
+matching private key on the server. See [TLS setup and migration](docs/tls-setup.md) for
+`--bundle-cert`, `--trusted-cert`, certificate renewal and the two-terminal handshake test.

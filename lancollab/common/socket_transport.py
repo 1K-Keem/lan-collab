@@ -77,14 +77,14 @@ class SocketTransport:
         cls,
         host: str,
         port: int,
-        ca_file: str | None = None,
+        trusted_cert: str | None = None,
         *,
         server_hostname: str = SERVER_HOSTNAME,
         timeout: float = HANDSHAKE_TIMEOUT,
         context: ssl.SSLContext | None = None,
     ) -> SocketTransport:
         """Client side: TCP connect + verified TLS (certificate and hostname checked)."""
-        ctx = context or create_client_context(ca_file)
+        ctx = context or create_client_context(trusted_cert)
         tls = connect_tls(host, port, ctx, server_hostname=server_hostname, timeout=timeout)
         return cls(tls, "client")
 

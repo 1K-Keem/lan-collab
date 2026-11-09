@@ -1,120 +1,130 @@
-# TLS setup (verified server identity)
+# TLS setup: directly trusted self-signed server certificate
 
-The client always verifies the server certificate **and** the name `lan-collab.local`, even
-when it connects to a raw IP address. There is no `CERT_NONE` mode. Trust is a CA file passed
-explicitly; nothing is installed into the operating-system trust store.
+The admin and clients agree on a trusted repository containing the app and public
+`lancollab/client/server.pem`. Clients trust that certificate locally, without contacting
+GitHub during a handshake. The server proves possession of the matching private key.
+This is direct certificate trust, not raw public-key pinning. No separate CA is created.
 
-## 1. Generate development certificates (once, on one machine)
+## Generate and distribute
 
-```bash
-python -m pip install -r requirements-dev.txt   # provides the 'cryptography' generator
-python -m lancollab.common.devcerts --out certs --bundle-ca
-git add lancollab/client/ca.pem                 # the PUBLIC CA only, see section 1b
-```
-
-| File | Who gets it | Secret? |
-| --- | --- | --- |
-| `certs/ca.pem` | every client, via the bundled `lancollab/client/ca.pem` (or `--ca-file`) | no |
-| `certs/server.pem`, `certs/server-key.pem` | the server only | **key is secret** |
-| `certs/ca-key.pem` | nobody; keep offline | **secret** |
-
-`certs/`, `*.pem` and `*.key` are in `.gitignore`. Never commit keys. Add
-`--san other.name` or `--ip 192.168.1.20` for extra names; `--force` overwrites.
-
-## 1b. How clients get `ca.pem` (no copying by hand)
-
-`--bundle-ca` copies the public `ca.pem` to `lancollab/client/ca.pem`. Commit it: every clone,
-download or release of the client then carries its own trust anchor, so 20 or 1000 clients need
-no extra step. The server never sends it over the network (an attacker in the middle could swap
-it); clients trust it because it came with the app.
-
-The client picks its CA in this order:
-
-1. `--ca-file PATH` (explicit; a missing or invalid file is an error, never skipped)
-2. the `LANCOLLAB_CA_FILE` environment variable
-3. the bundled `lancollab/client/ca.pem`
-4. nothing found: the operating-system trust store (right for a publicly trusted certificate,
-   wrong for this development CA, so the connection fails with a certificate error)
-
-With the bundled CA, start the client with `python -m lancollab.client --host SERVER_IP`.
-No `--ca-file` argument is needed. Use `--discover` instead of `--host SERVER_IP` for LAN
-discovery. Certificate and hostname verification remain required in either mode.
-
-Safety rails: `.gitignore` ignores `*.pem` but explicitly allows `lancollab/client/ca.pem`;
-a file containing a private key is refused as a trust anchor; `tests/test_trust_anchor.py`
-fails if any private key text appears anywhere in the source tree, and checks with `git
-check-ignore` that the CA can be committed while every key file stays ignored.
-
-Never run `--bundle-ca` with a CA you did not generate yourself. If the CA key leaks or you
-regenerate the CA: run step 1 again with `--force` (it refuses to replace a different bundled CA
-otherwise), commit the new `ca.pem`, and ship a new client. Clients holding the old CA will
-reject the new server certificate, which is the intended behaviour. Packaging note: the project
-runs from source today; if you later build a wheel or exe, include `lancollab/client/ca.pem`
-as package data.
-
-## 2. Without Python's `cryptography` (OpenSSL 1.1.1+ / 3.x)
+From the project root, using the active virtual environment:
 
 ```bash
-mkdir certs && cd certs
-openssl ecparam -name prime256v1 -genkey -noout -out ca-key.pem
-openssl req -x509 -new -key ca-key.pem -sha256 -days 825 -subj "/CN=LAN Collab Development CA" \
-  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
-  -addext "keyUsage=critical,keyCertSign,cRLSign" -out ca.pem
-openssl ecparam -name prime256v1 -genkey -noout -out server-key.pem
-openssl req -new -key server-key.pem -subj "/CN=lan-collab.local" -out server.csr
-printf "subjectAltName=DNS:lan-collab.local\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n" > server.ext
-openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
-  -days 365 -sha256 -extfile server.ext -out server.pem
+python -m pip install -r requirements-dev.txt
+python -m lancollab.common.devcerts --out certs/direct-trust --bundle-cert
 ```
 
-On Windows use Git Bash (ships OpenSSL) or WSL; the files work unchanged on Windows, macOS and
-Linux because they are only read through Python's `ssl` module.
+The generator creates only:
 
-## 3. Use them
+| File | Usage |
+| --- | --- |
+| `certs/direct-trust/server.pem` | Public self-signed server certificate |
+| `certs/direct-trust/server-key.pem` | Private server key; never distribute or commit |
+| `lancollab/client/server.pem` | Public copy installed by `--bundle-cert`; distribute with app |
+
+The certificate uses EC P-256, SHA-256, SAN `DNS:lan-collab.local`, serverAuth usage,
+and `BasicConstraints(ca=False)`. It is valid for 365 days. Extra `--san` and `--ip` options
+add names/addresses. Existing output files and a different bundled certificate are refused
+unless `--force` is explicitly supplied. Never generate a new identity on each startup.
+Run provisioning only on the server/admin machine; clients download the public certificate.
+The CA-free TLS runtime uses standard-library `ssl`; `cryptography` is needed only for
+provisioning and tests.
+
+## Client trust selection
+
+1. `--trusted-cert PATH`
+2. `LANCOLLAB_TRUSTED_CERT`
+3. Bundled `lancollab/client/server.pem`
+
+Missing or invalid trust is an error. No fallback to system trust, plaintext TCP or disabled
+verification. Public certificate files containing private keys are rejected.
+
+```bash
+python -m lancollab.client --host SERVER_IP
+python -m lancollab.client --discover
+python -m lancollab.client --host SERVER_IP --trusted-cert path/to/server.pem
+```
+
+The full CLI still requires the TV1 production server. The hostname verified is
+`--server-name` (default `lan-collab.local`), independently of the IP or UDP discovery reply.
+Username/password may be collected before connecting, but are sent only after verified TLS.
+
+## API and verification
 
 ```python
-from lancollab.common.tls import create_server_context
+from lancollab.common.tls import create_server_context, resolve_trusted_cert
 from lancollab.common.socket_transport import SocketTransport
 
-# server (per accepted socket, inside a worker thread, never the accept loop)
-ctx = create_server_context("certs/server.pem", "certs/server-key.pem")
-transport = SocketTransport.accept_verified(ctx, raw_socket)  # 5 s absolute deadline
+context = create_server_context(
+    "certs/direct-trust/server.pem", "certs/direct-trust/server-key.pem"
+)
+# After listener.accept(), in a server worker:
+transport = SocketTransport.accept_verified(context, raw_socket)
 
-# client: connect by IP, verify the name lan-collab.local against the bundled/chosen CA
-from lancollab.common.tls import resolve_ca_file
-
-ca_file = resolve_ca_file(args.ca_file)  # --ca-file > $LANCOLLAB_CA_FILE > bundled
-transport = SocketTransport.connect_verified("192.168.1.20", 40000, ca_file)
+# Client:
+transport = SocketTransport.connect_verified(
+    host="127.0.0.1",
+    port=40000,
+    trusted_cert=resolve_trusted_cert(),
+    server_hostname="lan-collab.local",
+)
 ```
 
-## 4. What a failure looks like
+`create_client_context()` loads the trusted server certificate using Python's `cafile`
+parameter (the library's parameter name does not imply a separate CA in this setup).
+`check_hostname=True`, `CERT_REQUIRED` and TLS 1.2+ remain enforced. OpenSSL checks certificate
+trust, validity and hostname during `do_handshake()`. TLS proves possession of the private key.
+The connector returns a message transport only after success. It does not perform raw
+public-key comparison or silently accept a certificate received over the network.
+See the [Python ssl documentation](https://docs.python.org/3/library/ssl.html).
 
-| Situation | Result on the client |
+## Handshake-only demonstration
+
+After provisioning, run in two terminals from the project root:
+
+```bash
+python -m scripts.handshake_server
+```
+
+```bash
+python -m scripts.handshake_client
+```
+
+The server accepts one connection and exits. No AUTH or chat messages are exchanged. To test
+rejection, restart the server and run the client with `--server-name wrong.example`.
+Use `--cert`/`--key` on the demo server and `--trusted-cert` on the demo client to choose
+other files. For two machines use server `--host 0.0.0.0` and client `--host SERVER_IP`.
+
+## Migration from the old CA model
+
+The bundled CA has been removed. Use the self-signed pair in `certs/direct-trust` and
+distribute only `lancollab/client/server.pem`. Old deployments should retire their CA files
+and CA-signed server pair after switching to the new identity. Replace `--ca-file` with
+`--trusted-cert`, `LANCOLLAB_CA_FILE` with `LANCOLLAB_TRUSTED_CERT`, and `--bundle-ca` with
+`--bundle-cert`. Python callers use `trusted_cert`, `resolve_trusted_cert`,
+`BUNDLED_SERVER_CERT`, and `install_bundled_cert`. DevCerts exposes only `server_cert` and
+`server_key`. Update old handshake demos to use the self-signed certificate.
+
+Only the public server certificate is allowed by the new `.gitignore` exception. Keep the
+private key on the server; it cannot be recovered from a clone. Include the public certificate
+as package data when building a wheel/executable.
+
+## Renewal and failures
+
+A changed server identity must be distributed through the agreed trusted repository before
+clients connect. Do not fetch replacement trust from an unverified server. Provision the new
+pair in a separate directory, review it, then install the public certificate with
+`install_bundled_cert(new_cert, force=True)` and coordinate the server/client rollout.
+Keep old keys until rollout is planned; do not use `--force` casually.
+
+| Failure | Result |
 | --- | --- |
-| Server cert signed by a different CA | `ssl.SSLCertVerificationError` |
-| Server cert lacks SAN `lan-collab.local` | `ssl.SSLCertVerificationError` |
-| Server never completes the handshake | `TimeoutError` after 5 s total |
-| Plain-text client talks to the TLS port | server handshake fails; nothing is dispatched |
+| Different/untrusted server certificate | TLS certificate verification fails |
+| Wrong hostname or expired certificate | TLS certificate verification fails |
+| Certificate and private key mismatch | Server context fails to load |
+| Missing trust file | Startup fails before prompting for credentials |
+| Silent TLS peer | Absolute handshake deadline (default 5 seconds) |
 
-Expired certificate: regenerate with `--force` and redistribute `ca.pem` only if the CA itself
-changed (the CA lives 825 days, the server certificate 365 days).
-
-## 5. Evidence for the checkpoint
-
-`tests/test_tls.py` proves trusted/untrusted/mismatched certificates, bounded handshakes and,
-with a recording relay, that the captured TCP bytes contain neither the chat text nor the
-message type. For a Wireshark capture run the demo server and client on two machines and
-capture on the LAN interface: after the TLS handshake all application data is
-`Application Data` records. Whether TLS alone satisfies the "encrypt/decrypt payload"
-milestone is still the open question for the lecturer (protocol-spec section 8).
-
-## Client connection call path
-
-The CLI resolves the CA and endpoint, then calls
-`SocketTransport.connect_verified(host=..., port=..., server_hostname=..., ca_file=...)`
-directly. The smoke harness calls the same method with its explicit CA argument.
-The method creates the TLS context, calls `connect_tls()`, and wraps the verified
-TLS socket in a message transport. `connect_tls()` uses Python sockets (the OS
-performs the TCP handshake), then completes TLS certificate and hostname verification.
-Application framing stays in `SocketTransport`; credentials are sent only after
-this call succeeds. There is no dynamic connector lookup or plaintext fallback.
+Do not use CERT_NONE, disable hostname checking, or treat UDP replies as proof of identity.
+These certificates work across Windows/macOS/Linux through Python/OpenSSL without installing
+anything into the operating-system trust store.
