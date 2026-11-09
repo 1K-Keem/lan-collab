@@ -1,4 +1,4 @@
-"""Strict length-prefixed JSON codec for protocol design revision 1.2.
+"""Strict length-prefixed JSON codec for protocol design revision 1.3.
 
 Frame layout: ``uint32_big_endian(N)`` followed by exactly ``N`` bytes of UTF-8 JSON,
 ``1 <= N <= 262144``. The decoder consumes the declarative catalog in
@@ -247,8 +247,6 @@ _INT_KINDS: dict[str, Validator] = {
 
 # Plain "str" fields: (min, max) UTF-8 bytes. Unlisted fields use the default.
 _PLAIN_STR_LIMITS: dict[str, tuple[int, int]] = {
-    "client_name": (1, 128),
-    "server_name": (1, 128),
     "password": (1, 1024),
     "message": (1, 1024),
 }

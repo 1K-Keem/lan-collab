@@ -116,7 +116,7 @@ class TransportTests(unittest.TestCase):
             raw_c.close()
 
     def test_invalid_json_closes_but_semantic_error_keeps_stream_in_sync(self) -> None:
-        bad = b'{"version":1,"type":"HELLO","request_id":"r1","payload":{}}'
+        bad = b'{"version":1,"type":"AUTH_REQUEST","request_id":"r1","payload":{}}'
         self.raw_client.sendall(struct.pack(">I", len(bad)) + bad)
         self.client.send(chat(2))
         with self.assertRaises(MessageError) as ctx:
@@ -193,9 +193,7 @@ class TransportTests(unittest.TestCase):
         from lancollab.common.codec import OutboundMessageError
 
         with self.assertRaises(OutboundMessageError):
-            self.client.send(
-                Envelope("HELLO_ACK", "r1", {"server_name": "s", "protocol_version": 1})
-            )
+            self.client.send(Envelope("AUTH_RESULT", "r1", {"ok": True, "username": "alice"}))
         with self.assertRaises(TimeoutError):  # nothing was written
             self.server.receive(timeout=0.1)
 

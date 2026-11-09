@@ -85,7 +85,7 @@ class ContractScaffoldTests(unittest.TestCase):
     def test_events_preserve_concrete_session_target_on_takeover(self) -> None:
         old = SessionIdentity("192.0.2.1", 50001, "session-old", "alice")
         replacement = SessionIdentity("192.0.2.1", 50002, "session-new", "alice")
-        event = OutboundEvent(old, example_messages()["hello_ack"])
+        event = OutboundEvent(old, example_messages()["auth_ok"])
         self.assertEqual(event.recipient, old)
         self.assertNotEqual(event.recipient, replacement)
 
@@ -99,14 +99,14 @@ class ContractScaffoldTests(unittest.TestCase):
     def test_fake_peer_contract(self) -> None:
         client, server = FakeTransport.pair()
         self.assertIsInstance(client, MessageTransport)
-        hello = example_messages()["hello"]
-        client.send(hello)
-        self.assertEqual(server.receive(), hello)
+        auth = example_messages()["auth"]
+        client.send(auth)
+        self.assertEqual(server.receive(), auth)
         with self.assertRaises(TimeoutError):
             server.receive()
         client.close()
         with self.assertRaises(BrokenPipeError):
-            server.send(hello)
+            server.send(auth)
 
 
 if __name__ == "__main__":

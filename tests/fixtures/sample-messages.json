@@ -3,10 +3,11 @@
     "direction": "C",
     "message": {
       "version": 1,
-      "type": "HELLO",
-      "request_id": "req-hello",
+      "type": "AUTH_REQUEST",
+      "request_id": "req-auth",
       "payload": {
-        "client_name": "fixture-client"
+        "username": "alice",
+        "password": "synthetic-fixture-only"
       }
     }
   },

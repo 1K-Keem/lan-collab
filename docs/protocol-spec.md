@@ -1,6 +1,8 @@
-# LAN Collab application protocol — design revision 1.2
+# LAN Collab application protocol — design revision 1.3
 
-**Status:** REVISED IMPLEMENTATION BASELINE — **TEAM REVIEW PENDING** (25 October 2026). Owner requested fixes after a protocol design review. This supersedes the v1.1 design; TV1, TV2 and TV3 must confirm the changed contract in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2) before merging incompatible networking handlers. The **wire envelope version remains integer `1`** because production has not shipped; “1.2” names this documentation revision, not a different on-wire version.
+**Connection-flow update (9 November 2026):** Application greetings have been removed. Standard TCP and verified TLS handshakes remain; authentication is the first application exchange. Deploy client and server together: the previous greeting-based flow is incompatible. Wire version remains 1 for this pre-release project. The 10-second authentication deadline begins at TLS completion.
+
+**Status:** REVISED IMPLEMENTATION BASELINE — **TEAM REVIEW PENDING** (9 November 2026). Direct authentication replaces the previous greeting exchange. This supersedes the v1.2 connection flow; TV1, TV2 and TV3 must confirm the changed contract in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2) before merging incompatible networking handlers. The **wire envelope version remains integer `1`** because production has not shipped; “1.3” names this documentation revision, not a different on-wire version.
 
 **Scope:** Python 3.11+, raw TCP and UDP sockets, one server, no HTTP/WebSocket/P2P, no persistent server-side file storage, no resuming interrupted transfers.
 
@@ -9,7 +11,7 @@
 - Persistent TLS-protected TCP connection for chat, login, file and connection control; default service port `40000` (CLI configurable).
 - A single application frame is `uint32_big_endian(body_length)` followed by **exactly** `body_length` bytes of UTF-8 JSON. Permitted length is 1–262144 bytes; reject other lengths before allocation. TCP `recv` may return a fragment or several frames.
 - Required top-level JSON object keys are **exactly** `version` (integer 1), `type` (string), `request_id` (1–64 printable ASCII characters, code points 0x21–0x7E) and `payload` (JSON object). Reject unknown/extra top-level or payload keys, duplicate JSON keys, invalid types and unsupported types in v1; distinguish `bool` from `int` in Python. Numeric limits below are protocol constraints, not suggestions.
-- Client request `request_id` is unique on that session. **Direct server response** (`HELLO_ACK`, `AUTH_RESULT`, `CHAT_ACK`, `ERROR`, `PONG`) copies that request's `request_id`; no `ref_request_id` field. **Forwarded or unsolicited events** use a fresh server-generated `request_id`. File transfer messages correlate by `transfer_id` rather than envelope IDs. `PONG` is also a direct response: it copies the PING request ID and nonce. Client-originated PONG responses are exempt from the client-request uniqueness rule; they do not create new requests. Reject duplicate IDs on actual client requests without re-executing the operation. Bound the per-session request-ID history to 65536 entries; on exhaustion reject further requests and close the connection; the client reconnects with a fresh session. Never evict IDs and then accept replays.
+- Client request `request_id` is unique on that session. **Direct server response** (`AUTH_RESULT`, `CHAT_ACK`, `ERROR`, `PONG`) copies that request's `request_id`; no `ref_request_id` field. **Forwarded or unsolicited events** use a fresh server-generated `request_id`. File transfer messages correlate by `transfer_id` rather than envelope IDs. `PONG` is also a direct response: it copies the PING request ID and nonce. Client-originated PONG responses are exempt from the client-request uniqueness rule; they do not create new requests. Reject duplicate IDs on actual client requests without re-executing the operation. Bound the per-session request-ID history to 65536 entries; on exhaustion reject further requests and close the connection; the client reconnects with a fresh session. Never evict IDs and then accept replays.
 - If a frame is unparsable or has no trustworthy `request_id`, close the connection without attempting `ERROR`. If JSON envelope is parseable and has a valid request ID but the request is semantically invalid, return `ERROR` with that same request ID, or `AUTH_RESULT(ok=false)` on auth failure.
 - File and message strings are limited by their UTF-8 byte length where stated. Username: `[A-Za-z0-9_.-]{1,32}`, case-sensitive. Chat: 1–4096 UTF-8 bytes. Filename: basename <= 255 UTF-8 bytes. Sender-provided `from` is **never** trusted; it comes from authenticated server session.
 - `lancollab/common/message_schema.py` is the **declarative schema catalog** for directions/fields. The production codec/validators must consume it and implement full types, ranges and state checks; currently it is NOT a functional validator. Tests/fixtures reference that catalog to catch drift.
@@ -20,8 +22,6 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 | Message | Direction | Required payload; optional payload | Semantics |
 | --- | --- | --- | --- |
-| `HELLO` | C→S | `client_name:str` | First application message after TLS |
-| `HELLO_ACK` | S→C | `server_name:str, protocol_version:int(1)` | Direct response |
 | `AUTH_REQUEST` | C→S | `username:str, password:str` | Only over verified TLS |
 | `AUTH_RESULT` | S→C | `ok:bool`; `username?:str, error_code?:str` | Success requires username and forbids error_code; failure requires error_code=AUTH_FAILED and forbids username |
 | `USER_LIST` | S→C | `users:[{username:str, ip:str, port:int}]` | Atomic authenticated presence snapshot; port = client TCP **ephemeral source** port |
@@ -49,7 +49,7 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 ## 3. Authentication and sessions
 
 - **No REGISTER over the network in MVP.** Administrator provisions accounts using server CLI `python -m lancollab.server --add-user alice` (command is an implementation TODO), securely prompts for password and stores salted password hashes (e.g. `hashlib.scrypt` or PBKDF2) in SQLite. README must document exact command after implementation.
-- TLS handshake deadline: **5s**, executed in a bounded client worker, never in the accept loop. Complete `HELLO` plus `AUTH_REQUEST` within **10s** from TLS completion (client gathers username/password before opening the connection). Close silent/unauthenticated clients at deadline. Allow at most **3** failed authentication attempts per connection; use `AUTH_FAILED` generically for unknown user and bad password.
+- TLS handshake deadline: **5s**, executed in a bounded client worker, never in the accept loop. Complete authentication with `AUTH_REQUEST` within **10s** from TLS completion (client gathers username/password before opening the connection). Close silent/unauthenticated clients at deadline. Allow at most **3** failed authentication attempts per connection; use `AUTH_FAILED` generically for unknown user and bad password.
 - Authenticated **new session replaces old session** for the same username (atomic takeover, after successful password check); close old connection. Session registry uses an identity/generation token so old connection cleanup cannot remove or mark newer session offline.
 - On login, under one registry lock: install authenticated session, build consistent USER_LIST snapshot, register ordering of future PRESENCE_UPDATE events, and queue notifications **nonblocking**; never block socket I/O while holding registry lock. Readers should handle duplicate/ordered presence updates idempotently.
 - Server retains authenticated username, TCP peer IP and **ephemeral source port**. If exposed to clients, online PRESENCE_UPDATE carries same `ip`/`port` as USER_LIST; offline update does not carry them.
@@ -62,20 +62,17 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 | State | Allowed client-originated messages | Transition / rejection |
 | --- | --- | --- |
-| WAIT_HELLO | HELLO | Queue HELLO_ACK, then WAIT_AUTH; other messages close the connection |
 | WAIT_AUTH | AUTH_REQUEST, LOGOUT | Success → AUTHENTICATED; failure stays until attempt/deadline limit; other valid requests → ERROR(INVALID_STATE) |
-| AUTHENTICATED | Chat/file requests, PING, matching PONG, LOGOUT | Repeated HELLO/AUTH_REQUEST → ERROR(INVALID_STATE); enforce per-transfer state and roles |
+| AUTHENTICATED | Chat/file requests, PING, matching PONG, LOGOUT | Repeated AUTH_REQUEST → ERROR(INVALID_STATE); enforce per-transfer state and roles |
 | CLOSING / CLOSED | None | No more dispatch; invalidate session and perform idempotent cleanup |
 
-After TLS, the server starts in WAIT_HELLO. Client waits for HELLO_ACK before AUTH_REQUEST and for AUTH_RESULT(ok=true) before authenticated operations. Server queues AUTH_RESULT before USER_LIST and subsequent presence events. Malformed framing follows §1 in every state. LOGOUT, takeover, EOF, timeout or writer failure enters CLOSING. Three failed credentials or the absolute HELLO/AUTH deadline close the connection after a best-effort final response.
+After verified TLS, the server and client start in WAIT_AUTH. AUTH_REQUEST is the first application request; the server validates envelope version 1 before authentication. Client waits for AUTH_RESULT(ok=true) before authenticated operations. Server queues AUTH_RESULT before USER_LIST and subsequent presence events. Malformed framing follows §1 in every state. LOGOUT, takeover, EOF, timeout or writer failure enters CLOSING. Three failed credentials or the absolute AUTH deadline close the connection after a best-effort final response.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> WAIT_HELLO: Verified TLS established
-    WAIT_HELLO --> WAIT_AUTH: HELLO and queued HELLO_ACK
+    [*] --> WAIT_AUTH: Verified TLS established
     WAIT_AUTH --> WAIT_AUTH: Failed authentication below limit
     WAIT_AUTH --> AUTHENTICATED: Valid authentication
-    WAIT_HELLO --> CLOSING: Deadline or invalid first message
     WAIT_AUTH --> CLOSING: Deadline, attempt limit or logout
     AUTHENTICATED --> CLOSING: Logout, EOF, timeout or takeover
     CLOSING --> CLOSED: Idempotent cleanup
@@ -157,14 +154,14 @@ UDP datagrams are independent JSON objects (not 4-byte TCP framing), up to **120
 | `HEARTBEAT` | client unicast → server | `version:1, type:"HEARTBEAT", instance_id:str, seq:int` | Probe network quality |
 | `HEARTBEAT_ACK` | server unicast → requester | `version:1, type:"HEARTBEAT_ACK", instance_id:str, seq:int` | Echo probe; client computes RTT and loss percentage |
 
-`instance_id` is an ephemeral random client-process identifier, **not an authentication credential** and need not be included in TCP `HELLO`. No UDP packet may authenticate, alter the server's online list or extend authenticated TCP session lifetime. Manual IP/port remains mandatory fallback if UDP broadcast fails. TCP `PING/PONG` determines authoritative liveness.
+`instance_id` is an ephemeral random client-process identifier, **not an authentication credential** and is not included in TCP authentication. No UDP packet may authenticate, alter the server's online list or extend authenticated TCP session lifetime. Manual IP/port remains mandatory fallback if UDP broadcast fails. TCP `PING/PONG` determines authoritative liveness.
 
 ## 7. Deadlines, errors and limits
 
 | Setting | Value / handling |
 | --- | --- |
 | TCP/TLS handshake | 5 seconds maximum |
-| HELLO + AUTH | 10 seconds total after TLS completes |
+| AUTH | 10 seconds total after TLS completes |
 | Bad logins | 3 per connection; generic AUTH_FAILED |
 | FILE_OFFER reply | 60 seconds |
 | After FILE_ACCEPT to first chunk | 10 seconds |

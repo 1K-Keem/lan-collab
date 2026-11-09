@@ -57,7 +57,7 @@ whole-frame; a reader thread and a writer thread can share one transport.
 
 * `ca_file = resolve_ca_file(args.ca_file)` (already parsed by `python -m lancollab.client`:
   `--ca-file`, then `$LANCOLLAB_CA_FILE`, then the bundled `lancollab/client/ca.pem`), then
-  `SocketTransport.connect_verified(host, port, ca_file)`; send `HELLO`, wait for `HELLO_ACK`.
+  `SocketTransport.connect_verified(host, port, ca_file)`; send `AUTH_REQUEST` directly and wait for the matching `AUTH_RESULT`.
   Show a certificate failure (`ssl.SSLCertVerificationError`) as "server identity could not be
   verified" and never offer to continue anyway.
 * Sender: `out = OutgoingTransfer(tid, size)`; reader thread calls `out.on_accept()`,

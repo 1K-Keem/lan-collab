@@ -19,15 +19,6 @@ class ClientLogicTests(unittest.TestCase):
         self.client = CollabClient(self.client_end, auth_allowed=True)
 
     def authenticate(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.assertEqual(self.server_end.receive().type, "HELLO")
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
         self.client.handle_event(
@@ -39,8 +30,8 @@ class ClientLogicTests(unittest.TestCase):
         )
         self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
 
-    def test_hello_and_auth_state(self):
-        self.assertEqual(self.client.state, ClientState.READY)
+    def test_direct_auth_state(self):
+        self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
         with self.assertRaises(RuntimeError):
             self.client.send_global("too early")
         self.authenticate()
@@ -48,31 +39,27 @@ class ClientLogicTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.client.login("alice", "synthetic-password-only")
 
-    def test_wrong_hello_ack_id_closes_client(self):
-        self.client.send_hello("mock-client")
+    def test_wrong_auth_result_id_closes_client(self):
+        self.client.login("alice", "synthetic-password-only")
+        self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
             self.client.handle_event(
-                Envelope(
-                    "HELLO_ACK",
-                    "wrong-id",
-                    {"server_name": "x", "protocol_version": 1},
-                )
+                Envelope("AUTH_RESULT", "wrong-id", {"ok": True, "username": "alice"})
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
-    def test_hello_error_closes_transport(self):
-        req = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "ERROR",
-                req,
-                {"code": "INVALID_MESSAGE", "message": "bad hello"},
-            )
-        )
+    def test_pending_auth_cannot_login_or_chat(self):
+        self.client.login("alice", "synthetic-password-only")
+        self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
+        with self.assertRaises(RuntimeError):
+            self.client.login("bob", "synthetic-password-only")
+        with self.assertRaises(RuntimeError):
+            self.client.send_global("too early")
+
+    def test_logout_before_auth(self):
+        self.client.logout()
+        self.assertEqual(self.server_end.receive().type, "LOGOUT")
         self.assertEqual(self.client.state, ClientState.CLOSED)
-        with self.assertRaises(BrokenPipeError):
-            self.server_end.send(Envelope("PING", "x", {"nonce": "hi"}))
 
     def test_presence_before_auth_is_rejected(self):
         with self.assertRaises(ProtocolViolation):
@@ -86,15 +73,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_auth_failure_can_retry(self):
-        req = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                req,
-                {"server_name": "mock", "protocol_version": 1},
-            )
-        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         self.client.handle_event(
@@ -158,15 +136,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(safe_display("hi\nthere"), "hi\\u000athere")
 
     def test_auth_success_username_must_match_request(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         with self.assertRaisesRegex(ProtocolViolation, "username mismatch"):
@@ -191,15 +160,6 @@ class ClientLogicTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 client_end, server_end = FakeTransport.pair()
                 client = CollabClient(client_end, auth_allowed=True)
-                hello_id = client.send_hello("mock-client")
-                server_end.receive()
-                client.handle_event(
-                    Envelope(
-                        "HELLO_ACK",
-                        hello_id,
-                        {"server_name": "mock-server", "protocol_version": 1},
-                    )
-                )
                 auth_id = client.login("alice", "synthetic-password-only")
                 server_end.receive()
                 with self.assertRaises(ProtocolViolation):
@@ -207,15 +167,6 @@ class ClientLogicTests(unittest.TestCase):
                 self.assertEqual(client.state, ClientState.CLOSED)
 
     def test_auth_fail_drops_requested_identity(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         self.client.handle_event(
@@ -238,15 +189,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(self.client.username, "bob")
 
     def test_auth_error_drops_requested_identity(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         self.client.handle_event(
@@ -258,19 +200,6 @@ class ClientLogicTests(unittest.TestCase):
         )
         self.assertIsNone(self.client._requested_username)
         self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
-
-    def test_hello_ack_requires_exact_fields(self):
-        req = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(
-                Envelope(
-                    "HELLO_ACK",
-                    req,
-                    {"server_name": "mock", "protocol_version": True},
-                )
-            )
-        self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_chat_ack_unmatched_is_rejected(self):
         self.authenticate()
@@ -308,21 +237,16 @@ class ClientLogicTests(unittest.TestCase):
             )
 
     def test_event_version_must_be_int_one(self):
-        self.client.send_hello("mock-client")
+        req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
             self.client.handle_event(
-                Envelope(
-                    "HELLO_ACK",
-                    "req-1",
-                    {"server_name": "mock", "protocol_version": 1},
-                    version=True,
-                )
+                Envelope("AUTH_RESULT", req, {"ok": True, "username": "alice"}, version=True)
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_close_idempotent_and_clears_pending(self):
-        self.client.send_hello("mock-client")
+        self.client.login("alice", "synthetic-password-only")
         self.client.close()
         self.client.close()
         self.assertEqual(self.client.state, ClientState.CLOSED)
@@ -365,11 +289,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(message.type, "LOGOUT")
         self.assertEqual(message.payload, {})
         self.assertEqual(self.client.state, ClientState.CLOSED)
-
-    def test_logout_not_allowed_before_hello(self):
-        with self.assertRaises(RuntimeError):
-            self.client.logout()
-        self.assertEqual(self.client.state, ClientState.READY)
 
 
 if __name__ == "__main__":

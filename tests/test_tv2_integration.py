@@ -1,6 +1,6 @@
 """TV2 pieces together over real sockets: verified TLS + codec + transport + transfer core.
 
-``MiniRelay`` is a TEST-ONLY stand-in for TV1's server: it trusts the HELLO client_name as the
+``MiniRelay`` is a TEST-ONLY stand-in for TV1's server: it trusts the AUTH_REQUEST username (synthetic credentials only) as the
 username and has no authentication, queues or presence. It exists to prove the TV2 components
 interoperate under real concurrency, not to replace the production server.
 """
@@ -72,17 +72,18 @@ class MiniRelay:
     def _serve(self, raw: socket.socket, addr) -> None:
         try:
             transport = SocketTransport.accept_verified(self.context, raw)
-            hello = transport.receive(timeout=5)
+            auth = transport.receive(timeout=5)
+            assert auth.type == "AUTH_REQUEST"
         except Exception:  # noqa: BLE001
             return
-        identity = SessionIdentity(addr[0], addr[1], uuid.uuid4().hex, hello.payload["client_name"])
+        identity = SessionIdentity(addr[0], addr[1], uuid.uuid4().hex, auth.payload["username"])
         assert identity.username is not None
         with self.lock:
             self.users[identity.username] = identity
             self.transports[identity.session_id] = transport
             self.registry.open_session(identity)
         transport.send(
-            Envelope("HELLO_ACK", hello.request_id, {"server_name": "t", "protocol_version": 1})
+            Envelope("AUTH_RESULT", auth.request_id, {"ok": True, "username": identity.username})
         )
         try:
             while True:
@@ -139,7 +140,9 @@ class Peer:
         self.dir = download_dir
         self.auto_accept = auto_accept
         self.transport = SocketTransport.connect_verified("127.0.0.1", relay.port, ca)
-        self.transport.send(Envelope("HELLO", rid(), {"client_name": name}))
+        self.transport.send(
+            Envelope("AUTH_REQUEST", rid(), {"username": name, "password": "synthetic-test-only"})
+        )
         self.transport.receive(timeout=5)
         self.outgoing: dict[str, OutgoingTransfer] = {}
         self.incoming: dict[str, IncomingTransfer] = {}

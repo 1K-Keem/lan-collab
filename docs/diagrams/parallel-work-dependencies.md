@@ -6,7 +6,7 @@ flowchart TB
     S["TV1: TCP server, sessions, routing<br/>FakeTransport first"]
     CODEC["TV2: framing, TLS, file ACK/window"]
     C["TV3: client, file I/O, UDP, tests<br/>FakeTransport first"]
-    A["CP-A: real TCP framing + HELLO"]
+    A["CP-A: real TCP connection + framing"]
     B["CP-B: verified TLS, 3-client login/chat"]
     D["CP-C: files, TLS negative tests, 20 clients"]
     FINAL["Report and oral walkthrough"]

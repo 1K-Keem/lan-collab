@@ -2,15 +2,11 @@
 
 ```mermaid
 stateDiagram-v2
-    [*] --> READY
-    READY --> WAIT_HELLO_ACK: send HELLO
-    WAIT_HELLO_ACK --> WAIT_AUTH: matching HELLO_ACK
+    [*] --> WAIT_AUTH: verified TLS transport ready
     WAIT_AUTH --> WAIT_AUTH_RESULT: send AUTH_REQUEST
     WAIT_AUTH_RESULT --> AUTHENTICATED: matching AUTH_RESULT success
     WAIT_AUTH_RESULT --> WAIT_AUTH: matching AUTH_RESULT failure
     AUTHENTICATED --> AUTHENTICATED: chat presence file and PING
-    READY --> CLOSED: transport failure
-    WAIT_HELLO_ACK --> CLOSED: invalid handshake or EOF
     WAIT_AUTH --> CLOSED: logout or EOF
     WAIT_AUTH_RESULT --> CLOSED: invalid event or EOF
     AUTHENTICATED --> CLOSED: logout takeover or EOF

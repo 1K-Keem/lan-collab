@@ -30,7 +30,7 @@ Client Charlie -- TCP/TLS ----+     session/auth and presence registry
 ## Decisions to implement consistently
 
 - New valid login atomically supersedes stale authenticated session; attach generation token so stale cleanup cannot log off new session.
-- HELLO+AUTH 10s after TLS; three invalid attempts per connection; salted password hashes in SQLite via provisioning CLI, no network REGISTER.
+- AUTH 10s after TLS; three invalid attempts per connection; salted password hashes in SQLite via provisioning CLI, no network REGISTER.
 - Enforce username charset; sanitize ANSI/control sequences for terminal display.
 - `USER_LIST` atomic snapshot plus ordered `PRESENCE_UPDATE`; online presence includes IP+ephemeral TCP source port, offline omits those fields.
 - Application sender window W=8 16-KiB chunks; receiver cumulative `FILE_ACK(next_offset)` every four chunks and final partial; window bounded at both client and server.

@@ -4,7 +4,7 @@
 
 ## Implemented (TV3-owned)
 
-- `lancollab/client/application.py`: typed Envelope message lifecycle, HELLO/AUTH, global/private chat, online snapshot/presence, PING/PONG, EOF/cleanup, file event routing and correlation for server ERROR.
+- `lancollab/client/application.py`: typed Envelope message lifecycle, AUTH, global/private chat, online snapshot/presence, PING/PONG, EOF/cleanup, file event routing and correlation for server ERROR.
 - `lancollab/client/cli.py`: portable `/help`, `/users`, `/status`, `/all`, `/msg`, `/send`, `/accept`, `/reject`, `/cancel`, `/net`, `/quit` commands and separate receive/notice worker.
 - `lancollab/client/__main__.py`: CLI arguments, credentials prompted before TLS connect, discovery/manual-host selection and mandatory verified TLS connector interface; **fails closed** while TV2 implementation is missing.
 - `lancollab/client/discovery.py`: ephemeral UDP socket, DISCOVER/DISCOVER_REPLY matching, heartbeat seq/RTT/loss and `--host` fallback. UDP has zero auth/presence authority.
@@ -14,10 +14,10 @@
 
 ## Explicit dependency boundaries (not implemented by TV3)
 
-1. TV2: `SocketTransport.connect_verified(host, port, server_name, ca_file)` must establish hostname-verified TLS before returning a `MessageTransport`. TV2 also owns real TCP length-prefix framing and strict JSON schema validation; TV3 never falls back to plaintext TCP.
+1. TV2: `SocketTransport.connect_verified(host, port, ca_file=..., server_hostname=...)` establishes hostname-verified TLS and returns a `SocketTransport` implementing `MessageTransport`. The CLI and real smoke harness call this implemented method directly. TV2 also owns real TCP length-prefix framing and strict JSON schema validation; TV3 never falls back to plaintext TCP.
 2. TV1: server-side login/auth, chat/presence routing, UDP DISCOVER_REPLY/HEARTBEAT_ACK, queues, file offer/accept/ACK/RESULT relay and session takeover/cleanup.
 3. TV2: common transfer-core protocol/credit validation (including server-side window and UUID/session authorization), coordinated with TV1's relay; this client module does not replace that core.
-4. Real 3-client and two-host LAN evidence, 20 concurrent clients, 10 MiB simultaneous file/chat workload, CPU/RSS and 100+ latency samples **pending until server/transport are available**.
+4. Real 3-client and two-host LAN evidence, 20 concurrent clients, 10 MiB simultaneous file/chat workload, CPU/RSS and 100+ latency samples **pending until the server is available**.
 
 ## Reproduce local mock tests
 
@@ -37,7 +37,8 @@ python -m lancollab.client --discover --server-name lan-collab.local --ca-file p
 
 - `--discover` requires a TV1 UDP responder; use explicit `--host` when UDP broadcast is blocked.
 - `--server-name` remains the trusted TLS identity even if host/IP is discovered dynamically; the username/password are collected before TCP/TLS to meet deadline.
-- Until TV2 implements the verified TLS connector, the application raises a clear error instead of silently sending a password over plaintext TCP.
+- The verified TLS connector is implemented. Connection or certificate failures stop startup; there is no plaintext fallback. The production server remains pending.
+- The CLI resolves `--ca-file`, then `LANCOLLAB_CA_FILE`, then the bundled CA. With the bundled CA, use `python -m lancollab.client --host SERVER_IP` or `python -m lancollab.client --discover`.
 
 ## Real workload harness after TV1/TV2 integration
 

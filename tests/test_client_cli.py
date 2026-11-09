@@ -6,6 +6,40 @@ from lancollab.common.fake_transport import FakeTransport
 
 
 class CLITests(unittest.TestCase):
+    def test_startup_uses_bundled_ca_without_flag(self):
+        from unittest.mock import patch
+        from lancollab.client.__main__ import main
+        from lancollab.common.tls import BUNDLED_CA_FILE
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("lancollab.client.__main__.prompt_identity", return_value=("alice", "test")),
+            patch("lancollab.client.__main__.DiscoveryClient"),
+            patch("lancollab.client.__main__.SocketTransport.connect_verified") as connect,
+            patch("lancollab.client.__main__.ConsoleSession") as session,
+        ):
+            self.assertEqual(main(["--host", "127.0.0.1"]), 0)
+            connect.assert_called_once_with(
+                host="127.0.0.1",
+                port=40000,
+                server_hostname="lan-collab.local",
+                ca_file=str(BUNDLED_CA_FILE),
+            )
+            session.return_value.authenticate.assert_called_once_with("alice", "test")
+
+    def test_invalid_explicit_ca_fails_before_credentials(self):
+        from unittest.mock import patch
+        from lancollab.client.__main__ import main
+
+        with (
+            patch("lancollab.client.__main__.prompt_identity") as prompt,
+            patch("sys.stderr"),
+            self.assertRaises(SystemExit) as error,
+        ):
+            main(["--host", "127.0.0.1", "--ca-file", "/nonexistent/ca.pem"])
+        self.assertEqual(error.exception.code, 2)
+        prompt.assert_not_called()
+
     def test_command_grammar(self):
         self.assertEqual(parse_command("/all hi there").args, ("hi there",))
         self.assertEqual(
@@ -19,16 +53,34 @@ class CLITests(unittest.TestCase):
             with self.subTest(command=command), self.assertRaises(ValueError):
                 parse_command(command)
 
+    def test_authenticate_sends_auth_as_first_message(self):
+        from unittest.mock import patch
+        from lancollab.client.application import ClientState
+
+        a, b = FakeTransport.pair()
+        session = ConsoleSession(a, output=lambda _: None)
+
+        def respond(state, *, timeout):
+            self.assertEqual(state, ClientState.AUTHENTICATED)
+            request = b.receive()
+            self.assertEqual(request.type, "AUTH_REQUEST")
+            session.client.handle_event(
+                Envelope("AUTH_RESULT", request.request_id, {"ok": True, "username": "alice"})
+            )
+
+        with (
+            patch.object(session, "start_reader"),
+            patch.object(session, "_wait_for", side_effect=respond),
+        ):
+            session.authenticate("alice", "synthetic-password")
+        self.assertEqual(session.client.state, ClientState.AUTHENTICATED)
+        session.close()
+
     def test_fake_chat_and_safe_display(self):
         a, b = FakeTransport.pair()
         messages = []
         session = ConsoleSession(a, output=messages.append)
         client = session.client
-        hello = client.send_hello("test")
-        b.receive()
-        client.handle_event(
-            Envelope("HELLO_ACK", hello, {"server_name": "fake", "protocol_version": 1})
-        )
         auth = client.login("alice", "synthetic-password")
         b.receive()
         client.handle_event(Envelope("AUTH_RESULT", auth, {"ok": True, "username": "alice"}))

@@ -15,18 +15,6 @@ class TwentyMockClients(unittest.TestCase):
             for n in range(20):
                 local, server = FakeTransport.pair()
                 client = CollabClient(local, auth_allowed=True)
-                hid = client.send_hello(f"tester{n}")
-                self.assertEqual(server.receive().type, "HELLO")
-                client.handle_event(
-                    Envelope(
-                        "HELLO_ACK",
-                        hid,
-                        {
-                            "server_name": "fake",
-                            "protocol_version": 1,
-                        },
-                    )
-                )
                 authid = client.login(f"user{n}", "synthetic-only")
                 self.assertEqual(server.receive().type, "AUTH_REQUEST")
                 client.handle_event(

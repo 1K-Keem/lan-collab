@@ -1,4 +1,4 @@
-# TLS, authentication, global/private chat and liveness — design revision 1.2
+# TLS, authentication, global/private chat and liveness — design revision 1.3
 
 ```mermaid
 sequenceDiagram
@@ -9,10 +9,8 @@ sequenceDiagram
     participant C as Charlie
     A->>S: TCP connect
     Note over A,S: TLS identity verified (5s timeout, worker)
-    A->>S: HELLO
-    S-->>A: HELLO_ACK (same request_id)
     A->>S: AUTH_REQUEST(username,password)
-    Note over A,S: HELLO + AUTH within 10s of TLS
+    Note over A,S: AUTH within 10s of TLS
     alt Credentials correct
         Note over S: Invalidate old session and cancel its transfers on takeover
         Note over S: Register new session ID + snapshot + event ordering

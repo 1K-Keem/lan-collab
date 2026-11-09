@@ -59,7 +59,7 @@ class RoundTripTests(unittest.TestCase):
 
     def test_every_catalog_entry_is_implemented(self) -> None:
         # Import-time compilation fails for unknown specs; this guards catalog drift.
-        self.assertEqual(len(MESSAGE_FIELDS), 33)
+        self.assertEqual(len(MESSAGE_FIELDS), 31)
 
 
 class FramingTests(unittest.TestCase):
@@ -96,11 +96,13 @@ class EnvelopeStrictnessTests(unittest.TestCase):
             self.assertIsNone(ctx.exception.to_error_envelope())
         for rid in ("", "a b", "caf\u00e9"):
             with self.subTest(request_id=rid), self.assertRaises(FrameError):
-                self.decode(env("HELLO", {"client_name": "c"}, request_id=rid))
+                self.decode(
+                    env("AUTH_REQUEST", {"username": "alice", "password": "test"}, request_id=rid)
+                )
 
     def test_semantic_errors_get_error_reply_with_same_request_id(self) -> None:
         with self.assertRaises(MessageError) as ctx:
-            self.decode(env("HELLO", {}, request_id="abc"))
+            self.decode(env("AUTH_REQUEST", {}, request_id="abc"))
         reply = ctx.exception.to_error_envelope()
         assert reply is not None
         self.assertEqual((reply.type, reply.request_id), ("ERROR", "abc"))
@@ -108,13 +110,13 @@ class EnvelopeStrictnessTests(unittest.TestCase):
         SERVER.encode_body(reply)  # the ERROR reply itself is schema-valid
 
     def test_duplicate_keys_extra_keys_and_non_finite_numbers(self) -> None:
-        dup = b'{"version":1,"type":"HELLO","request_id":"r1","payload":{"client_name":"a","client_name":"b"}}'
+        dup = b'{"version":1,"type":"AUTH_REQUEST","request_id":"r1","payload":{"username":"alice","username":"bob","password":"test"}}'
         with self.assertRaises(MessageError):
             SERVER.decode(struct.pack(">I", len(dup)) + dup)
         with self.assertRaises(MessageError):
-            self.decode(env("HELLO", {"client_name": "c"}, extra=1))
+            self.decode(env("AUTH_REQUEST", {"username": "alice", "password": "test"}, extra=1))
         with self.assertRaises(MessageError):
-            self.decode(env("HELLO", {"client_name": "c", "x": 1}))
+            self.decode(env("AUTH_REQUEST", {"username": "alice", "password": "test", "x": 1}))
         nan = b'{"version":1,"type":"PING","request_id":"r1","payload":{"nonce":NaN}}'
         with self.assertRaises(FrameError):
             SERVER.decode(struct.pack(">I", len(nan)) + nan)
@@ -122,13 +124,13 @@ class EnvelopeStrictnessTests(unittest.TestCase):
     def test_version_rules(self) -> None:
         for version, code in ((2, "UNSUPPORTED_VERSION"), (0, "UNSUPPORTED_VERSION")):
             with self.subTest(version=version), self.assertRaises(MessageError) as ctx:
-                obj = env("HELLO", {"client_name": "c"})
+                obj = env("AUTH_REQUEST", {"username": "alice", "password": "test"})
                 obj["version"] = version
                 self.decode(obj)
             self.assertEqual(ctx.exception.code, code)
         for version in (True, 1.0, "1", None):
             with self.subTest(version=version), self.assertRaises(MessageError):
-                obj = env("HELLO", {"client_name": "c"})
+                obj = env("AUTH_REQUEST", {"username": "alice", "password": "test"})
                 obj["version"] = version
                 self.decode(obj)
 
@@ -142,13 +144,15 @@ class EnvelopeStrictnessTests(unittest.TestCase):
         self.decode(env("FILE_RESULT", {"transfer_id": TID, "ok": True}))
 
     def test_unknown_and_server_only_types(self) -> None:
-        for msg_type in ("NOPE", "HELLO_ACK", "USER_LIST", "PRESENCE_BEACON"):
+        for msg_type in ("NOPE", "AUTH_RESULT", "USER_LIST", "PRESENCE_BEACON"):
             with self.subTest(msg_type=msg_type), self.assertRaises(MessageError):
                 self.decode(env(msg_type, {}))
 
     def test_deeply_nested_input_cannot_crash(self) -> None:
         body = (
-            b'{"version":1,"type":"HELLO","request_id":"r1","payload":' + b"[" * 5000 + b"]" * 5000
+            b'{"version":1,"type":"AUTH_REQUEST","request_id":"r1","payload":'
+            + b"[" * 5000
+            + b"]" * 5000
         )
         with self.assertRaises((FrameError, MessageError)):
             SERVER.decode(struct.pack(">I", len(body + b"}")) + body + b"}")
@@ -246,10 +250,6 @@ class FieldValidationTests(unittest.TestCase):
         self.bad("PONG", {"nonce": "has space"})
         self.good("ERROR", {"code": "USER_OFFLINE", "message": "gone"}, CLIENT)
         self.bad("ERROR", {"code": "lowercase", "message": "gone"}, CLIENT)
-
-    def test_hello_ack_protocol_version_literal(self) -> None:
-        self.good("HELLO_ACK", {"server_name": "s", "protocol_version": 1}, CLIENT)
-        self.bad("HELLO_ACK", {"server_name": "s", "protocol_version": 2}, CLIENT)
 
 
 class RequestIdTrackerTests(unittest.TestCase):

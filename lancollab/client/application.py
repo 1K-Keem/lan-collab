@@ -23,8 +23,6 @@ _MAX_REQUESTS_PER_SESSION = 65536
 
 
 class ClientState(str, Enum):
-    READY = "READY"  # usable transport is supplied
-    WAIT_HELLO_ACK = "WAIT_HELLO_ACK"
     WAIT_AUTH = "WAIT_AUTH"
     WAIT_AUTH_RESULT = "WAIT_AUTH_RESULT"
     AUTHENTICATED = "AUTHENTICATED"
@@ -71,7 +69,7 @@ class CollabClient:
         # Real application must set this True ONLY after verified TLS.
         # Tests may set True with FakeTransport and SYNTHETIC passwords only.
         self._auth_allowed = auth_allowed
-        self.state = ClientState.READY
+        self.state = ClientState.WAIT_AUTH
         self.username: str | None = None
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
@@ -119,17 +117,6 @@ class CollabClient:
             self.close()
             raise
 
-    def send_hello(self, client_name: str) -> str:
-        if not isinstance(client_name, str) or not client_name.strip():
-            raise ValueError("client_name must be a non-empty string")
-        with self._lock:
-            if self.state is not ClientState.READY:
-                raise RuntimeError("HELLO is only allowed once on a new connection")
-            request = self._new_request("HELLO", {"client_name": client_name})
-            self.state = ClientState.WAIT_HELLO_ACK
-        self._send(request)
-        return request.request_id
-
     def login(self, username: str, password: str) -> str:
         if not self._auth_allowed:
             raise RuntimeError("Do not send a password without verified TLS")
@@ -139,7 +126,7 @@ class CollabClient:
             raise ValueError("password must be a string")
         with self._lock:
             if self.state is not ClientState.WAIT_AUTH:
-                raise RuntimeError("Wait for HELLO_ACK before AUTH_REQUEST")
+                raise RuntimeError("AUTH_REQUEST requires WAIT_AUTH")
             request = self._new_request(
                 "AUTH_REQUEST", {"username": username, "password": password}
             )
@@ -213,21 +200,7 @@ class CollabClient:
                 if not isinstance(event.payload, dict):
                     raise ProtocolViolation("Invalid payload")
                 kind, payload = event.type, event.payload
-                if kind == "HELLO_ACK":
-                    if self.state is not ClientState.WAIT_HELLO_ACK:
-                        raise ProtocolViolation("HELLO_ACK in wrong state")
-                    if (
-                        set(payload) != {"server_name", "protocol_version"}
-                        or not isinstance(payload["server_name"], str)
-                        or type(payload["protocol_version"]) is not int
-                        or payload["protocol_version"] != 1
-                    ):
-                        raise ProtocolViolation("Invalid HELLO_ACK payload")
-                    self._pop_expected(event, "HELLO")
-                    self.state = ClientState.WAIT_AUTH
-                    self._notices.append(Notice("hello", "Server handshake acknowledged"))
-
-                elif kind == "AUTH_RESULT":
+                if kind == "AUTH_RESULT":
                     if self.state is not ClientState.WAIT_AUTH_RESULT:
                         raise ProtocolViolation("AUTH_RESULT in wrong state")
                     if type(payload.get("ok")) is not bool:
@@ -334,8 +307,6 @@ class CollabClient:
                     if expected == "AUTH_REQUEST":
                         self._requested_username = None
                         self.state = ClientState.WAIT_AUTH
-                    elif expected == "HELLO":
-                        should_close = True
                     elif expected.startswith("FILE_"):
                         rejected_file_transfer = self._file_requests.pop(event.request_id, None)
 

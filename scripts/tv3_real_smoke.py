@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic, sleep
 
-from lancollab.client.__main__ import connect_verified_transport
+from lancollab.common.socket_transport import SocketTransport
 from lancollab.client.application import ClientState, CollabClient
 
 
@@ -56,8 +56,8 @@ def run(args: argparse.Namespace) -> Metrics:
     active: list[tuple[CollabClient, Event, Thread]] = []
 
     def connect(index: int) -> tuple[CollabClient, Event, Thread]:
-        transport = connect_verified_transport(
-            host=args.host, port=args.port, server_name=args.server_name, ca_file=args.ca_file
+        transport = SocketTransport.connect_verified(
+            host=args.host, port=args.port, server_hostname=args.server_name, ca_file=args.ca_file
         )
         client = CollabClient(
             transport,
@@ -69,15 +69,6 @@ def run(args: argparse.Namespace) -> Metrics:
         reader.start()
         deadline = monotonic() + 10
         try:
-            req = client.send_hello(f"probe-{index}")
-            del req
-            _wait(
-                lambda: client.state in {ClientState.WAIT_AUTH, ClientState.CLOSED},
-                seconds=max(0.01, deadline - monotonic()),
-                context="HELLO_ACK timeout",
-            )
-            if client.state is ClientState.CLOSED:
-                raise ConnectionError("HELLO rejected")
             credentials = accounts[index]
             client.login(credentials["username"], credentials["password"])
             _wait(

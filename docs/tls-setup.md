@@ -36,6 +36,10 @@ The client picks its CA in this order:
 4. nothing found: the operating-system trust store (right for a publicly trusted certificate,
    wrong for this development CA, so the connection fails with a certificate error)
 
+With the bundled CA, start the client with `python -m lancollab.client --host SERVER_IP`.
+No `--ca-file` argument is needed. Use `--discover` instead of `--host SERVER_IP` for LAN
+discovery. Certificate and hostname verification remain required in either mode.
+
 Safety rails: `.gitignore` ignores `*.pem` but explicitly allows `lancollab/client/ca.pem`;
 a file containing a private key is refused as a trust anchor; `tests/test_trust_anchor.py`
 fails if any private key text appears anywhere in the source tree, and checks with `git
@@ -103,3 +107,14 @@ message type. For a Wireshark capture run the demo server and client on two mach
 capture on the LAN interface: after the TLS handshake all application data is
 `Application Data` records. Whether TLS alone satisfies the "encrypt/decrypt payload"
 milestone is still the open question for the lecturer (protocol-spec section 8).
+
+## Client connection call path
+
+The CLI resolves the CA and endpoint, then calls
+`SocketTransport.connect_verified(host=..., port=..., server_hostname=..., ca_file=...)`
+directly. The smoke harness calls the same method with its explicit CA argument.
+The method creates the TLS context, calls `connect_tls()`, and wraps the verified
+TLS socket in a message transport. `connect_tls()` uses Python sockets (the OS
+performs the TCP handshake), then completes TLS certificate and hostname verification.
+Application framing stays in `SocketTransport`; credentials are sent only after
+this call succeeds. There is no dynamic connector lookup or plaintext fallback.

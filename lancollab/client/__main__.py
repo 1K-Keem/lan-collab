@@ -1,4 +1,4 @@
-"""TV3 CLI entry point; real verified TLS connector is an explicit TV2 boundary."""
+"""Client CLI entry point: resolve the server, verify TLS, then authenticate."""
 
 import argparse
 from pathlib import Path
@@ -6,25 +6,8 @@ import sys
 
 from lancollab.client.cli import ConsoleSession, prompt_identity
 from lancollab.client.discovery import DiscoveryClient, select_server
-from lancollab.common.contracts import MessageTransport
-
-
-def connect_verified_transport(
-    *, host: str, port: int, server_name: str, ca_file: str
-) -> MessageTransport:
-    """TV2 must implement SocketTransport.connect_verified in Issue #3/#10.
-
-    Do NOT silently fall back to unencrypted TCP or disable certificate checking.
-    """
-    from lancollab.common.socket_transport import SocketTransport
-
-    connector = getattr(SocketTransport, "connect_verified", None)
-    if not callable(connector):
-        raise RuntimeError(
-            "TV2 integration pending: implement SocketTransport.connect_verified"
-            "(host, port, server_name, ca_file) with verified TLS before credentials."
-        )
-    return connector(host=host, port=port, server_name=server_name, ca_file=ca_file)
+from lancollab.common.tls import resolve_ca_file
+from lancollab.common.socket_transport import SocketTransport
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,7 +17,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--server-name", default="lan-collab.local", help="TLS verified DNS identity"
     )
-    parser.add_argument("--ca-file", required=True, help="CA/certificate file for verified TLS")
+    parser.add_argument(
+        "--ca-file", help="Override trusted CA (default: LANCOLLAB_CA_FILE or bundled ca.pem)"
+    )
     parser.add_argument("--udp-port", type=int, default=40001)
     parser.add_argument(
         "--discover", action="store_true", help="Broadcast for server if --host omitted"
@@ -45,8 +30,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Use --host or --discover (manual --host is always a fallback)")
     if not 1 <= args.port <= 65535:
         parser.error("Invalid TCP port")
-    if not Path(args.ca_file).is_file():
-        parser.error("CA/certificate file not found")
+    try:
+        ca_file = resolve_ca_file(args.ca_file)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     try:
         # Request credentials BEFORE connecting to honor the server's auth deadline.
         username, password = prompt_identity()
@@ -54,11 +41,11 @@ def main(argv: list[str] | None = None) -> int:
             found = discovery.discover() if args.discover and not args.host else None
             endpoint = select_server(found, host=args.host, port=args.port)
             # Manual IP does not bypass certificate verification of --server-name.
-            transport = connect_verified_transport(
+            transport = SocketTransport.connect_verified(
                 host=endpoint.host,
                 port=endpoint.tcp_port,
-                server_name=args.server_name,
-                ca_file=args.ca_file,
+                server_hostname=args.server_name,
+                ca_file=ca_file,
             )
             shell = ConsoleSession(
                 transport,

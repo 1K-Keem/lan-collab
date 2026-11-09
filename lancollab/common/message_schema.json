@@ -1,17 +1,4 @@
 {
-  "C:HELLO": {
-    "required": {
-      "client_name": "str"
-    },
-    "optional": {}
-  },
-  "S:HELLO_ACK": {
-    "required": {
-      "server_name": "str",
-      "protocol_version": "int:1"
-    },
-    "optional": {}
-  },
   "C:AUTH_REQUEST": {
     "required": {
       "username": "str:username",

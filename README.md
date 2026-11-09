@@ -7,7 +7,7 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 ## Target system features and integration dependencies
 
 - TLS-protected TCP login, global/private messages, server presence list, 20 concurrent clients.
-- Admin-provisioned user accounts, secure salted password hashes, HELLO/AUTH deadlines.
+- Admin-provisioned user accounts, secure salted password hashes, AUTH deadlines.
 - Session-bound transfers/events, globally unique active transfer IDs and explicit takeover cancellation.
 - Reliable streaming server file relay with **FILE_ACK receiver credit** (window 8 × 16KiB), SHA-256, safe filenames and nonblocking queues.
 - UDP broadcast discovery + unicast HEARTBEAT/HEARTBEAT_ACK RTT/loss estimates; manual host/IP fallback.
@@ -21,7 +21,7 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 | TV2 | Codec/TLS and socket-independent transfer state/ACK/security core | Schema fixtures, codec and chunk tests |
 | TV3 | Client/CLI, file consent/disk I/O/streaming, UDP, integration testing | Fake server messages and mocked event streams |
 
-**Protocol:** [Design revision 1.2](docs/protocol-spec.md) supersedes v1.1, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.2). Do not merge incompatible handlers until the team confirms the contract.
+**Protocol:** [Design revision 1.3](docs/protocol-spec.md) supersedes v1.1, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.3). Do not merge incompatible handlers until the team confirms the contract.
 
 ## Layout
 

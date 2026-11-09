@@ -116,13 +116,9 @@ class ConsoleSession:
         self.client.close()
         raise TimeoutError(f"Timed out awaiting {state.value}")
 
-    def authenticate(
-        self, username: str, password: str, *, client_name: str = "lan-collab-cli"
-    ) -> None:
+    def authenticate(self, username: str, password: str) -> None:
         self.start_reader()
         deadline = monotonic() + 10
-        self.client.send_hello(client_name)
-        self._wait_for(ClientState.WAIT_AUTH, timeout=max(0.01, deadline - monotonic()))
         self.client.login(username, password)
         self._wait_for(ClientState.AUTHENTICATED, timeout=max(0.01, deadline - monotonic()))
 
@@ -203,5 +199,5 @@ class ConsoleSession:
 
 
 def prompt_identity() -> tuple[str, str]:
-    """Prompt before TLS connect to satisfy server HELLO/AUTH deadline."""
+    """Prompt before TLS connect to satisfy server AUTH deadline."""
     return input("Username: ").strip(), getpass("Password: ")
