@@ -2,7 +2,7 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV2 verified TLS/codec/core are implemented. TV1 server and real LAN acceptance remain pending. Green CI does **not** imply acceptance of real networking milestones.
+> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV2 verified TLS/codec/core are implemented. The server now supports UDP discovery and bounded concurrent TCP/TLS connections; account authentication, routing and real LAN acceptance remain pending. Green CI does **not** imply acceptance of real networking milestones.
 
 ## Target system features and integration dependencies
 
@@ -27,7 +27,7 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 
 ```text
 lancollab/common/   # Typed contracts, message_schema.py, test dummy, verified TLS transport and validators
-lancollab/server/   # TV1 server TODO and main CLI
+lancollab/server/   # Concurrent TCP/TLS + UDP; account/routing handlers still TODO
 lancollab/client/   # TV3 client logic, CLI, discovery and file I/O
 tests/              # Synthetic and unit/mock tests, NOT production/LAN proof
 scripts/            # Mock demo plus opt-in real smoke harness (requires TV1/TV2)
@@ -49,7 +49,7 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-The server and admin account creation commands are still TV1 TODOs. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and an implemented server. Never use real credentials with FakeTransport or plaintext TCP.
+Run `python -m lancollab.server` for the TCP/TLS milestone (32 connections by default); see [server connections](docs/server-connections.md). Account authentication and admin provisioning are still TV1 TODOs. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and an implemented server. Never use real credentials with FakeTransport or plaintext TCP.
 
 ## TV3 implementation and report handoff
 

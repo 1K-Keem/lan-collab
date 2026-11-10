@@ -8,12 +8,14 @@ from lancollab.common.tls import create_server_context
 
 
 def main() -> int:
+    
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=40000)
     parser.add_argument("--cert", default="certs/direct-trust/server-public.pem")
     parser.add_argument("--key", default="certs/direct-trust/server-secret.pem")
     args = parser.parse_args()
+
     try:
         context = create_server_context(args.cert, args.key)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:

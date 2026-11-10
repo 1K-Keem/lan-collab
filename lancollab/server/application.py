@@ -1,7 +1,7 @@
 """TV1 TODO: server session manager, authentication and chat routing.
 
-Design the pure handlers against typed message contracts first; actual socket
-accept/reader loops can be wired in after TV2's SocketTransport is available.
+The TCP/TLS connection milestone lives in connections.py. This handler boundary
+is not wired to it yet; credentials are never accepted by the connection demo.
 """
 
 from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
