@@ -102,6 +102,60 @@ class CLITests(unittest.TestCase):
         self.assertEqual(b.receive().type, "LOGOUT")
         self.assertEqual(session.client.state, ClientState.CLOSED)
 
+    def test_logout_forgets_persisted_token_even_after_disconnect(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from lancollab.client.token_store import TokenStore
+
+        for failure in ("none", "send_failure", "already_closed"):
+            with self.subTest(failure=failure), TemporaryDirectory() as directory:
+                store = TokenStore(directory=Path(directory))
+                store._keyring = None  # Isolated file backend; never touch the OS keyring.
+                store.save("test-server", "alice", "synthetic-token")
+                a, b = FakeTransport.pair()
+                notices = []
+                session = ConsoleSession(
+                    a, output=notices.append, token_store=store, server_host="test-server"
+                )
+                rid = session.client.login("alice", "synthetic-password")
+                b.receive()
+                session.client.handle_event(
+                    Envelope(
+                        "AUTH_RESULT", rid, {"ok": True, "username": "alice", "role": "member"}
+                    )
+                )
+                if failure == "send_failure":
+                    b.close()
+                elif failure == "already_closed":
+                    session.client.close()
+                self.assertFalse(session.execute(parse_command("/logout")))
+                self.assertIsNone(store.load("test-server"))
+                self.assertEqual(session.client.state, ClientState.CLOSED)
+                if failure == "none":
+                    self.assertEqual(b.receive().type, "LOGOUT")
+                else:
+                    self.assertTrue(any("revocation could not be confirmed" in n for n in notices))
+                session.close()
+
+    def test_quit_preserves_persisted_token(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from lancollab.client.token_store import TokenStore
+
+        with TemporaryDirectory() as directory:
+            store = TokenStore(directory=Path(directory))
+            store._keyring = None
+            store.save("test-server", "alice", "synthetic-token")
+            a, b = FakeTransport.pair()
+            session = ConsoleSession(
+                a, output=lambda _: None, token_store=store, server_host="test-server"
+            )
+            self.assertFalse(session.execute(parse_command("/quit")))
+            self.assertEqual(store.load("test-server"), ("alice", "synthetic-token"))
+            with self.assertRaises(TimeoutError):
+                b.receive()
+            session.close()
+
     def test_fake_chat_and_safe_display(self):
         a, b = FakeTransport.pair()
         messages = []

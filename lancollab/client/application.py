@@ -432,6 +432,7 @@ class CollabClient:
                     expected = self._pending.pop(event.request_id, None)
                     if expected is None:
                         raise ProtocolViolation("ERROR has no matching request")
+                    self._pending_chat.pop(event.request_id, None)
                     code = safe_display(payload["code"])
                     self._notices.append(Notice("error", code))
                     if expected == "AUTH_REQUEST":

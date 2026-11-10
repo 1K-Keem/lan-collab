@@ -204,12 +204,20 @@ class ConsoleSession:
                 self.client.close()
                 return False
             elif command.name == "/logout":
-                # Log out for real: LOGOUT revokes this session's token
-                # server-side, and the stored copy is deleted too.
-                if self.client.state in {ClientState.WAIT_AUTH, ClientState.AUTHENTICATED}:
-                    username = self.client.username
-                    self.client.logout()
-                    if self.token_store is not None and username and self.server_host:
+                # Forget this device even if the peer disconnected before LOGOUT.
+                try:
+                    if self.client.state in {ClientState.WAIT_AUTH, ClientState.AUTHENTICATED}:
+                        self.client.logout()
+                    else:
+                        self.output("[auth] Server token revocation could not be confirmed.")
+                except (RuntimeError, ValueError, OSError) as error:
+                    self.output(
+                        "[auth] Server token revocation could not be confirmed: "
+                        + safe_display(str(error))
+                    )
+                finally:
+                    self.client.close()
+                    if self.token_store is not None and self.server_host:
                         self.token_store.delete(self.server_host)
                 return False
             elif command.name == "/pending":

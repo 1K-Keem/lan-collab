@@ -44,6 +44,9 @@ again.
 - **`/logout`** closes the session **and** revokes the token:
   the client sends `LOGOUT`, the server marks the token revoked, and the
   client deletes its stored copy. Next launch asks for a password again.
+  If the connection is already closed or sending LOGOUT fails, the client still deletes
+  its local token and reports that server-side revocation could not be confirmed.
+  This prevents automatic login on this device, but does not revoke a token copy elsewhere.
   Only `/logout` (and a password change / account rejection) revokes a token.
 
 ### When a token stops working

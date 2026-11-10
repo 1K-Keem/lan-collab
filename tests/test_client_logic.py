@@ -103,6 +103,26 @@ class ClientLogicTests(unittest.TestCase):
         self.client.handle_event(Envelope("CHAT_ACK", global_id, {"status": "queued"}))
         self.assertIn(Notice("chat", "[CHAT_GLOBAL] you: hello all"), self.client.drain_notices())
 
+    def test_rejected_chats_release_only_their_cached_text(self):
+        self.authenticate()
+        kept = self.client.send_global("still pending")
+        self.server_end.receive()
+        for _ in range(100):
+            rejected = self.client.send_private("offline_user", "x" * 4096)
+            self.server_end.receive()
+            self.client.handle_event(
+                Envelope("ERROR", rejected, {"code": "USER_OFFLINE", "message": "offline"})
+            )
+            self.assertNotIn(rejected, self.client._pending)
+            self.assertNotIn(rejected, self.client._pending_chat)
+        self.assertEqual(set(self.client._pending_chat), {kept})
+        self.client.handle_event(Envelope("CHAT_ACK", kept, {"status": "queued"}))
+        self.assertFalse(self.client._pending_chat)
+        self.assertIn(
+            Notice("chat", "[CHAT_GLOBAL] you: still pending"), self.client.drain_notices()
+        )
+        self.client.close()
+
     def test_user_list_and_presence(self):
         self.authenticate()
         self.client.handle_event(
