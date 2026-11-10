@@ -8,13 +8,18 @@ with real credentials until your connection bootstrap has verified TLS.
 from dataclasses import dataclass
 from enum import Enum
 from threading import Event, RLock
+from time import monotonic
 from pathlib import Path
 from typing import Any
 from unicodedata import category
 from uuid import uuid4
 import re
+import sqlite3
+
+from lancollab.client.history import HistoryStore
 
 from lancollab.common.contracts import Envelope, MessageTransport
+from lancollab.common.codec import ProtocolError
 from lancollab.client.transfers import TransferManager, TransferError
 
 _USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
@@ -65,7 +70,13 @@ class CollabClient:
         *,
         auth_allowed: bool = False,
         downloads_dir: str | Path = "downloads",
+        history: HistoryStore | None = None,
+        history_server: str = "",
     ) -> None:
+        self.history = history
+        self.history_server = history_server
+        self.auth_error: str | None = None
+        self.registration_result: bool | None = None
         self.transport = transport
         # Real application must set this True ONLY after verified TLS.
         # Tests may set True with FakeTransport and SYNTHETIC passwords only.
@@ -83,12 +94,30 @@ class CollabClient:
             str, tuple[str, str, str | None]
         ] = {}  # request_id -> (kind, text, recipient)
         self._file_requests: dict[str, str] = {}  # request_id -> transfer_id for ERROR
+        self._pending_pings: dict[str, tuple[str, float]] = {}
+        self.ping_rtts: dict[str, float] = {}
         self._issued_count = 0
         self._request_prefix = uuid4().hex  # random per-client/session prefix
         self._notices: list[Notice] = []
         self._lock = RLock()
         self._send_lock = RLock()  # TV2's writer/transport must serialize frame bytes
         self.files = TransferManager(self._send_file, downloads_dir, notify=self._file_notice)
+
+    def _remember_chat(self, direction, kind, peer, text):
+        if self.history is not None and self.username is not None:
+            try:
+                self.history.append(self.history_server, self.username, direction, kind, peer, text)
+            except (OSError, sqlite3.Error):
+                self._notices.append(Notice("error", "Could not save local chat history"))
+
+    def ping(self) -> str:
+        with self._lock:
+            self._require_authenticated("PING")
+            nonce = uuid4().hex
+            request = self._new_request("PING", {"nonce": nonce})
+            self._pending_pings[request.request_id] = (nonce, monotonic())
+        self._send(request)
+        return request.request_id
 
     def _file_notice(self, message: str) -> None:
         with self._lock:
@@ -139,6 +168,7 @@ class CollabClient:
                 "AUTH_REQUEST",
                 {"username": username, "password": password, "remember_me": remember_me},
             )
+            self.auth_error = None
             self._requested_username = username
             self._token_login = False
             self.state = ClientState.WAIT_AUTH_RESULT
@@ -153,6 +183,7 @@ class CollabClient:
             if self.state is not ClientState.WAIT_AUTH:
                 raise RuntimeError("TOKEN_AUTH_REQUEST requires WAIT_AUTH")
             request = self._new_request("TOKEN_AUTH_REQUEST", {"token": token})
+            self.auth_error = None
             self._requested_username = None  # the server tells us who this token is
             self._token_login = True
             self.state = ClientState.WAIT_AUTH_RESULT
@@ -301,7 +332,11 @@ class CollabClient:
                             "TOKEN_REVOKED",
                         ):
                             raise ProtocolViolation("Invalid failed AUTH_RESULT")
-                        self._pop_expected(event, "AUTH_REQUEST")
+                        self._pop_expected(
+                            event, "TOKEN_AUTH_REQUEST" if self._token_login else "AUTH_REQUEST"
+                        )
+                        self.auth_error = payload["error_code"]
+                        self._token_login = False
                         self._requested_username = None
                         self.state = ClientState.WAIT_AUTH
                         self._notices.append(
@@ -311,6 +346,7 @@ class CollabClient:
                 elif kind == "REGISTER_RESULT":
                     if self.state is not ClientState.WAIT_REGISTER_RESULT:
                         raise ProtocolViolation("REGISTER_RESULT in wrong state")
+                    self.registration_result = payload["ok"]
                     self._pop_expected(event, "REGISTER_REQUEST")
                     self._requested_username = None
                     self.state = ClientState.WAIT_AUTH
@@ -332,7 +368,14 @@ class CollabClient:
                         raise ProtocolViolation("Invalid PENDING_USERS_RESULT")
                     self.pending_users = payload["users"]
                     self._notices.append(
-                        Notice("admin", f"{len(self.pending_users)} pending user(s)")
+                        Notice(
+                            "admin",
+                            "Pending users: "
+                            + (
+                                ", ".join(safe_display(u["username"]) for u in self.pending_users)
+                                or "none"
+                            ),
+                        )
                     )
 
                 elif kind == "ACCOUNT_REVIEW_RESULT":
@@ -395,6 +438,7 @@ class CollabClient:
                         or not 1 <= len(payload["text"].encode("utf-8")) <= _MAX_CHAT_BYTES
                     ):
                         raise ProtocolViolation("Invalid chat text")
+                    self._remember_chat("received", kind, payload["from"], payload["text"])
                     sender = safe_display(payload["from"])
                     text = safe_display(payload["text"])
                     self._notices.append(Notice("chat", f"[{kind}] {sender}: {text}"))
@@ -412,6 +456,7 @@ class CollabClient:
                     sent = self._pending_chat.pop(event.request_id, None)
                     if sent is not None:
                         kind_sent, text_sent, to_sent = sent
+                        self._remember_chat("sent", kind_sent, to_sent or "*", text_sent)
                         if kind_sent == "CHAT_PRIVATE":
                             self._notices.append(
                                 Notice(
@@ -444,6 +489,15 @@ class CollabClient:
                 elif isinstance(kind, str) and kind.startswith("FILE_"):
                     self._require_authenticated(kind)
                     file_event = (kind, payload)
+
+                elif kind == "PONG":
+                    self._require_authenticated(kind)
+                    pending_ping = self._pending_pings.get(event.request_id)
+                    if pending_ping is None or payload != {"nonce": pending_ping[0]}:
+                        raise ProtocolViolation("PONG does not match outstanding PING")
+                    self._pop_expected(event, "PING")
+                    self._pending_pings.pop(event.request_id)
+                    self.ping_rtts[event.request_id] = (monotonic() - pending_ping[1]) * 1000
 
                 elif kind == "PING":
                     self._require_authenticated(kind)
@@ -509,7 +563,7 @@ class CollabClient:
         except (EOFError, ConnectionError, OSError) as error:
             with self._lock:
                 self._notices.append(Notice("disconnected", safe_display(str(error))))
-        except ProtocolViolation as error:
+        except (ProtocolViolation, ProtocolError) as error:
             with self._lock:
                 self._notices.append(Notice("protocol_error", safe_display(str(error))))
         finally:
@@ -537,6 +591,8 @@ class CollabClient:
             self._token_login = False
             self.online_users.clear()
             self._pending.clear()
+            self._pending_pings.clear()
+            self.ping_rtts.clear()
             self._pending_chat.clear()
             self._file_requests.clear()
         self.files.close()

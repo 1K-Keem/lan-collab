@@ -362,7 +362,9 @@ class TransferManager:
             entry.ack_bytes = offset
             size = entry.size
             self._cv.notify_all()
-        self._announce(f"File receiver-confirmed: {offset}/{size} bytes (not yet verified)")
+        filled = 20 if size == 0 else min(20, offset * 20 // size)
+        bar = "#" * filled + "-" * (20 - filled)
+        self._announce(f"File receiver-confirmed [{bar}]: {offset}/{size} bytes (not yet verified)")
 
     def on_chunk(self, payload: dict[str, Any]) -> None:
         if set(payload) != {"transfer_id", "seq", "offset", "data_b64"}:

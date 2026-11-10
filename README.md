@@ -2,7 +2,7 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** Server connections (TCP/TLS, UDP discovery) and account authentication are implemented and committed: self-registration with admin approval, login sessions with takeover, presence and chat routing, and Remember Me token login (see [token doc](docs/token-remember-me.md)). File relay in the production server is still pending (`FILE_*` currently returns `NOT_IMPLEMENTED`). Full suite: 194 tests OK.
+> **Status:** The production server supports verified TLS, registration/admin approval, remembered login, presence/chat, bounded file relay and liveness. The client provides a portable CLI, optional curses TUI and local chat history. Real loopback integration and load evidence are available; two-host LAN/capture acceptance remains to be recorded. Start with the [user guide](docs/client-guide.md) and [acceptance checks](docs/acceptance.md).
 
 ## Target system features and integration dependencies
 
@@ -26,11 +26,11 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 ## Layout
 
 ```text
-lancollab/common/   # Typed contracts, message_schema.py, test dummy, verified TLS transport and validators
-lancollab/server/   # Concurrent TCP/TLS + UDP; account/routing handlers still TODO
-lancollab/client/   # TV3 client logic, CLI, discovery and file I/O
-tests/              # Synthetic and unit/mock tests, NOT production/LAN proof
-scripts/            # Mock demo plus opt-in real smoke harness (requires TV1/TV2)
+lancollab/common/   # Typed contracts, schema, verified TLS transport and validators
+lancollab/server/   # Concurrent TCP/TLS + UDP, accounts, routing, bounded writers
+lancollab/client/   # Client logic, CLI/TUI, history, discovery and file I/O
+tests/              # Unit/mock tests and production-server loopback integration
+scripts/            # Mock demo, connection simulation and real workload harness
 docs/               # Architecture, protocol spec, diagrams, checkpoint gates
 ```
 
@@ -49,7 +49,7 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-Run `python -m lancollab.server` for the TCP/TLS milestone (32 connections by default); see [server connections](docs/server-connections.md). First admin: `python -m lancollab.server --add-admin admin`; change a password: `python -m lancollab.server --change-password USERNAME`. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and an implemented server. Never use real credentials with FakeTransport or plaintext TCP.
+Run `python -m lancollab.server` for the production server (32 connections by default); see [server connections](docs/server-connections.md). First admin: `python -m lancollab.server --add-admin admin`; change a password: `python -m lancollab.server --change-password USERNAME`. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and a running server. Never use real credentials with FakeTransport or plaintext TCP.
 
 ## TV3 implementation and report handoff
 
@@ -71,6 +71,19 @@ Run `python -m lancollab.server` for the TCP/TLS milestone (32 connections by de
 - [Parallel tasks and integration gates](docs/diagrams/parallel-work-dependencies.md)
 - [Integration checkpoints CP-A/B/C](docs/checkpoints.md)
 - [Mocks/contract documentation](docs/mock-development.md)
+
+## Technical report draft
+
+[Markdown source](docs/technical-report.md) and [PDF draft](docs/technical-report.pdf)
+describe the architecture, protocol, sequences, challenges and evidence limits.
+Regenerate after updating the team's report:
+
+```bash
+python -m pip install -r requirements-report.txt
+python -m scripts.build_report
+```
+
+The PDF tools are optional development dependencies; the application does not use them.
 
 ## Workflow and academic integrity
 

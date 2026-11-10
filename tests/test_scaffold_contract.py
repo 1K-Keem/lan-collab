@@ -12,7 +12,7 @@ from lancollab.common.contracts import (
     SessionIdentity,
 )
 from lancollab.common.examples import example_cases, example_messages
-from lancollab.common.fake_transport import FakeTransport
+from tests.fake_transport import FakeTransport
 from lancollab.common.message_schema import FIELD_LIMITS, MESSAGE_FIELDS
 
 

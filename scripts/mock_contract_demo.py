@@ -1,7 +1,7 @@
 """Mock-only smoke scenario: no sockets, no encrypted networking or real chat."""
 
 from lancollab.common.examples import example_messages
-from lancollab.common.fake_transport import FakeTransport
+from tests.fake_transport import FakeTransport
 
 
 def main() -> None:

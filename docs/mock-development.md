@@ -1,15 +1,15 @@
 # Parallel development with contract v1.2 and in-memory dummies
 
-Only interfaces, declarative field catalog and synthetic examples are provided here. Real TCP/TLS, UDP, chat, authentication, flow-control and file-transfer implementations are **not** provided or tested.
+This document explains the original mock development boundaries. Production TCP/TLS, UDP, authentication, chat and file relay are now implemented and exercised by separate real-socket tests; see [acceptance](acceptance.md). Mock tests alone remain insufficient evidence.
 
 - `lancollab/common/contracts.py`: `Envelope`, `MessageTransport`, `ProtocolCodec`, limits.
 - `lancollab/common/message_schema.py`: declarative message fields, directions and initial limits; **not** a runtime validator.
-- `lancollab/common/fake_transport.py`: in-memory peer queues, **not** TCP/UDP/TLS.
+-  `tests/fake_transport.py`: in-memory peer queues, **not** TCP/UDP/TLS (test-only; not part of the shipped app).
 - `lancollab/common/examples.py`: synthetic sample messages including `FILE_ACK`, new `CHAT_ACK`, presence fields.
 - `tests/fixtures/sample-messages.json`: test samples, no real passwords.
-- `lancollab/common/socket_transport.py`: TV2 implementation TODO.
-- `lancollab/server/application.py`: TV1 handler TODO.
-- `lancollab/client/application.py`: TV3 API TODO.
+- `lancollab/common/socket_transport.py`: Implemented verified TLS transport.
+- `lancollab/server/application.py`: Implemented production auth/chat/file handler.
+- `lancollab/client/application.py`: Implemented client state machine.
 
 ## Independent team work
 

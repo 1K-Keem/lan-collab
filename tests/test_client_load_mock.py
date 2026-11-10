@@ -4,7 +4,7 @@ import unittest
 
 from lancollab.client.application import CollabClient, ClientState
 from lancollab.common.contracts import Envelope
-from lancollab.common.fake_transport import FakeTransport
+from tests.fake_transport import FakeTransport
 
 
 class TwentyMockClients(unittest.TestCase):

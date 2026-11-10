@@ -1,0 +1,2 @@
+# Optional PDF report generation only; not an application runtime dependency.
+reportlab>=4.0,<5

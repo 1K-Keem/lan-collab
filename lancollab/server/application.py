@@ -7,6 +7,10 @@ connection layer in connections.py delivers them to the right transports.
 from __future__ import annotations
 
 import uuid
+from functools import wraps
+from threading import RLock
+
+from lancollab.common.transfer_core import TransferRegistry
 from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
 from lancollab.server.accounts import AccountError, AccountService
 from lancollab.server.tokens import TokenService
@@ -14,8 +18,20 @@ from lancollab.server.tokens import TokenService
 MAX_FAILED_ATTEMPTS = 3
 
 
+def synchronized(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.lock:
+            return method(self, *args, **kwargs)
+
+    return wrapped
+
+
 class CollabServer:
     def __init__(self, accounts: AccountService, tokens: TokenService | None = None) -> None:
+        self.lock = RLock()
+        self.transfers = TransferRegistry()
+        self._purges: set[str] = set()
         self.accounts = accounts
         self.tokens = tokens
         self._sessions: dict[str, SessionIdentity] = {}  # session_id -> identity
@@ -25,9 +41,11 @@ class CollabServer:
         self._close_after: set[str] = set()  # session_ids to close after delivery
 
     # -- helpers ---------------------------------------------------------
+    @synchronized
     def session_for(self, session_id: str) -> SessionIdentity | None:
         return self._sessions.get(session_id)
 
+    @synchronized
     def pop_closed_sessions(self) -> list[str]:
         closed, self._close_after = sorted(self._close_after), set()
         return closed
@@ -78,6 +96,7 @@ class CollabServer:
         ident = SessionIdentity(
             session.remote_ip, session.remote_port, session.session_id, username, role
         )
+        self.transfers.open_session(ident)
         self._sessions[ident.session_id] = ident
         self._by_username[username] = ident.session_id
         payload: dict = {"ok": True, "username": username, "role": role}
@@ -87,6 +106,8 @@ class CollabServer:
             self._reply(ident, "AUTH_RESULT", rid, payload),
             self._user_list(ident),
         ]
+        for old_id in closed:
+            events += self.transfer_events(self.transfers.close_session(old_id, "SESSION_REPLACED"))
         return events + self._presence(ident, "online", exclude=ident.session_id)
 
     def _login_failed(
@@ -98,16 +119,32 @@ class CollabServer:
         return [self._reply(session, "AUTH_RESULT", rid, {"ok": False, "error_code": error_code})]
 
     # -- lifecycle -------------------------------------------------------
+    @synchronized
     def close_session(self, session_id: str) -> list[OutboundEvent]:
+        events = self.transfer_events(self.transfers.close_session(session_id))
         ident = self._sessions.pop(session_id, None)
         self._failed.pop(session_id, None)
         self._session_tokens.pop(session_id, None)
         if ident is None or ident.username is None:
-            return []
-        self._by_username.pop(ident.username, None)
-        return self._presence(ident, "offline", exclude=session_id)
+            return events
+        if self._by_username.get(ident.username) == session_id:
+            self._by_username.pop(ident.username, None)
+            events += self._presence(ident, "offline", exclude=session_id)
+        return events
+
+    def transfer_events(self, outcome, session=None, request_id=None):
+        self._purges.update(outcome.purge)
+        events = [OutboundEvent(f.recipient, f.message) for f in outcome.forwards]
+        if outcome.error is not None and session is not None:
+            events.insert(0, OutboundEvent(session, outcome.error.reply(request_id)))
+        return events
+
+    def pop_purges(self):
+        purges, self._purges = self._purges, set()
+        return purges
 
     # -- dispatch --------------------------------------------------------
+    @synchronized
     def handle_message(self, message: Envelope, session: SessionIdentity) -> list[OutboundEvent]:
         kind, payload, rid = message.type, message.payload, message.request_id
         authed = self._sessions.get(session.session_id)
@@ -243,7 +280,15 @@ class CollabServer:
             return events + [self._reply(session, "CHAT_ACK", rid, {"status": "queued"})]
 
         if kind.startswith("FILE_"):
-            # File relay via TransferRegistry is wave 3, not this commit.
-            return [self._error(session, rid, "NOT_IMPLEMENTED")]
+            if authed is None:
+                return [self._error(session, rid, "NOT_AUTHENTICATED")]
+            if kind == "FILE_OFFER":
+                target_id = self._by_username.get(payload["to"])
+                if target_id is None:
+                    return [self._error(session, rid, "USER_OFFLINE")]
+                outcome = self.transfers.offer(authed, self._sessions[target_id], message)
+            else:
+                outcome = self.transfers.handle(authed, message)
+            return self.transfer_events(outcome, authed, rid)
 
         return [self._error(session, rid, "INVALID_MESSAGE")]

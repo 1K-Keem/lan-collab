@@ -7,7 +7,7 @@ It exists solely so TV1 and TV3 can test their APIs independently of TV2.
 from collections import deque
 from typing import Deque
 
-from .contracts import Envelope
+from lancollab.common.contracts import Envelope
 
 
 class FakeTransport:

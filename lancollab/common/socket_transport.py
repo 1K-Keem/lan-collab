@@ -191,20 +191,25 @@ class SocketTransport:
                     self.close()  # a partial frame may be on the wire: stream is unusable
                     raise TimeoutError("frame write deadline exceeded")
 
-    def receive(self, *, timeout: float | None = None) -> Envelope:
+    def receive(self, *, timeout: float | None = None, deadline: float | None = None) -> Envelope:
         """Return the next validated message.
 
         ``TimeoutError`` with nothing consumed means no frame started within ``timeout``
         (the transport stays usable). ``ConnectionError`` means EOF/reset/closed. A
         :class:`~lancollab.common.codec.FrameError` closes the transport; a
         :class:`~lancollab.common.codec.MessageError` leaves it open and in sync so the caller
-        can reply with ``ERROR``.
+        can reply with ``ERROR``. Optional absolute monotonic ``deadline`` caps
+        both initial polling and partial-frame reads (e.g. the authentication deadline).
         """
         with self._recv_lock:
             first = None if timeout is None else time.monotonic() + timeout
+            if deadline is not None:
+                first = deadline if first is None else min(first, deadline)
             if not self._fill(1, first):
                 raise TimeoutError("no frame available")
             frame_deadline = time.monotonic() + self._frame_read_timeout
+            if deadline is not None:
+                frame_deadline = min(frame_deadline, deadline)
             try:
                 if not self._fill(LENGTH_PREFIX.size, frame_deadline):
                     raise self._frame_timeout()

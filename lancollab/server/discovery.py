@@ -45,7 +45,7 @@ def serve_discovery(tcp_port=40000, udp_port=40001, *, stop=None, udp_socket=Non
                 validate_datagram_size(raw)
                 request = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
                 validate_udp_message(request)
-                if request["type"] != "DISCOVER":
+                if request["type"] not in {"DISCOVER", "HEARTBEAT"}:
                     continue
                 reply = {
                     "version": 1,
@@ -54,6 +54,8 @@ def serve_discovery(tcp_port=40000, udp_port=40001, *, stop=None, udp_socket=Non
                     "server_name": SERVER_HOSTNAME,
                     "tcp_port": tcp_port,
                 }
+                if request["type"] == "HEARTBEAT":
+                    reply = dict(request, type="HEARTBEAT_ACK")
                 validate_udp_message(reply)
                 data = json.dumps(reply).encode("utf-8")
                 validate_datagram_size(data)

@@ -93,10 +93,10 @@ whole-frame; a reader thread and a writer thread can share one transport.
    forwarded (needed for empty files, whose ACK 0 must precede a successful `FILE_RESULT`).
 7. Duplicate client request ids get `ERROR(INVALID_MESSAGE)` with the repeated id.
 
-## Not part of TV2 (still open)
+## Integration status (10 Nov 2026)
 
-TCP accept loop, authentication/SQLite, presence, chat routing and bounded writer queues (TV1);
-CLI, UDP discovery/RTT, control-character sanitation, the real client file worker (TV3); the
-two-host LAN run, Wireshark capture, 20-client load measurements and the lecturer's answer
-about TLS-only encryption (team, CP-C). `tests/test_tv2_integration.py` uses a throw-away relay
-to show the TV2 pieces work together over verified TLS; it is not a substitute for those.
+TV1 now integrates the registry with authenticated sessions, bounded writers, purge,
+mark-written notifications and expiration. TV3 supplies the client streaming workers,
+CLI/TUI and UDP probes. `tests/test_tv2_integration.py` runs the transfer primitives
+through the production server with isolated test accounts. See [acceptance](acceptance.md)
+for local evidence and remaining two-host/capture work.

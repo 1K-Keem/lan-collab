@@ -7,10 +7,11 @@ import uuid
 from threading import BoundedSemaphore, Event, Lock, Thread
 from time import monotonic
 
-from lancollab.common.codec import ProtocolError
-from lancollab.common.contracts import SessionIdentity
+from lancollab.common.codec import MessageError, ProtocolError, RequestIdTracker
+from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
 from lancollab.common.socket_transport import SocketTransport
 from lancollab.common.tls import HANDSHAKE_TIMEOUT
+from lancollab.server.outbound import OutboundQueue
 from lancollab.server.accounts import AccountService
 from lancollab.server.application import CollabServer
 from lancollab.server.discovery import bind_discovery_socket, serve_discovery
@@ -21,10 +22,9 @@ LOG = logging.getLogger(__name__)
 class ConnectionServer:
     """One accept loop, one UDP thread, at most max_clients connection workers.
 
-    Capacity includes peers still handshaking. After TLS, wait up to 10 seconds for
-    a first frame or disconnect. Authenticated sessions are dispatched to
-    CollabServer; a dispatch error never closes the session, only a receive
-    failure (or the handler asking for a close) does.
+    Capacity includes peers still handshaking. Each TLS connection has a reader
+    and one bounded-queue writer. Dispatch and queue admission are serialized;
+    socket writes never hold the shared application lock.
     """
 
     def __init__(
@@ -36,12 +36,13 @@ class ConnectionServer:
         max_clients=32,
         handshake_timeout=HANDSHAKE_TIMEOUT,
         first_message_timeout=10.0,
+        ping_interval=10.0,
         accounts: AccountService | None = None,
         handler: CollabServer | None = None,
     ):
         if type(max_clients) is not int or max_clients < 1:
             raise ValueError("max_clients must be a positive integer")
-        if handshake_timeout <= 0 or first_message_timeout <= 0:
+        if handshake_timeout <= 0 or first_message_timeout <= 0 or ping_interval <= 0:
             raise ValueError("Timeouts must be positive")
         for value in (port, udp_port):
             if type(value) is not int or not 0 <= value <= 65535:
@@ -51,6 +52,7 @@ class ConnectionServer:
         self.max_clients = max_clients
         self.handshake_timeout = handshake_timeout
         self.first_message_timeout = first_message_timeout
+        self.ping_interval = ping_interval
         self.accounts = accounts
         self.handler = (
             handler
@@ -62,6 +64,7 @@ class ConnectionServer:
         self._lock = Lock()
         self._workers = {}  # thread -> raw socket or verified transport
         self._transports = {}  # session_id -> SocketTransport
+        self._queues = {}
         self._udp_thread = None
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -131,22 +134,70 @@ class ConnectionServer:
             self.close()
 
     def _deliver(self, events):
-        """Send each OutboundEvent to its recipient's transport, if still connected."""
-        for event in events:
-            target = self._transports.get(event.recipient.session_id)
-            if target is None:
+        """Called under handler.lock: admission is nonblocking and preserves event order."""
+        pending = list(events)
+        while pending:
+            if self.handler is not None:
+                purges = self.handler.pop_purges()
+                if purges:
+                    with self._lock:
+                        queues = list(self._queues.values())
+                    for queue in queues:
+                        queue.purge(purges)
+            event = pending.pop(0)
+            sid = event.recipient.session_id
+            with self._lock:
+                queue = self._queues.get(sid)
+                target = self._transports.get(sid)
+            if queue is None or queue.closing:
                 continue
-            try:
-                target.send(event.message)
-            except (OSError, ValueError, ProtocolError):
+            if queue.put(event.message):
                 continue
+            if event.message.type in {"FILE_CHUNK", "FILE_END"}:
+                outcome = self.handler.transfers.fail_queue_full(
+                    event.message.payload["transfer_id"]
+                )
+                pending.extend(self.handler.transfer_events(outcome))
+            else:
+                queue.close(discard=True)
+                target.close()
+                pending.extend(self.handler.close_session(sid))
+        # Cancellation can purge without generating any forwarded events.
+        if self.handler is not None:
+            purges = self.handler.pop_purges()
+            with self._lock:
+                for queue in self._queues.values():
+                    queue.purge(purges)
+
+    def _write_client(self, transport, queue):
+        try:
+            while (message := queue.get()) is not None:
+                transport.send(message)
+                if self.handler is not None and message.type in {
+                    "FILE_OFFER",
+                    "FILE_ACCEPT",
+                    "FILE_END",
+                }:
+                    self.handler.transfers.mark_written(
+                        message.payload["transfer_id"], message.type
+                    )
+        except (OSError, ValueError, ProtocolError):
+            LOG.info("Writer failed; closing receiving session")
+        finally:
+            queue.close(discard=True)
+            transport.close()  # Unblocks the reader, which owns session cleanup.
 
     def _handle_client(self, raw, address):
         from threading import current_thread
 
         worker = current_thread()
         transport = None
+        writer = None
+        queue = OutboundQueue()
+        tracker = RequestIdTracker()
         session = SessionIdentity(address[0], address[1], uuid.uuid4().hex)
+        pending_pings = {}
+        next_ping = monotonic() + self.ping_interval
         try:
             transport = SocketTransport.accept_verified(
                 self.context, raw, timeout=self.handshake_timeout
@@ -154,65 +205,103 @@ class ConnectionServer:
             with self._lock:
                 self._workers[worker] = transport
                 self._transports[session.session_id] = transport
+                self._queues[session.session_id] = queue
+            writer = Thread(
+                target=self._write_client,
+                args=(transport, queue),
+                name=f"writer-{session.session_id}",
+            )
+            writer.start()
             LOG.info("TLS ready for %s: %s", address, transport.tls_version)
             deadline = monotonic() + self.first_message_timeout
-            while not self.stop.is_set():
+            while not self.stop.is_set() and not queue.closing:
                 authed = (
                     self.handler is not None
                     and self.handler.session_for(session.session_id) is not None
                 )
-                if not authed:
-                    remaining = deadline - monotonic()
-                    if remaining <= 0:
-                        break
-                    timeout = min(0.2, remaining)
-                else:
-                    timeout = 0.2
+                if not authed and monotonic() >= deadline:
+                    break
+                if self.handler is not None:
+                    with self.handler.lock:
+                        self._deliver(self.handler.transfer_events(self.handler.transfers.expire()))
+                        if authed and monotonic() >= next_ping:
+                            if len(pending_pings) >= 3:
+                                break
+                            rid, nonce = uuid.uuid4().hex, uuid.uuid4().hex
+                            pending_pings[rid] = nonce
+                            self._deliver(
+                                [OutboundEvent(session, Envelope("PING", rid, {"nonce": nonce}))]
+                            )
+                            next_ping = monotonic() + self.ping_interval
                 try:
-                    message = transport.receive(timeout=timeout)
+                    message = transport.receive(timeout=0.2, deadline=None if authed else deadline)
+                except MessageError as error:
+                    # Semantically invalid frames still consume their request id.
+                    try:
+                        tracker.register(error.request_id)
+                    except MessageError as duplicate:
+                        error = duplicate
+                    if not queue.put(error.to_error_envelope()):
+                        break
+                    continue
                 except TimeoutError:
                     if transport.closed:
                         break
                     continue
                 except (OSError, ValueError, ProtocolError):
-                    break  # receive failure: the only path that closes the session
-                if self.handler is None:
-                    # No auth handler configured (old connection-demo behaviour):
-                    # log the first frame, then close.
-                    LOG.info(
-                        "Closing %s after %s: authentication/dispatch not implemented",
-                        address,
-                        message.type,
-                    )
                     break
-                # Dispatch failure must NOT close the session: log and keep reading.
-                try:
-                    events = self.handler.handle_message(message, session)
-                except Exception:
-                    LOG.exception("Dispatch failed for %s", address)
-                    continue
-                updated = self.handler.session_for(session.session_id)
-                if updated is not None:
-                    session = updated
-                self._deliver(events)
-                closed = self.handler.pop_closed_sessions()
-                for sid in closed:
-                    if sid == session.session_id:
-                        return
-                    victim = self._transports.get(sid)
-                    if victim is not None:
-                        victim.close()
+                if message.type != "PONG":
+                    try:
+                        tracker.register(message.request_id)
+                    except MessageError as error:
+                        if not queue.put(error.to_error_envelope()):
+                            break
+                        continue
+                if self.handler is None:
+                    break
+                with self.handler.lock:
+                    if queue.closing or (not authed and monotonic() >= deadline):
+                        break
+                    if message.type == "PONG":
+                        if (
+                            authed
+                            and pending_pings.get(message.request_id) == message.payload["nonce"]
+                        ):
+                            pending_pings.pop(message.request_id)
+                            continue
+                        events = [self.handler._error(session, message.request_id, "INVALID_STATE")]
+                    else:
+                        events = self.handler.handle_message(message, session)
+                    updated = self.handler.session_for(session.session_id)
+                    if updated is not None:
+                        session = updated
+                    self._deliver(events)
+                    for sid in self.handler.pop_closed_sessions():
+                        with self._lock:
+                            victim = self._queues.get(sid)
+                        if victim is not None:
+                            victim.close()  # Writer drains final response, then closes.
         except (OSError, ValueError, ProtocolError) as error:
             LOG.info("Connection %s ended: %s", address, type(error).__name__)
+        except Exception:
+            LOG.exception("Connection handler failed for %s", address)
         finally:
             if self.handler is not None:
-                self._deliver(self.handler.close_session(session.session_id))
+                with self.handler.lock:
+                    self._deliver(self.handler.close_session(session.session_id))
+            queue.close()
+            if writer is not None:
+                writer.join(timeout=5)
             if transport is not None:
                 transport.close()
+            queue.close(discard=True)
+            if writer is not None and writer.is_alive():
+                writer.join(timeout=1)
             raw.close()
             with self._lock:
                 self._workers.pop(worker, None)
                 self._transports.pop(session.session_id, None)
+                self._queues.pop(session.session_id, None)
             self._slots.release()
 
     def close(self):

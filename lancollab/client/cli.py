@@ -5,6 +5,9 @@ CLI never performs TLS itself and never sends credentials over unverified TCP.
 """
 
 from dataclasses import dataclass
+import sqlite3
+
+from lancollab.client.history import HistoryStore
 from getpass import getpass
 from pathlib import Path
 from time import monotonic, sleep
@@ -18,7 +21,7 @@ from lancollab.client.transfers import TransferError
 from lancollab.common.contracts import MessageTransport
 
 _HELP = (
-    "/help, /users, /status, /all TEXT, /msg USER TEXT, "
+    "/help, /users, /status, /history [USER], /all TEXT, /msg USER TEXT, "
     "/send USER PATH, /accept ID, /reject ID, /cancel ID, "
     "/pending, /approve USER, /reject-user USER, /net, /quit, /logout"
 )
@@ -41,6 +44,11 @@ def parse_command(line: str) -> Command:
         if rest.strip():
             raise ValueError(f"{action} does not take arguments")
         return Command(action)
+    if action == "/history":
+        args = tuple(rest.split())
+        if len(args) > 1:
+            raise ValueError("Usage: /history [USER]")
+        return Command(action, args)
     if action == "/all":
         if not rest:
             raise ValueError("Usage: /all TEXT")
@@ -70,6 +78,10 @@ def parse_command(line: str) -> Command:
     raise ValueError(f"Unknown command: {safe_display(head)}. Type /help")
 
 
+class AuthenticationError(RuntimeError):
+    """A verified server explicitly rejected the supplied credentials/token."""
+
+
 class ConsoleSession:
     """Authenticated session UI; input loop never calls transport.receive()."""
 
@@ -83,13 +95,21 @@ class ConsoleSession:
         udp: DiscoveryClient | None = None,
         server_host: str | None = None,
         token_store: TokenStore | None = None,
+        history: HistoryStore | None = None,
+        history_server: str = "",
     ) -> None:
         self.output = output
         self.input_line = input_line
         self.udp = udp
         self.server_host = server_host
         self.token_store = token_store
-        self.client = CollabClient(transport, auth_allowed=True, downloads_dir=downloads_dir)
+        self.client = CollabClient(
+            transport,
+            auth_allowed=True,
+            downloads_dir=downloads_dir,
+            history=history,
+            history_server=history_server,
+        )
         # Security invariant: production callers must pass a verified-TLS transport.
         self.stop = Event()
         self.reader: Thread | None = None
@@ -119,6 +139,12 @@ class ConsoleSession:
     def _wait_for(self, state: ClientState, *, timeout: float = 10.0) -> None:
         deadline = monotonic() + timeout
         while monotonic() < deadline:
+            if self.client.auth_error is not None:
+                raise AuthenticationError(self.client.auth_error)
+            if state is ClientState.WAIT_AUTH and self.client.registration_result is not None:
+                if not self.client.registration_result:
+                    raise RuntimeError("Registration rejected; see the server response")
+                return
             if self.client.state is state:
                 self._drain()
                 return
@@ -163,6 +189,21 @@ class ConsoleSession:
                 self.output(
                     "/quit closes and stays logged in; /logout logs out and forgets this device."
                 )
+            elif command.name == "/history":
+                if self.client.history is None or self.client.username is None:
+                    self.output("Local history is unavailable.")
+                else:
+                    rows = self.client.history.recent(
+                        self.client.history_server,
+                        self.client.username,
+                        command.args[0] if command.args else None,
+                    )
+                    for timestamp, direction, kind, peer, text in rows:
+                        self.output(
+                            safe_display(f"{timestamp} [{kind}] {direction} {peer}: {text}")
+                        )
+                    if not rows:
+                        self.output("No saved messages.")
             elif command.name == "/users":
                 users = sorted(self.client.online_users.items())
                 if not users:
@@ -228,7 +269,7 @@ class ConsoleSession:
                 self.client.review(command.args[0], "reject")
             else:
                 raise ValueError("Unknown command")
-        except (TransferError, RuntimeError, ValueError, OSError) as error:
+        except (TransferError, RuntimeError, ValueError, OSError, sqlite3.Error) as error:
             self.output(f"[error] {safe_display(str(error))}")
         self._drain()
         return True

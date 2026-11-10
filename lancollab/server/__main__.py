@@ -66,6 +66,7 @@ def main() -> int:
         return _add_admin(args.db, args.add_admin)
     if args.change_password:
         return _change_password(args.db, args.change_password)
+    accounts = tokens = server = None
     try:
         context = create_server_context(args.cert, args.key)
         accounts = AccountService(args.db)
@@ -83,6 +84,13 @@ def main() -> int:
         print("\nServer stopped.")
     except (OSError, ValueError) as error:
         parser.exit(1, f"Server failed: {error}\n")
+    finally:
+        if server is not None:
+            server.close()
+        if tokens is not None:
+            tokens.close()
+        if accounts is not None:
+            accounts.close()
     return 0
 
 

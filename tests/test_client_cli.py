@@ -3,7 +3,7 @@ import unittest
 from lancollab.client.application import ClientState
 from lancollab.client.cli import ConsoleSession, parse_command
 from lancollab.common.contracts import Envelope
-from lancollab.common.fake_transport import FakeTransport
+from tests.fake_transport import FakeTransport
 
 
 class CLITests(unittest.TestCase):
@@ -22,6 +22,7 @@ class CLITests(unittest.TestCase):
             patch("lancollab.client.__main__.ConsoleSession") as session,
             patch("lancollab.client.__main__._ask_remember_me", return_value=False),
             patch("lancollab.client.__main__.TokenStore") as token_store,
+            patch("lancollab.client.__main__.HistoryStore"),
         ):
             token_store.return_value.load.return_value = None
             self.assertEqual(main(["--host", "127.0.0.1"]), 0)

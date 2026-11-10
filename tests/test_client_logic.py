@@ -10,7 +10,7 @@ from lancollab.client.application import (
     safe_display,
 )
 from lancollab.common.contracts import Envelope
-from lancollab.common.fake_transport import FakeTransport
+from tests.fake_transport import FakeTransport
 
 
 class ClientLogicTests(unittest.TestCase):

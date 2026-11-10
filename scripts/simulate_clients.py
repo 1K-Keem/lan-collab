@@ -2,8 +2,7 @@
 
 No server is started by this script. Default: one client discovers the server.
 Use --clients 20 for concurrent connections; --host skips broadcast discovery.
---send-auth demonstrates the current server's unimplemented authentication boundary
-using synthetic credentials only, and expects a disconnect, never a successful login.
+--send-auth checks rejection of synthetic credentials by the authentication handler.
 """
 
 import argparse
@@ -102,17 +101,17 @@ def observe_client(name, transport, args):
                 )
             )
             report(name, f"Sent AUTH_REQUEST request_id={request_id} using synthetic credentials")
-            try:
-                event = transport.receive(timeout=3)
-            except ConnectionError:
-                report(
-                    name,
-                    "Server disconnected: expected for current milestone; authentication is NOT implemented",
-                )
-            else:
-                raise ValueError(
-                    f"Expected milestone disconnect; received {event.type}. This script does not test a full auth server"
-                )
+            event = transport.receive(timeout=3)
+            if (
+                event.type != "AUTH_RESULT"
+                or event.request_id != request_id
+                or event.payload.get("ok") is not False
+            ):
+                raise ValueError(f"Expected rejected AUTH_RESULT, received {event.type}")
+            report(
+                name,
+                f"Authentication handler rejected synthetic credentials: {event.payload['error_code']}",
+            )
         return True
     except (OSError, ValueError) as error:
         report(name, f"FAILED during observation: {type(error).__name__}: {error}")

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 SERVICE = "lan-collab"
@@ -53,8 +54,16 @@ class TokenStore:
             return {}
 
     def _file_write(self, data: dict) -> None:
-        self._file.write_text(json.dumps(data), encoding="utf-8")
-        os.chmod(self._file, 0o600)
+        self._directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, temporary = tempfile.mkstemp(prefix=".tokens-", dir=self._directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as output:
+                json.dump(data, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self._file)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
 
     def describe(self) -> str:
         """Where the token lives, for one line of user-facing output."""
