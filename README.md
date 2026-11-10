@@ -2,12 +2,12 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV2 verified TLS/codec/core are implemented. The server now supports UDP discovery and bounded concurrent TCP/TLS connections; account authentication, routing and real LAN acceptance remain pending. Green CI does **not** imply acceptance of real networking milestones.
+> **Status:** Server connections (TCP/TLS, UDP discovery) and account authentication are implemented and committed: self-registration with admin approval, login sessions with takeover, presence and chat routing, and Remember Me token login (see [token doc](docs/token-remember-me.md)). File relay in the production server is still pending (`FILE_*` currently returns `NOT_IMPLEMENTED`). Full suite: 194 tests OK.
 
 ## Target system features and integration dependencies
 
 - TLS-protected TCP login, global/private messages, server presence list, 20 concurrent clients.
-- Admin-provisioned user accounts, secure salted password hashes, AUTH deadlines.
+- User accounts in SQLite with scrypt password hashes, self-registration + admin approval, AUTH deadlines, and Remember Me tokens (30 days, revocable, server stores only SHA-256).
 - Session-bound transfers/events, globally unique active transfer IDs and explicit takeover cancellation.
 - Reliable streaming server file relay with **FILE_ACK receiver credit** (window 8 × 16KiB), SHA-256, safe filenames and nonblocking queues.
 - UDP broadcast discovery + unicast HEARTBEAT/HEARTBEAT_ACK RTT/loss estimates; manual host/IP fallback.
@@ -49,7 +49,7 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-Run `python -m lancollab.server` for the TCP/TLS milestone (32 connections by default); see [server connections](docs/server-connections.md). Account authentication and admin provisioning are still TV1 TODOs. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and an implemented server. Never use real credentials with FakeTransport or plaintext TCP.
+Run `python -m lancollab.server` for the TCP/TLS milestone (32 connections by default); see [server connections](docs/server-connections.md). First admin: `python -m lancollab.server --add-admin admin`; change a password: `python -m lancollab.server --change-password USERNAME`. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and an implemented server. Never use real credentials with FakeTransport or plaintext TCP.
 
 ## TV3 implementation and report handoff
 

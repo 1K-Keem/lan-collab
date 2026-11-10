@@ -8,6 +8,7 @@ from pathlib import Path
 from lancollab.common.tls import create_server_context
 from lancollab.server.accounts import AccountError, AccountService
 from lancollab.server.application import CollabServer
+from lancollab.server.tokens import TokenService
 from lancollab.server.connections import ConnectionServer
 
 
@@ -68,13 +69,14 @@ def main() -> int:
     try:
         context = create_server_context(args.cert, args.key)
         accounts = AccountService(args.db)
+        tokens = TokenService(args.db)
         server = ConnectionServer(
             context,
             port=args.port,
             udp_port=args.udp_port,
             max_clients=args.max_clients,
             accounts=accounts,
-            handler=CollabServer(accounts),
+            handler=CollabServer(accounts, tokens),
         )
         server.serve_forever()
     except KeyboardInterrupt:

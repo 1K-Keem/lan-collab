@@ -101,6 +101,25 @@ class AccountService:
                 "SELECT * FROM accounts WHERE username = ?", (username,)
             ).fetchone()
 
+    def get_account(self, username: str) -> dict | None:
+        """Return {username, role, status} or None. No password data."""
+        row = self._row(username)
+        if row is None:
+            return None
+        return {"username": row["username"], "role": row["role"], "status": row["status"]}
+
+    def _revoke_tokens(self, username: str) -> None:
+        """Best-effort: tokens live in the same DB file; the table may not
+        exist yet if TokenService has never run."""
+        try:
+            with self._lock, self._conn:
+                self._conn.execute(
+                    "UPDATE tokens SET revoked = 1, revoked_at = ? WHERE username = ?",
+                    (self._now(), username),
+                )
+        except sqlite3.OperationalError:
+            pass
+
     def authenticate(self, username: str, password: str) -> tuple[bool, str | None, str | None]:
         """Return (ok, error_code, role). Password is checked BEFORE status,
         so a wrong password always returns AUTH_FAILED and never reveals
@@ -146,6 +165,8 @@ class AccountService:
             )
             if cur.rowcount != 1:
                 raise AccountError("ACCOUNT_NOT_PENDING")
+        if status == "rejected":
+            self._revoke_tokens(username)
         return status
 
     def change_password(self, username: str, new_password: str) -> None:
@@ -167,6 +188,7 @@ class AccountService:
             )
             if cur.rowcount != 1:
                 raise AccountError("USER_NOT_FOUND")
+        self._revoke_tokens(username)
 
     def close(self) -> None:
         with self._lock:

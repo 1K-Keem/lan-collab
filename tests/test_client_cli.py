@@ -19,7 +19,10 @@ class CLITests(unittest.TestCase):
             patch("lancollab.client.__main__.DiscoveryClient"),
             patch("lancollab.client.__main__.SocketTransport.connect_verified") as connect,
             patch("lancollab.client.__main__.ConsoleSession") as session,
+            patch("lancollab.client.__main__._ask_remember_me", return_value=False),
+            patch("lancollab.client.__main__.TokenStore") as token_store,
         ):
+            token_store.return_value.load.return_value = None
             self.assertEqual(main(["--host", "127.0.0.1"]), 0)
             connect.assert_called_once_with(
                 host="127.0.0.1",
@@ -27,7 +30,9 @@ class CLITests(unittest.TestCase):
                 server_hostname="lan-collab.local",
                 trusted_cert=str(BUNDLED_SERVER_CERT),
             )
-            session.return_value.authenticate.assert_called_once_with("alice", "test")
+            session.return_value.authenticate.assert_called_once_with(
+                "alice", "test", remember_me=False
+            )
 
     def test_invalid_explicit_certificate_fails_before_credentials(self):
         from unittest.mock import patch

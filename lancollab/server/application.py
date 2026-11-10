@@ -9,16 +9,19 @@ from __future__ import annotations
 import uuid
 from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
 from lancollab.server.accounts import AccountError, AccountService
+from lancollab.server.tokens import TokenService
 
 MAX_FAILED_ATTEMPTS = 3
 
 
 class CollabServer:
-    def __init__(self, accounts: AccountService) -> None:
+    def __init__(self, accounts: AccountService, tokens: TokenService | None = None) -> None:
         self.accounts = accounts
+        self.tokens = tokens
         self._sessions: dict[str, SessionIdentity] = {}  # session_id -> identity
         self._by_username: dict[str, str] = {}  # username -> session_id
         self._failed: dict[str, int] = {}  # session_id -> failed auth attempts
+        self._session_tokens: dict[str, bytes] = {}  # session_id -> token_hash
         self._close_after: set[str] = set()  # session_ids to close after delivery
 
     # -- helpers ---------------------------------------------------------
@@ -65,10 +68,40 @@ class CollabServer:
             return [old_id]
         return []
 
+    def _login_success(
+        self, session: SessionIdentity, username: str, role: str, rid: str, token: str | None = None
+    ) -> list[OutboundEvent]:
+        """Create the session, send AUTH_RESULT (+ optional token) and USER_LIST."""
+        self._failed.pop(session.session_id, None)
+        closed = self._takeover(username, session.session_id)
+        self._close_after.update(closed)
+        ident = SessionIdentity(
+            session.remote_ip, session.remote_port, session.session_id, username, role
+        )
+        self._sessions[ident.session_id] = ident
+        self._by_username[username] = ident.session_id
+        payload: dict = {"ok": True, "username": username, "role": role}
+        if token is not None:
+            payload["token"] = token
+        events = [
+            self._reply(ident, "AUTH_RESULT", rid, payload),
+            self._user_list(ident),
+        ]
+        return events + self._presence(ident, "online", exclude=ident.session_id)
+
+    def _login_failed(
+        self, session: SessionIdentity, rid: str, error_code: str
+    ) -> list[OutboundEvent]:
+        self._failed[session.session_id] = self._failed.get(session.session_id, 0) + 1
+        if self._failed[session.session_id] >= MAX_FAILED_ATTEMPTS:
+            self._close_after.add(session.session_id)
+        return [self._reply(session, "AUTH_RESULT", rid, {"ok": False, "error_code": error_code})]
+
     # -- lifecycle -------------------------------------------------------
     def close_session(self, session_id: str) -> list[OutboundEvent]:
         ident = self._sessions.pop(session_id, None)
         self._failed.pop(session_id, None)
+        self._session_tokens.pop(session_id, None)
         if ident is None or ident.username is None:
             return []
         self._by_username.pop(ident.username, None)
@@ -100,36 +133,34 @@ class CollabServer:
                 payload["username"], payload["password"]
             )
             if not ok:
-                self._failed[session.session_id] = self._failed.get(session.session_id, 0) + 1
-                if self._failed[session.session_id] >= MAX_FAILED_ATTEMPTS:
-                    self._close_after.add(session.session_id)
-                return [
-                    self._reply(
-                        session, "AUTH_RESULT", rid, {"ok": False, "error_code": error_code}
-                    )
-                ]
-            self._failed.pop(session.session_id, None)
-            closed = self._takeover(payload["username"], session.session_id)
-            self._close_after.update(closed)
-            ident = SessionIdentity(
-                session.remote_ip,
-                session.remote_port,
-                session.session_id,
-                payload["username"],
-                role,
-            )
-            self._sessions[ident.session_id] = ident
-            self._by_username[ident.username] = ident.session_id
-            events = [
-                self._reply(
-                    ident,
-                    "AUTH_RESULT",
-                    rid,
-                    {"ok": True, "username": ident.username, "role": role},
-                ),
-                self._user_list(ident),
-            ]
-            return events + self._presence(ident, "online", exclude=ident.session_id)
+                return self._login_failed(session, rid, error_code)
+            token = None
+            if payload.get("remember_me") is True and self.tokens is not None:
+                token = self.tokens.issue(payload["username"])
+                from hashlib import sha256 as _sha256
+
+                self._session_tokens[session.session_id] = _sha256(token.encode()).digest()
+            return self._login_success(session, payload["username"], role, rid, token=token)
+
+        if kind == "TOKEN_AUTH_REQUEST":
+            if authed is not None:
+                return [self._error(session, rid, "INVALID_STATE")]
+            if self.tokens is None:
+                return self._login_failed(session, rid, "AUTH_FAILED")
+            username, error_code = self.tokens.verify(payload["token"])
+            if error_code is not None:
+                return self._login_failed(session, rid, error_code)
+            account = self.accounts.get_account(username)
+            if account is None:
+                return self._login_failed(session, rid, "AUTH_FAILED")
+            if account["status"] == "pending":
+                return self._login_failed(session, rid, "ACCOUNT_PENDING")
+            if account["status"] == "rejected":
+                return self._login_failed(session, rid, "ACCOUNT_REJECTED")
+            from hashlib import sha256 as _sha256
+
+            self._session_tokens[session.session_id] = _sha256(payload["token"].encode()).digest()
+            return self._login_success(session, username, account["role"], rid)
 
         if kind == "PENDING_USERS_REQUEST":
             if authed is None or authed.role != "admin":
@@ -163,6 +194,9 @@ class CollabServer:
             ]
 
         if kind == "LOGOUT":
+            token_hash = self._session_tokens.get(session.session_id)
+            if token_hash is not None and self.tokens is not None:
+                self.tokens.revoke_token_hash(token_hash)
             self._close_after.add(session.session_id)
             return self.close_session(session.session_id)
 

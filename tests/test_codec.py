@@ -59,7 +59,7 @@ class RoundTripTests(unittest.TestCase):
 
     def test_every_catalog_entry_is_implemented(self) -> None:
         # Import-time compilation fails for unknown specs; this guards catalog drift.
-        self.assertEqual(len(MESSAGE_FIELDS), 37)
+        self.assertEqual(len(MESSAGE_FIELDS), 38)
 
 
 class FramingTests(unittest.TestCase):
@@ -232,6 +232,18 @@ class FieldValidationTests(unittest.TestCase):
         self.bad(
             "AUTH_RESULT", {"ok": False, "error_code": "AUTH_FAILED", "role": "member"}, CLIENT
         )
+        self.good(
+            "AUTH_RESULT",
+            {"ok": True, "username": "alice", "role": "member", "token": "tok"},
+            CLIENT,
+        )
+        self.bad(
+            "AUTH_RESULT",
+            {"ok": False, "error_code": "AUTH_FAILED", "token": "tok"},
+            CLIENT,
+        )
+        self.good("AUTH_RESULT", {"ok": False, "error_code": "TOKEN_EXPIRED"}, CLIENT)
+        self.good("AUTH_RESULT", {"ok": False, "error_code": "TOKEN_REVOKED"}, CLIENT)
 
     def test_conditional_presence_and_user_list(self) -> None:
         online = {"username": "bob", "status": "online", "ip": "192.0.2.2", "port": 50123}

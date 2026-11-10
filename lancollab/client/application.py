@@ -74,6 +74,8 @@ class CollabClient:
         self.username: str | None = None
         self.role: str | None = None
         self.pending_users: list[dict[str, str]] = []
+        self.issued_token: str | None = None  # set from AUTH_RESULT when remember_me
+        self._token_login = False  # True when the current login used a token
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
         self._pending: dict[str, str] = {}  # request_id -> message type, never passwords
@@ -120,7 +122,7 @@ class CollabClient:
             self.close()
             raise
 
-    def login(self, username: str, password: str) -> str:
+    def login(self, username: str, password: str, *, remember_me: bool = False) -> str:
         if not self._auth_allowed:
             raise RuntimeError("Do not send a password without verified TLS")
         if not isinstance(username, str) or _USERNAME.fullmatch(username) is None:
@@ -131,9 +133,25 @@ class CollabClient:
             if self.state is not ClientState.WAIT_AUTH:
                 raise RuntimeError("AUTH_REQUEST requires WAIT_AUTH")
             request = self._new_request(
-                "AUTH_REQUEST", {"username": username, "password": password}
+                "AUTH_REQUEST",
+                {"username": username, "password": password, "remember_me": remember_me},
             )
             self._requested_username = username
+            self._token_login = False
+            self.state = ClientState.WAIT_AUTH_RESULT
+        self._send(request)
+        return request.request_id
+
+    def login_with_token(self, token: str) -> str:
+        """Authenticate with a stored remember-me token, not a password."""
+        if not isinstance(token, str) or not token:
+            raise ValueError("token must be a non-empty string")
+        with self._lock:
+            if self.state is not ClientState.WAIT_AUTH:
+                raise RuntimeError("TOKEN_AUTH_REQUEST requires WAIT_AUTH")
+            request = self._new_request("TOKEN_AUTH_REQUEST", {"token": token})
+            self._requested_username = None  # the server tells us who this token is
+            self._token_login = True
             self.state = ClientState.WAIT_AUTH_RESULT
         self._send(request)
         return request.request_id
@@ -248,16 +266,24 @@ class CollabClient:
                         raise ProtocolViolation("Invalid AUTH_RESULT.ok")
                     if payload["ok"] is True:
                         if (
-                            set(payload) != {"ok", "username", "role"}
+                            set(payload)
+                            not in ({"ok", "username", "role"}, {"ok", "username", "role", "token"})
                             or not isinstance(payload["username"], str)
-                            or payload["username"] != self._requested_username
+                            or (
+                                not self._token_login
+                                and payload["username"] != self._requested_username
+                            )
                             or payload["role"] not in ("member", "admin")
                         ):
                             raise ProtocolViolation("AUTH_RESULT username/role mismatch")
-                        self._pop_expected(event, "AUTH_REQUEST")
-                        self.username = self._requested_username
+                        self._pop_expected(
+                            event, "TOKEN_AUTH_REQUEST" if self._token_login else "AUTH_REQUEST"
+                        )
+                        self.username = payload["username"]
                         self.role = payload["role"]
+                        self.issued_token = payload.get("token")
                         self._requested_username = None
+                        self._token_login = False
                         self.state = ClientState.AUTHENTICATED
                         self._notices.append(Notice("auth", f"Authenticated as {self.role}"))
                     else:
@@ -265,6 +291,8 @@ class CollabClient:
                             "AUTH_FAILED",
                             "ACCOUNT_PENDING",
                             "ACCOUNT_REJECTED",
+                            "TOKEN_EXPIRED",
+                            "TOKEN_REVOKED",
                         ):
                             raise ProtocolViolation("Invalid failed AUTH_RESULT")
                         self._pop_expected(event, "AUTH_REQUEST")
@@ -487,6 +515,8 @@ class CollabClient:
             self.role = None
             self.pending_users = []
             self._requested_username = None
+            self.issued_token = None
+            self._token_login = False
             self.online_users.clear()
             self._pending.clear()
             self._file_requests.clear()

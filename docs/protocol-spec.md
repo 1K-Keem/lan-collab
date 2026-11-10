@@ -22,8 +22,9 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 | Message | Direction | Required payload; optional payload | Semantics |
 | --- | --- | --- | --- |
-| `AUTH_REQUEST` | C→S | `username:str, password:str` | Only over verified TLS |
-| `AUTH_RESULT` | S→C | `ok:bool`; `username?:str, error_code?:str` | Success requires username and forbids error_code; failure requires error_code=AUTH_FAILED and forbids username |
+| `AUTH_REQUEST` | C→S | `username:str, password:str`; optional `remember_me:bool` (default false) | Only over verified TLS; `remember_me=true` asks the server to issue a token (see §3) |
+| `TOKEN_AUTH_REQUEST` | C→S | `token:str` | Token login, no password; allowed only in WAIT_AUTH |
+| `AUTH_RESULT` | S→C | `ok:bool`; `username?:str, error_code?:str, token?:str` | Success requires username and role, forbids error_code, may carry `token` (only when `remember_me` was requested); failure requires error_code and forbids username, role, token |
 | `USER_LIST` | S→C | `users:[{username:str, ip:str, port:int}]` | Atomic authenticated presence snapshot; port = client TCP **ephemeral source** port |
 | `PRESENCE_UPDATE` | S→C | `username:str, status:"online"\|"offline"`; **online requires** `ip:str, port:int`; offline omits them | Ordered relative to USER_LIST under registry lock |
 | `CHAT_GLOBAL` | C→S | `text:str` | Broadcast to authenticated users, excluding sender; agreed behavior |
@@ -48,8 +49,10 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 ## 3. Authentication and sessions
 
-- **No REGISTER over the network in MVP.** Administrator provisions accounts using server CLI `python -m lancollab.server --add-user alice` (command is an implementation TODO), securely prompts for password and stores salted password hashes (e.g. `hashlib.scrypt` or PBKDF2) in SQLite. README must document exact command after implementation.
-- TLS handshake deadline: **5s**, executed in a bounded client worker, never in the accept loop. Complete authentication with `AUTH_REQUEST` within **10s** from TLS completion (client gathers username/password before opening the connection). Close silent/unauthenticated clients at deadline. Allow at most **3** failed authentication attempts per connection; use `AUTH_FAILED` generically for unknown user and bad password.
+- **Registration and admin approval (implemented).** A client self-registers with `REGISTER_REQUEST`; the account starts `pending` and cannot log in until an admin approves it (`PENDING_USERS_REQUEST` / `ACCOUNT_REVIEW_REQUEST` from an admin client, or the server CLI). The first admin is created on the server machine: `python -m lancollab.server --add-admin admin`. Passwords are stored as scrypt hashes with a per-account salt in SQLite (`accounts.db`, never committed).
+- **Password change (implemented, server CLI only).** `python -m lancollab.server --change-password USERNAME` prompts for a new password twice, re-hashes it with a fresh salt, and revokes all of that user's remember-me tokens.
+- TLS handshake deadline: **5s**, executed in a bounded client worker, never in the accept loop. Complete authentication with `AUTH_REQUEST` or `TOKEN_AUTH_REQUEST` within **10s** from TLS completion (client gathers username/password before opening the connection, or reuses a stored token). Close silent/unauthenticated clients at deadline. Allow at most **3** failed authentication attempts per connection; use `AUTH_FAILED` generically for unknown user, bad password and unknown token.
+- **Remember-me tokens (implemented, see `docs/token-remember-me.md`).** On a successful password login with `remember_me=true`, `AUTH_RESULT` carries a one-time `token`: a random 256-bit value (`secrets.token_urlsafe(32)`), valid 30 days, **not** derived from the password. The server stores only `SHA-256(token)` in a separate `tokens` table. A later run opens a new TLS connection and sends `TOKEN_AUTH_REQUEST` instead of a password; the server replies with the same `AUTH_RESULT` (no new token — the 30-day expiry is fixed, no sliding window). `LOGOUT` revokes the session's token; changing the password or rejecting the account revokes all of that user's tokens. A token login counts as authentication for takeover, presence and the 3-attempt limit; its failure codes are `TOKEN_EXPIRED` and `TOKEN_REVOKED` (unknown token returns generic `AUTH_FAILED`). Closing the app without logging out keeps the token; only `LOGOUT` forgets it.
 - Authenticated **new session replaces old session** for the same username (atomic takeover, after successful password check); close old connection. Session registry uses an identity/generation token so old connection cleanup cannot remove or mark newer session offline.
 - On login, under one registry lock: install authenticated session, build consistent USER_LIST snapshot, register ordering of future PRESENCE_UPDATE events, and queue notifications **nonblocking**; never block socket I/O while holding registry lock. Readers should handle duplicate/ordered presence updates idempotently.
 - Server retains authenticated username, TCP peer IP and **ephemeral source port**. If exposed to clients, online PRESENCE_UPDATE carries same `ip`/`port` as USER_LIST; offline update does not carry them.
@@ -62,11 +65,11 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 | State | Allowed client-originated messages | Transition / rejection |
 | --- | --- | --- |
-| WAIT_AUTH | AUTH_REQUEST, LOGOUT | Success → AUTHENTICATED; failure stays until attempt/deadline limit; other valid requests → ERROR(INVALID_STATE) |
+| WAIT_AUTH | AUTH_REQUEST, TOKEN_AUTH_REQUEST, LOGOUT | Success → AUTHENTICATED; failure stays until attempt/deadline limit; other valid requests → ERROR(INVALID_STATE) |
 | AUTHENTICATED | Chat/file requests, PING, matching PONG, LOGOUT | Repeated AUTH_REQUEST → ERROR(INVALID_STATE); enforce per-transfer state and roles |
 | CLOSING / CLOSED | None | No more dispatch; invalidate session and perform idempotent cleanup |
 
-After verified TLS, the server and client start in WAIT_AUTH. AUTH_REQUEST is the first application request; the server validates envelope version 1 before authentication. Client waits for AUTH_RESULT(ok=true) before authenticated operations. Server queues AUTH_RESULT before USER_LIST and subsequent presence events. Malformed framing follows §1 in every state. LOGOUT, takeover, EOF, timeout or writer failure enters CLOSING. Three failed credentials or the absolute AUTH deadline close the connection after a best-effort final response.
+After verified TLS, the server and client start in WAIT_AUTH. AUTH_REQUEST or TOKEN_AUTH_REQUEST is the first application request; the server validates envelope version 1 before authentication. Client waits for AUTH_RESULT(ok=true) before authenticated operations. Server queues AUTH_RESULT before USER_LIST and subsequent presence events. Malformed framing follows §1 in every state. LOGOUT, takeover, EOF, timeout or writer failure enters CLOSING. Three failed credentials or the absolute AUTH deadline close the connection after a best-effort final response.
 
 ```mermaid
 stateDiagram-v2
@@ -174,6 +177,7 @@ coordinated distribution of the replacement trusted certificate. See [TLS setup]
 | TCP/TLS handshake | 5 seconds maximum |
 | AUTH | 10 seconds total after TLS completes |
 | Bad logins | 3 per connection; generic AUTH_FAILED |
+| Remember-me token | 30 days from issue, fixed (no sliding renewal); revoked on LOGOUT, password change, account rejection |
 | FILE_OFFER reply | 60 seconds |
 | After FILE_ACCEPT to first chunk | 10 seconds |
 | Transfer progress stall | 15 seconds without newly admitted bytes, newly acknowledged bytes or completed END write; duplicate ACKs/control traffic do not reset it |
@@ -185,7 +189,7 @@ coordinated distribution of the replacement trusted certificate. See [TLS setup]
 
 Use `time.monotonic()` for every elapsed deadline. Start OFFER reply timeout after the offer frame is written, first-data timeout after ACCEPT is written to sender (empty FILE_END counts as first data), and stall tracking in accepted/transferring states. Keep the stall watchdog active until END is actually written; then use the verification deadline instead. ACKs in VERIFYING do not extend verification time. Send PING every 10s with a fresh nonce/ID; each completed PING write starts its 10s PONG deadline, a matching timely PONG resets consecutive misses, and three misses close the session. Unsolicited/wrong-nonce PONGs never renew liveness. Writer failures/timeouts trigger ordinary session/transfer cleanup.
 
-Error codes: `TRANSFER_ID_CONFLICT`, `TRANSFER_LIMIT_REACHED`, `INVALID_FRAME`, `INVALID_MESSAGE`, `UNSUPPORTED_VERSION`, `INVALID_STATE`, `NOT_AUTHENTICATED`, `AUTH_FAILED`, `USER_OFFLINE`, `RECIPIENT_NOT_FOUND`, `RECIPIENT_BUSY`, `FILE_TOO_LARGE`, `FILE_REJECTED`, `TRANSFER_NOT_FOUND`, `INVALID_CHUNK_OFFSET`, `TRANSFER_FAILED`, `QUEUE_FULL`, `TIMEOUT`, `INTERNAL_ERROR`.
+Error codes: `TRANSFER_ID_CONFLICT`, `TRANSFER_LIMIT_REACHED`, `INVALID_FRAME`, `INVALID_MESSAGE`, `UNSUPPORTED_VERSION`, `INVALID_STATE`, `NOT_AUTHENTICATED`, `AUTH_FAILED`, `ACCOUNT_PENDING`, `ACCOUNT_REJECTED`, `TOKEN_EXPIRED`, `TOKEN_REVOKED`, `USER_OFFLINE`, `RECIPIENT_NOT_FOUND`, `RECIPIENT_BUSY`, `FILE_TOO_LARGE`, `FILE_REJECTED`, `TRANSFER_NOT_FOUND`, `INVALID_CHUNK_OFFSET`, `TRANSFER_FAILED`, `QUEUE_FULL`, `TIMEOUT`, `INTERNAL_ERROR`.
 
 Never expose passwords/password hashes, stack traces or keys in errors. The former `DUPLICATE_LOGIN` error is removed in favor of the atomic successful-login takeover policy.
 

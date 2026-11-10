@@ -12,6 +12,7 @@ from threading import Event, Thread
 from typing import Callable
 
 from lancollab.client.application import ClientState, CollabClient, safe_display
+from lancollab.client.token_store import TokenStore
 from lancollab.client.discovery import DiscoveryClient
 from lancollab.client.transfers import TransferError
 from lancollab.common.contracts import MessageTransport
@@ -81,11 +82,13 @@ class ConsoleSession:
         downloads_dir: str | Path = "downloads",
         udp: DiscoveryClient | None = None,
         server_host: str | None = None,
+        token_store: TokenStore | None = None,
     ) -> None:
         self.output = output
         self.input_line = input_line
         self.udp = udp
         self.server_host = server_host
+        self.token_store = token_store
         self.client = CollabClient(transport, auth_allowed=True, downloads_dir=downloads_dir)
         # Security invariant: production callers must pass a verified-TLS transport.
         self.stop = Event()
@@ -126,10 +129,24 @@ class ConsoleSession:
         self.client.close()
         raise TimeoutError(f"Timed out awaiting {state.value}")
 
-    def authenticate(self, username: str, password: str) -> None:
+    def authenticate(self, username: str, password: str, *, remember_me: bool = False) -> None:
         self.start_reader()
         deadline = monotonic() + 10
-        self.client.login(username, password)
+        self.client.login(username, password, remember_me=remember_me)
+        self._wait_for(ClientState.AUTHENTICATED, timeout=max(0.01, deadline - monotonic()))
+        if (
+            remember_me
+            and self.client.issued_token is not None
+            and self.token_store is not None
+            and self.server_host is not None
+        ):
+            self.token_store.save(self.server_host, username, self.client.issued_token)
+
+    def authenticate_with_token(self, token: str) -> None:
+        """Log in with a stored remember-me token; raises if it is dead."""
+        self.start_reader()
+        deadline = monotonic() + 10
+        self.client.login_with_token(token)
         self._wait_for(ClientState.AUTHENTICATED, timeout=max(0.01, deadline - monotonic()))
 
     def register(self, username: str, password: str) -> None:
@@ -178,7 +195,10 @@ class ConsoleSession:
                 self.client.files.cancel(command.args[0])
             elif command.name == "/quit":
                 if self.client.state in {ClientState.WAIT_AUTH, ClientState.AUTHENTICATED}:
-                    self.client.logout()
+                    username = self.client.username
+                    self.client.logout()  # server revokes this session's token
+                    if self.token_store is not None and username and self.server_host:
+                        self.token_store.delete(self.server_host)  # logout forgets the token
                 return False
             elif command.name == "/pending":
                 self.client.list_pending()

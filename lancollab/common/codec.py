@@ -313,13 +313,23 @@ def _auth_result_rules(payload: dict[str, Any]) -> None:
             raise _Invalid("success requires username and role and forbids error_code")
         if payload["role"] not in ("member", "admin"):
             raise _Invalid("role must be member or admin")
+        # "token" is optional: present only on a password login with remember_me.
     else:
-        if "error_code" not in payload or "username" in payload or "role" in payload:
-            raise _Invalid("failure requires error_code and forbids username and role")
-        if payload["error_code"] not in ("AUTH_FAILED", "ACCOUNT_PENDING", "ACCOUNT_REJECTED"):
-            raise _Invalid(
-                "failure error_code must be AUTH_FAILED, ACCOUNT_PENDING or ACCOUNT_REJECTED"
-            )
+        if (
+            "error_code" not in payload
+            or "username" in payload
+            or "role" in payload
+            or "token" in payload
+        ):
+            raise _Invalid("failure requires error_code and forbids username, role and token")
+        if payload["error_code"] not in (
+            "AUTH_FAILED",
+            "ACCOUNT_PENDING",
+            "ACCOUNT_REJECTED",
+            "TOKEN_EXPIRED",
+            "TOKEN_REVOKED",
+        ):
+            raise _Invalid("failure error_code is not a known auth error")
 
 
 def _register_result_rules(payload: dict[str, Any]) -> None:
