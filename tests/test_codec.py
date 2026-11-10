@@ -59,7 +59,7 @@ class RoundTripTests(unittest.TestCase):
 
     def test_every_catalog_entry_is_implemented(self) -> None:
         # Import-time compilation fails for unknown specs; this guards catalog drift.
-        self.assertEqual(len(MESSAGE_FIELDS), 31)
+        self.assertEqual(len(MESSAGE_FIELDS), 37)
 
 
 class FramingTests(unittest.TestCase):
@@ -218,13 +218,20 @@ class FieldValidationTests(unittest.TestCase):
         self.bad("FILE_CHUNK", chunk("QQ==", offset=-1))
 
     def test_conditional_auth_result(self) -> None:
-        self.good("AUTH_RESULT", {"ok": True, "username": "alice"}, CLIENT)
+        self.good("AUTH_RESULT", {"ok": True, "username": "alice", "role": "member"}, CLIENT)
         self.good("AUTH_RESULT", {"ok": False, "error_code": "AUTH_FAILED"}, CLIENT)
+        self.good("AUTH_RESULT", {"ok": False, "error_code": "ACCOUNT_PENDING"}, CLIENT)
+        self.good("AUTH_RESULT", {"ok": False, "error_code": "ACCOUNT_REJECTED"}, CLIENT)
         self.bad("AUTH_RESULT", {"ok": True}, CLIENT)
         self.bad("AUTH_RESULT", {"ok": True, "username": "a", "error_code": "AUTH_FAILED"}, CLIENT)
         self.bad("AUTH_RESULT", {"ok": False}, CLIENT)
         self.bad("AUTH_RESULT", {"ok": False, "error_code": "AUTH_FAILED", "username": "a"}, CLIENT)
         self.bad("AUTH_RESULT", {"ok": False, "error_code": "OTHER"}, CLIENT)
+        self.bad("AUTH_RESULT", {"ok": True, "username": "alice"}, CLIENT)
+        self.bad("AUTH_RESULT", {"ok": True, "username": "alice", "role": "superuser"}, CLIENT)
+        self.bad(
+            "AUTH_RESULT", {"ok": False, "error_code": "AUTH_FAILED", "role": "member"}, CLIENT
+        )
 
     def test_conditional_presence_and_user_list(self) -> None:
         online = {"username": "bob", "status": "online", "ip": "192.0.2.2", "port": 50123}

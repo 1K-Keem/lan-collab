@@ -24,6 +24,7 @@ class TwentyMockClients(unittest.TestCase):
                         {
                             "ok": True,
                             "username": f"user{n}",
+                            "role": "member",
                         },
                     )
                 )

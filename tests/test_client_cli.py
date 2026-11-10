@@ -13,7 +13,9 @@ class CLITests(unittest.TestCase):
 
         with (
             patch.dict("os.environ", {}, clear=True),
-            patch("lancollab.client.__main__.prompt_identity", return_value=("alice", "test")),
+            patch(
+                "lancollab.client.__main__.prompt_welcome", return_value=("login", "alice", "test")
+            ),
             patch("lancollab.client.__main__.DiscoveryClient"),
             patch("lancollab.client.__main__.SocketTransport.connect_verified") as connect,
             patch("lancollab.client.__main__.ConsoleSession") as session,
@@ -32,7 +34,7 @@ class CLITests(unittest.TestCase):
         from lancollab.client.__main__ import main
 
         with (
-            patch("lancollab.client.__main__.prompt_identity") as prompt,
+            patch("lancollab.client.__main__.prompt_welcome") as prompt,
             patch("sys.stderr"),
             self.assertRaises(SystemExit) as error,
         ):
@@ -65,7 +67,11 @@ class CLITests(unittest.TestCase):
             request = b.receive()
             self.assertEqual(request.type, "AUTH_REQUEST")
             session.client.handle_event(
-                Envelope("AUTH_RESULT", request.request_id, {"ok": True, "username": "alice"})
+                Envelope(
+                    "AUTH_RESULT",
+                    request.request_id,
+                    {"ok": True, "username": "alice", "role": "member"},
+                )
             )
 
         with (
@@ -83,7 +89,9 @@ class CLITests(unittest.TestCase):
         client = session.client
         auth = client.login("alice", "synthetic-password")
         b.receive()
-        client.handle_event(Envelope("AUTH_RESULT", auth, {"ok": True, "username": "alice"}))
+        client.handle_event(
+            Envelope("AUTH_RESULT", auth, {"ok": True, "username": "alice", "role": "member"})
+        )
         client.handle_event(
             Envelope(
                 "USER_LIST",

@@ -83,7 +83,11 @@ class MiniRelay:
             self.transports[identity.session_id] = transport
             self.registry.open_session(identity)
         transport.send(
-            Envelope("AUTH_RESULT", auth.request_id, {"ok": True, "username": identity.username})
+            Envelope(
+                "AUTH_RESULT",
+                auth.request_id,
+                {"ok": True, "username": identity.username, "role": "member"},
+            )
         )
         try:
             while True:

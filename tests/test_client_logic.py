@@ -25,7 +25,7 @@ class ClientLogicTests(unittest.TestCase):
             Envelope(
                 "AUTH_RESULT",
                 auth_id,
-                {"ok": True, "username": "alice"},
+                {"ok": True, "username": "alice", "role": "member"},
             )
         )
         self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
@@ -44,7 +44,9 @@ class ClientLogicTests(unittest.TestCase):
         self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
             self.client.handle_event(
-                Envelope("AUTH_RESULT", "wrong-id", {"ok": True, "username": "alice"})
+                Envelope(
+                    "AUTH_RESULT", "wrong-id", {"ok": True, "username": "alice", "role": "member"}
+                )
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
@@ -138,12 +140,12 @@ class ClientLogicTests(unittest.TestCase):
     def test_auth_success_username_must_match_request(self):
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
-        with self.assertRaisesRegex(ProtocolViolation, "username mismatch"):
+        with self.assertRaisesRegex(ProtocolViolation, "username/role mismatch"):
             self.client.handle_event(
                 Envelope(
                     "AUTH_RESULT",
                     auth_id,
-                    {"ok": True, "username": "mallory"},
+                    {"ok": True, "username": "mallory", "role": "member"},
                 )
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
@@ -183,7 +185,7 @@ class ClientLogicTests(unittest.TestCase):
             Envelope(
                 "AUTH_RESULT",
                 req2,
-                {"ok": True, "username": "bob"},
+                {"ok": True, "username": "bob", "role": "member"},
             )
         )
         self.assertEqual(self.client.username, "bob")
@@ -241,7 +243,12 @@ class ClientLogicTests(unittest.TestCase):
         self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
             self.client.handle_event(
-                Envelope("AUTH_RESULT", req, {"ok": True, "username": "alice"}, version=True)
+                Envelope(
+                    "AUTH_RESULT",
+                    req,
+                    {"ok": True, "username": "alice", "role": "member"},
+                    version=True,
+                )
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 

@@ -27,6 +27,7 @@ class ClientState(str, Enum):
     WAIT_AUTH_RESULT = "WAIT_AUTH_RESULT"
     AUTHENTICATED = "AUTHENTICATED"
     CLOSED = "CLOSED"
+    WAIT_REGISTER_RESULT = "WAIT_REGISTER_RESULT"
 
 
 class ProtocolViolation(Exception):
@@ -71,6 +72,8 @@ class CollabClient:
         self._auth_allowed = auth_allowed
         self.state = ClientState.WAIT_AUTH
         self.username: str | None = None
+        self.role: str | None = None
+        self.pending_users: list[dict[str, str]] = []
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
         self._pending: dict[str, str] = {}  # request_id -> message type, never passwords
@@ -132,6 +135,44 @@ class CollabClient:
             )
             self._requested_username = username
             self.state = ClientState.WAIT_AUTH_RESULT
+        self._send(request)
+        return request.request_id
+
+    def register(self, username: str, password: str) -> str:
+        if not isinstance(username, str) or _USERNAME.fullmatch(username) is None:
+            raise ValueError("Invalid username")
+        if not isinstance(password, str) or len(password) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        with self._lock:
+            if self.state is not ClientState.WAIT_AUTH:
+                raise RuntimeError("REGISTER_REQUEST requires WAIT_AUTH")
+            request = self._new_request(
+                "REGISTER_REQUEST", {"username": username, "password": password}
+            )
+            self._requested_username = username
+            self.state = ClientState.WAIT_REGISTER_RESULT
+        self._send(request)
+        return request.request_id
+
+    def list_pending(self) -> str:
+        with self._lock:
+            if self.state is not ClientState.AUTHENTICATED or self.role != "admin":
+                raise RuntimeError("Only an admin can list pending users")
+            request = self._new_request("PENDING_USERS_REQUEST", {})
+        self._send(request)
+        return request.request_id
+
+    def review(self, username: str, decision: str) -> str:
+        if decision not in ("approve", "reject"):
+            raise ValueError("Decision must be approve or reject")
+        if not isinstance(username, str) or _USERNAME.fullmatch(username) is None:
+            raise ValueError("Invalid username")
+        with self._lock:
+            if self.state is not ClientState.AUTHENTICATED or self.role != "admin":
+                raise RuntimeError("Only an admin can review accounts")
+            request = self._new_request(
+                "ACCOUNT_REVIEW_REQUEST", {"username": username, "decision": decision}
+            )
         self._send(request)
         return request.request_id
 
@@ -207,26 +248,70 @@ class CollabClient:
                         raise ProtocolViolation("Invalid AUTH_RESULT.ok")
                     if payload["ok"] is True:
                         if (
-                            set(payload) != {"ok", "username"}
+                            set(payload) != {"ok", "username", "role"}
                             or not isinstance(payload["username"], str)
                             or payload["username"] != self._requested_username
+                            or payload["role"] not in ("member", "admin")
                         ):
-                            raise ProtocolViolation("AUTH_RESULT username mismatch")
+                            raise ProtocolViolation("AUTH_RESULT username/role mismatch")
                         self._pop_expected(event, "AUTH_REQUEST")
                         self.username = self._requested_username
+                        self.role = payload["role"]
                         self._requested_username = None
                         self.state = ClientState.AUTHENTICATED
-                        self._notices.append(Notice("auth", "Authenticated"))
+                        self._notices.append(Notice("auth", f"Authenticated as {self.role}"))
                     else:
-                        if (
-                            set(payload) != {"ok", "error_code"}
-                            or payload["error_code"] != "AUTH_FAILED"
+                        if set(payload) != {"ok", "error_code"} or payload["error_code"] not in (
+                            "AUTH_FAILED",
+                            "ACCOUNT_PENDING",
+                            "ACCOUNT_REJECTED",
                         ):
                             raise ProtocolViolation("Invalid failed AUTH_RESULT")
                         self._pop_expected(event, "AUTH_REQUEST")
                         self._requested_username = None
                         self.state = ClientState.WAIT_AUTH
-                        self._notices.append(Notice("auth_error", "Authentication failed"))
+                        self._notices.append(
+                            Notice("auth_error", f"Authentication failed: {payload['error_code']}")
+                        )
+
+                elif kind == "REGISTER_RESULT":
+                    if self.state is not ClientState.WAIT_REGISTER_RESULT:
+                        raise ProtocolViolation("REGISTER_RESULT in wrong state")
+                    self._pop_expected(event, "REGISTER_REQUEST")
+                    self._requested_username = None
+                    self.state = ClientState.WAIT_AUTH
+                    if payload["ok"] is True:
+                        self._notices.append(
+                            Notice("auth", "Registered. Waiting for admin approval.")
+                        )
+                    else:
+                        self._notices.append(
+                            Notice(
+                                "auth_error", f"Registration failed: {payload.get('error_code')}"
+                            )
+                        )
+
+                elif kind == "PENDING_USERS_RESULT":
+                    self._require_authenticated(kind)
+                    self._pop_expected(event, "PENDING_USERS_REQUEST")
+                    if set(payload) != {"users"} or not isinstance(payload["users"], list):
+                        raise ProtocolViolation("Invalid PENDING_USERS_RESULT")
+                    self.pending_users = payload["users"]
+                    self._notices.append(
+                        Notice("admin", f"{len(self.pending_users)} pending user(s)")
+                    )
+
+                elif kind == "ACCOUNT_REVIEW_RESULT":
+                    self._require_authenticated(kind)
+                    self._pop_expected(event, "ACCOUNT_REVIEW_REQUEST")
+                    if payload["ok"] is True:
+                        self._notices.append(
+                            Notice("admin", f"{payload['username']} is now {payload['status']}")
+                        )
+                    else:
+                        self._notices.append(
+                            Notice("admin", f"Review failed: {payload.get('error_code')}")
+                        )
 
                 elif kind == "USER_LIST":
                     self._require_authenticated(kind)
@@ -399,6 +484,8 @@ class CollabClient:
                 return
             self.state = ClientState.CLOSED
             self.username = None
+            self.role = None
+            self.pending_users = []
             self._requested_username = None
             self.online_users.clear()
             self._pending.clear()

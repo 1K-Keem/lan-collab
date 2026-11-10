@@ -44,7 +44,11 @@ class ContractScaffoldTests(unittest.TestCase):
                         fields |= {"ip", "port"}
                     self.assertEqual(set(message.payload), fields)
                 if message.type == "AUTH_RESULT":
-                    fields = {"ok", "username" if message.payload["ok"] else "error_code"}
+                    fields = (
+                        {"ok", "username", "role"}
+                        if message.payload["ok"]
+                        else {"ok", "error_code"}
+                    )
                     self.assertEqual(set(message.payload), fields)
 
     def test_wrong_direction_private_message_does_not_match(self) -> None:

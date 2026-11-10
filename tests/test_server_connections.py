@@ -12,6 +12,8 @@ from lancollab.common.devcerts import generate_dev_certs
 from lancollab.common.contracts import Envelope
 from lancollab.common.socket_transport import SocketTransport
 from lancollab.common.tls import create_server_context
+from lancollab.server.accounts import AccountService
+from lancollab.server.application import CollabServer
 from lancollab.server.connections import ConnectionServer
 
 
@@ -82,17 +84,23 @@ class ConnectionServerTests(unittest.TestCase):
             self.wait_count(server, 1)
             client.close()
 
-    def test_authentication_is_not_faked_and_slot_is_released(self):
-        server, _ = self.start()
+    def test_wrong_credentials_get_auth_result_not_disconnect(self):
+        import pathlib
+
+        db = pathlib.Path(tempfile.mkdtemp()) / "accounts.db"
+        accounts = AccountService(db)
+        self.addCleanup(accounts.close)
+        server, _ = self.start(accounts=accounts, handler=CollabServer(accounts))
         client = self.connect(server)
         client.send(
             Envelope(
                 "AUTH_REQUEST", "auth-1", {"username": "alice", "password": "synthetic-test-only"}
             )
         )
-        with self.assertRaises(ConnectionError):
-            client.receive(timeout=2)
-        self.wait_count(server, 0)
+        reply = client.receive(timeout=2)
+        self.assertEqual(reply.type, "AUTH_RESULT")
+        self.assertEqual(reply.payload, {"ok": False, "error_code": "AUTH_FAILED"})
+        self.wait_count(server, 1)  # connection stays open; only the auth failed
 
     def test_udp_bind_failure_fails_startup(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as busy:

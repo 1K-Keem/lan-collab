@@ -18,7 +18,8 @@ from lancollab.common.contracts import MessageTransport
 
 _HELP = (
     "/help, /users, /status, /all TEXT, /msg USER TEXT, "
-    "/send USER PATH, /accept ID, /reject ID, /cancel ID, /net, /quit"
+    "/send USER PATH, /accept ID, /reject ID, /cancel ID, "
+    "/pending, /approve USER, /reject-user USER, /net, /quit"
 )
 
 
@@ -56,6 +57,15 @@ def parse_command(line: str) -> Command:
         if not rest or len(rest.split()) != 1:
             raise ValueError(f"Usage: {action} TRANSFER_ID")
         return Command(action, (rest.strip(),))
+    if action == "/pending":
+        if rest.strip():
+            raise ValueError("/pending does not take arguments")
+        return Command(action)
+    if action in {"/approve", "/reject-user"}:
+        if not rest or len(rest.split()) != 1:
+            raise ValueError(f"Usage: {action} USERNAME")
+        return Command(action, (rest.strip(),))
+
     raise ValueError(f"Unknown command: {safe_display(head)}. Type /help")
 
 
@@ -122,6 +132,11 @@ class ConsoleSession:
         self.client.login(username, password)
         self._wait_for(ClientState.AUTHENTICATED, timeout=max(0.01, deadline - monotonic()))
 
+    def register(self, username: str, password: str) -> None:
+        self.start_reader()
+        self.client.register(username, password)
+        self._wait_for(ClientState.WAIT_AUTH, timeout=10.0)
+
     def execute(self, command: Command) -> bool:
         """Return False for /quit, True otherwise; errors become visible notices."""
         try:
@@ -165,6 +180,12 @@ class ConsoleSession:
                 if self.client.state in {ClientState.WAIT_AUTH, ClientState.AUTHENTICATED}:
                     self.client.logout()
                 return False
+            elif command.name == "/pending":
+                self.client.list_pending()
+            elif command.name == "/approve":
+                self.client.review(command.args[0], "approve")
+            elif command.name == "/reject-user":
+                self.client.review(command.args[0], "reject")
             else:
                 raise ValueError("Unknown command")
         except (TransferError, RuntimeError, ValueError, OSError) as error:
@@ -198,6 +219,18 @@ class ConsoleSession:
         self._drain()
 
 
-def prompt_identity() -> tuple[str, str]:
-    """Prompt before TLS connect to satisfy server AUTH deadline."""
-    return input("Username: ").strip(), getpass("Password: ")
+def prompt_welcome() -> tuple[str, str, str]:
+    """Ask Login or Sign up BEFORE connecting, to meet the server AUTH deadline.
+    Returns (choice, username, password); choice is 'login' or 'signup'."""
+    while True:
+        choice = input("Login or Sign up? [login/signup]: ").strip().lower()
+        if choice in ("login", "signup"):
+            break
+        print("Type 'login' or 'signup'.")
+    username = input("Username: ").strip()
+    password = getpass("Password: ")
+    if choice == "signup":
+        confirm = getpass("Confirm password: ")
+        if password != confirm:
+            raise ValueError("Passwords do not match")
+    return choice, username, password

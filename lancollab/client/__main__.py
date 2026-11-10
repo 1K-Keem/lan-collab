@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from lancollab.client.cli import ConsoleSession, prompt_identity
+from lancollab.client.cli import ConsoleSession, prompt_welcome
 from lancollab.client.discovery import DiscoveryClient, select_server
 from lancollab.common.tls import resolve_trusted_cert
 from lancollab.common.socket_transport import SocketTransport
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(error))
     try:
         # Request credentials BEFORE connecting to honor the server's auth deadline.
-        username, password = prompt_identity()
+        choice, username, password = prompt_welcome()
         with DiscoveryClient(udp_port=args.udp_port) as discovery:
             found = discovery.discover() if args.discover and not args.host else None
             endpoint = select_server(found, host=args.host, port=args.port)
@@ -55,10 +55,17 @@ def main(argv: list[str] | None = None) -> int:
                 server_host=endpoint.host,
             )
             try:
+                if choice == "signup":
+                    shell.register(username, password)
+                    print(
+                        "Registered. Waiting for admin approval — run the client again after approval."
+                    )
+                    return 0
                 shell.authenticate(username, password)
                 shell.run_commands()
             finally:
                 shell.close()
+
     except (ConnectionError, OSError, RuntimeError, TimeoutError) as error:
         print(f"Client stopped: {error}", file=sys.stderr)
         return 1

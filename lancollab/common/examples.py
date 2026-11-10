@@ -26,7 +26,9 @@ def example_messages() -> dict[str, Envelope]:
             "req-auth",
             {"username": "alice", "password": "mock-only-never-use"},
         ),
-        "auth_ok": Envelope("AUTH_RESULT", "req-auth", {"ok": True, "username": "alice"}),
+        "auth_ok": Envelope(
+            "AUTH_RESULT", "req-auth", {"ok": True, "username": "alice", "role": "member"}
+        ),
         "user_list": Envelope(
             "USER_LIST",
             "event-1",
