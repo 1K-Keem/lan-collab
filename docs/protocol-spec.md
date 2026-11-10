@@ -42,7 +42,7 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 | `FILE_RESULT` | C→S/S→C | `transfer_id, ok:bool`; `reason?:str` | Only receiver originates; success after exact size + SHA-256 |
 | `FILE_CANCEL` | C→S/S→C | `transfer_id, reason:str` | Either participant originates; server also generates on timeout, disconnect or queue failure |
 | `PING` / `PONG` | Both | `nonce:str` | TCP authenticated liveness; PONG echoes nonce |
-| `LOGOUT` | C→S | `reason?:str` | Client requests session closure |
+| `LOGOUT` | C→S | `reason?:str` | Client requests session closure **and revokes the session token**; sent only by `/logout`, never by `/quit`, Ctrl+C or a disconnect |
 | `ERROR` | S→C | `code:str, message:str` | Direct reply, same `request_id` as rejected request |
 
 **Strict schema:** no unknown payload keys; username, filename, size, nonnegative sequence/offset, hash and valid JSON types must be checked by TV2's real codec/server handlers. A schema-valid message can still be rejected for unauthorized sender, invalid state or capacity. `FILE_ACK` and `FILE_RESULT` forwarded by server get new event `request_id` and are correlated with `transfer_id`.

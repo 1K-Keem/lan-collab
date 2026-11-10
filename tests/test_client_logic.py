@@ -5,6 +5,7 @@ import unittest
 from lancollab.client.application import (
     ClientState,
     CollabClient,
+    Notice,
     ProtocolViolation,
     safe_display,
 )
@@ -97,7 +98,10 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(msg2.payload, {"to": "bob", "text": "hello bob"})
         self.assertNotEqual(global_id, private_id)
         self.client.handle_event(Envelope("CHAT_ACK", private_id, {"status": "queued"}))
-        self.assertIn("not delivered/read", self.client.drain_notices()[-1].text)
+        notices = self.client.drain_notices()
+        self.assertIn(Notice("chat", "[CHAT_PRIVATE] you -> bob: hello bob"), notices)
+        self.client.handle_event(Envelope("CHAT_ACK", global_id, {"status": "queued"}))
+        self.assertIn(Notice("chat", "[CHAT_GLOBAL] you: hello all"), self.client.drain_notices())
 
     def test_user_list_and_presence(self):
         self.authenticate()

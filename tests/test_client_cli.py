@@ -1,5 +1,6 @@
 import unittest
 
+from lancollab.client.application import ClientState
 from lancollab.client.cli import ConsoleSession, parse_command
 from lancollab.common.contracts import Envelope
 from lancollab.common.fake_transport import FakeTransport
@@ -87,6 +88,20 @@ class CLITests(unittest.TestCase):
         self.assertEqual(session.client.state, ClientState.AUTHENTICATED)
         session.close()
 
+    def test_logout_sends_logout_and_forgets_token(self):
+        a, b = FakeTransport.pair()
+        messages = []
+        session = ConsoleSession(a, output=messages.append)
+        client = session.client
+        auth = client.login("alice", "synthetic-password")
+        b.receive()
+        client.handle_event(
+            Envelope("AUTH_RESULT", auth, {"ok": True, "username": "alice", "role": "member"})
+        )
+        session.execute(parse_command("/logout"))
+        self.assertEqual(b.receive().type, "LOGOUT")
+        self.assertEqual(session.client.state, ClientState.CLOSED)
+
     def test_fake_chat_and_safe_display(self):
         a, b = FakeTransport.pair()
         messages = []
@@ -116,7 +131,9 @@ class CLITests(unittest.TestCase):
         session._drain()
         self.assertTrue(any(r"\u001b" in message for message in messages))
         session.execute(parse_command("/quit"))
-        self.assertEqual(b.receive().type, "LOGOUT")
+        self.assertEqual(session.client.state, ClientState.CLOSED)
+        with self.assertRaises(TimeoutError):
+            b.receive()  # /quit closes without LOGOUT: the token is kept
 
 
 if __name__ == "__main__":

@@ -79,6 +79,9 @@ class CollabClient:
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
         self._pending: dict[str, str] = {}  # request_id -> message type, never passwords
+        self._pending_chat: dict[
+            str, tuple[str, str, str | None]
+        ] = {}  # request_id -> (kind, text, recipient)
         self._file_requests: dict[str, str] = {}  # request_id -> transfer_id for ERROR
         self._issued_count = 0
         self._request_prefix = uuid4().hex  # random per-client/session prefix
@@ -214,6 +217,9 @@ class CollabClient:
             if self.state is not ClientState.AUTHENTICATED:
                 raise RuntimeError("Authenticate before chatting")
             request = self._new_request(kind, payload)
+            # Remember what we sent, so CHAT_ACK can echo it back as our own
+            # message (the server never echoes a message to its sender).
+            self._pending_chat[request.request_id] = (kind, text, payload.get("to"))
         self._send(request)
         return request.request_id
 
@@ -403,9 +409,20 @@ class CollabClient:
                     if payload.get("status") != "queued":
                         raise ProtocolViolation("Unexpected CHAT_ACK status")
                     self._pop_expected(event, expected)
-                    self._notices.append(
-                        Notice("chat_queued", "Queued on server; not delivered/read")
-                    )
+                    sent = self._pending_chat.pop(event.request_id, None)
+                    if sent is not None:
+                        kind_sent, text_sent, to_sent = sent
+                        if kind_sent == "CHAT_PRIVATE":
+                            self._notices.append(
+                                Notice(
+                                    "chat",
+                                    f"[CHAT_PRIVATE] you -> {safe_display(to_sent or '')}: {safe_display(text_sent)}",
+                                )
+                            )
+                        else:
+                            self._notices.append(
+                                Notice("chat", f"[CHAT_GLOBAL] you: {safe_display(text_sent)}")
+                            )
 
                 elif kind == "ERROR":
                     if set(payload) != {"code", "message"} or not all(
@@ -519,6 +536,7 @@ class CollabClient:
             self._token_login = False
             self.online_users.clear()
             self._pending.clear()
+            self._pending_chat.clear()
             self._file_requests.clear()
         self.files.close()
         self.transport.close()

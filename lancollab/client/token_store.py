@@ -56,6 +56,12 @@ class TokenStore:
         self._file.write_text(json.dumps(data), encoding="utf-8")
         os.chmod(self._file, 0o600)
 
+    def describe(self) -> str:
+        """Where the token lives, for one line of user-facing output."""
+        if self._keyring is not None:
+            return f"OS credential store (service {SERVICE!r})"
+        return str(self._file)
+
     # -- public API --------------------------------------------------------
     def save(self, host: str, username: str, token: str) -> None:
         if self._keyring is not None:

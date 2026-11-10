@@ -38,18 +38,20 @@ again.
 
 ### Closing the app vs logging out
 
-- **Closing the app** (`Ctrl+C`, window close, crash) closes the session
-  and keeps the token. Next launch auto-logs in.
-- **`/quit` (logout)** closes the session **and** revokes the token:
-  the server marks it revoked and the client deletes its stored copy.
-  Next launch asks for a password again.
+- **Closing the app** (`/quit`, `Ctrl+C`, window close, crash, stdin EOF)
+  closes the session and **keeps the token**. Next launch auto-logs in.
+  `/quit` sends no `LOGOUT` — the server just sees a disconnect.
+- **`/logout`** closes the session **and** revokes the token:
+  the client sends `LOGOUT`, the server marks the token revoked, and the
+  client deletes its stored copy. Next launch asks for a password again.
+  Only `/logout` (and a password change / account rejection) revokes a token.
 
 ### When a token stops working
 
 | Situation | What the client sees | What to do |
 | --- | --- | --- |
 | Token older than 30 days | `AUTH_RESULT {ok: false, error_code: "TOKEN_EXPIRED"}` | Log in with password |
-| Token revoked by logout | `TOKEN_REVOKED` | Log in with password |
+| Token revoked by `/logout` | `TOKEN_REVOKED` | Log in with password |
 | Token unknown to the server (wrong DB, deleted row) | `AUTH_FAILED` (deliberately generic) | Log in with password |
 | Account pending / rejected / disabled | `ACCOUNT_PENDING` / `ACCOUNT_REJECTED` | Ask an admin |
 | Password changed (`--change-password`) or account rejected | all tokens revoked server-side | Log in with the new password |

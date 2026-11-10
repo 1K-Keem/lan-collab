@@ -20,7 +20,7 @@ from lancollab.common.contracts import MessageTransport
 _HELP = (
     "/help, /users, /status, /all TEXT, /msg USER TEXT, "
     "/send USER PATH, /accept ID, /reject ID, /cancel ID, "
-    "/pending, /approve USER, /reject-user USER, /net, /quit"
+    "/pending, /approve USER, /reject-user USER, /net, /quit, /logout"
 )
 
 
@@ -37,7 +37,7 @@ def parse_command(line: str) -> Command:
         raise ValueError("Empty command")
     head, _, rest = line.partition(" ")
     action = head.lower()
-    if action in {"/help", "/users", "/status", "/net", "/quit"}:
+    if action in {"/help", "/users", "/status", "/net", "/quit", "/logout"}:
         if rest.strip():
             raise ValueError(f"{action} does not take arguments")
         return Command(action)
@@ -141,6 +141,7 @@ class ConsoleSession:
             and self.server_host is not None
         ):
             self.token_store.save(self.server_host, username, self.client.issued_token)
+            self.output(f"[auth] Remembered login saved to {self.token_store.describe()}")
 
     def authenticate_with_token(self, token: str) -> None:
         """Log in with a stored remember-me token; raises if it is dead."""
@@ -159,6 +160,9 @@ class ConsoleSession:
         try:
             if command.name == "/help":
                 self.output(_HELP)
+                self.output(
+                    "/quit closes and stays logged in; /logout logs out and forgets this device."
+                )
             elif command.name == "/users":
                 users = sorted(self.client.online_users.items())
                 if not users:
@@ -194,11 +198,19 @@ class ConsoleSession:
             elif command.name == "/cancel":
                 self.client.files.cancel(command.args[0])
             elif command.name == "/quit":
+                # Close the app, stay logged in: just close the transport.
+                # The server sees a disconnect (session cleaned up) and the
+                # token is NOT revoked, so the next launch auto-logs in.
+                self.client.close()
+                return False
+            elif command.name == "/logout":
+                # Log out for real: LOGOUT revokes this session's token
+                # server-side, and the stored copy is deleted too.
                 if self.client.state in {ClientState.WAIT_AUTH, ClientState.AUTHENTICATED}:
                     username = self.client.username
-                    self.client.logout()  # server revokes this session's token
+                    self.client.logout()
                     if self.token_store is not None and username and self.server_host:
-                        self.token_store.delete(self.server_host)  # logout forgets the token
+                        self.token_store.delete(self.server_host)
                 return False
             elif command.name == "/pending":
                 self.client.list_pending()
@@ -220,7 +232,9 @@ class ConsoleSession:
                 try:
                     command = parse_command(self.input_line("lan-collab> "))
                 except (EOFError, KeyboardInterrupt):
-                    command = Command("/quit")
+                    # Closing the app (Ctrl+C, terminal closed, stdin EOF)
+                    # is not logging out: the token is kept, like /quit.
+                    return
                 except ValueError as error:
                     self.output(f"[error] {error}")
                     continue
