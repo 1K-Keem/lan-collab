@@ -1,6 +1,8 @@
-# LAN Collab application protocol — design revision 1.2
+# LAN Collab application protocol — design revision 1.3
 
-**Status:** REVISED IMPLEMENTATION BASELINE — **TEAM REVIEW PENDING** (25 October 2026). Owner requested fixes after a protocol design review. This supersedes the v1.1 design; TV1, TV2 and TV3 must confirm the changed contract in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2) before merging incompatible networking handlers. The **wire envelope version remains integer `1`** because production has not shipped; “1.2” names this documentation revision, not a different on-wire version.
+**Connection-flow update (9 November 2026):** Application greetings have been removed. Standard TCP and verified TLS handshakes remain; authentication is the first application exchange. Deploy client and server together: the previous greeting-based flow is incompatible. Wire version remains 1 for this pre-release project. The 10-second authentication deadline begins at TLS completion.
+
+**Status:** REVISED IMPLEMENTATION BASELINE — **TEAM REVIEW PENDING** (9 November 2026). Direct authentication replaces the previous greeting exchange. This supersedes the v1.2 connection flow; TV1, TV2 and TV3 must confirm the changed contract in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2) before merging incompatible networking handlers. The **wire envelope version remains integer `1`** because production has not shipped; “1.3” names this documentation revision, not a different on-wire version.
 
 **Scope:** Python 3.11+, raw TCP and UDP sockets, one server, no HTTP/WebSocket/P2P, no persistent server-side file storage, no resuming interrupted transfers.
 
@@ -9,7 +11,7 @@
 - Persistent TLS-protected TCP connection for chat, login, file and connection control; default service port `40000` (CLI configurable).
 - A single application frame is `uint32_big_endian(body_length)` followed by **exactly** `body_length` bytes of UTF-8 JSON. Permitted length is 1–262144 bytes; reject other lengths before allocation. TCP `recv` may return a fragment or several frames.
 - Required top-level JSON object keys are **exactly** `version` (integer 1), `type` (string), `request_id` (1–64 printable ASCII characters, code points 0x21–0x7E) and `payload` (JSON object). Reject unknown/extra top-level or payload keys, duplicate JSON keys, invalid types and unsupported types in v1; distinguish `bool` from `int` in Python. Numeric limits below are protocol constraints, not suggestions.
-- Client request `request_id` is unique on that session. **Direct server response** (`HELLO_ACK`, `AUTH_RESULT`, `CHAT_ACK`, `ERROR`, `PONG`) copies that request's `request_id`; no `ref_request_id` field. **Forwarded or unsolicited events** use a fresh server-generated `request_id`. File transfer messages correlate by `transfer_id` rather than envelope IDs. `PONG` is also a direct response: it copies the PING request ID and nonce. Client-originated PONG responses are exempt from the client-request uniqueness rule; they do not create new requests. Reject duplicate IDs on actual client requests without re-executing the operation. Bound the per-session request-ID history to 65536 entries; on exhaustion reject further requests and close the connection; the client reconnects with a fresh session. Never evict IDs and then accept replays.
+- Client request `request_id` is unique on that session. **Direct server response** (`AUTH_RESULT`, `CHAT_ACK`, `ERROR`, `PONG`) copies that request's `request_id`; no `ref_request_id` field. **Forwarded or unsolicited events** use a fresh server-generated `request_id`. File transfer messages correlate by `transfer_id` rather than envelope IDs. `PONG` is also a direct response: it copies the PING request ID and nonce. Client-originated PONG responses are exempt from the client-request uniqueness rule; they do not create new requests. Reject duplicate IDs on actual client requests without re-executing the operation. Bound the per-session request-ID history to 65536 entries; on exhaustion reject further requests and close the connection; the client reconnects with a fresh session. Never evict IDs and then accept replays.
 - If a frame is unparsable or has no trustworthy `request_id`, close the connection without attempting `ERROR`. If JSON envelope is parseable and has a valid request ID but the request is semantically invalid, return `ERROR` with that same request ID, or `AUTH_RESULT(ok=false)` on auth failure.
 - File and message strings are limited by their UTF-8 byte length where stated. Username: `[A-Za-z0-9_.-]{1,32}`, case-sensitive. Chat: 1–4096 UTF-8 bytes. Filename: basename <= 255 UTF-8 bytes. Sender-provided `from` is **never** trusted; it comes from authenticated server session.
 - `lancollab/common/message_schema.py` is the **declarative schema catalog** for directions/fields. The production codec/validators must consume it and implement full types, ranges and state checks; currently it is NOT a functional validator. Tests/fixtures reference that catalog to catch drift.
@@ -20,17 +22,16 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 | Message | Direction | Required payload; optional payload | Semantics |
 | --- | --- | --- | --- |
-| `HELLO` | C→S | `client_name:str` | First application message after TLS |
-| `HELLO_ACK` | S→C | `server_name:str, protocol_version:int(1)` | Direct response |
-| `AUTH_REQUEST` | C→S | `username:str, password:str` | Only over verified TLS |
-| `AUTH_RESULT` | S→C | `ok:bool`; `username?:str, error_code?:str` | Success requires username and forbids error_code; failure requires error_code=AUTH_FAILED and forbids username |
+| `AUTH_REQUEST` | C→S | `username:str, password:str`; optional `remember_me:bool` (default false) | Only over verified TLS; `remember_me=true` asks the server to issue a token (see §3) |
+| `TOKEN_AUTH_REQUEST` | C→S | `token:str` | Token login, no password; allowed only in WAIT_AUTH |
+| `AUTH_RESULT` | S→C | `ok:bool`; `username?:str, error_code?:str, token?:str` | Success requires username and role, forbids error_code, may carry `token` (only when `remember_me` was requested); failure requires error_code and forbids username, role, token |
 | `USER_LIST` | S→C | `users:[{username:str, ip:str, port:int}]` | Atomic authenticated presence snapshot; port = client TCP **ephemeral source** port |
 | `PRESENCE_UPDATE` | S→C | `username:str, status:"online"\|"offline"`; **online requires** `ip:str, port:int`; offline omits them | Ordered relative to USER_LIST under registry lock |
 | `CHAT_GLOBAL` | C→S | `text:str` | Broadcast to authenticated users, excluding sender; agreed behavior |
 | `CHAT_GLOBAL` | S→C | `from:str, text:str` | Routed event |
-| `CHAT_PRIVATE` | C→S | `to:str, text:str` | Require online recipient |
-| `CHAT_PRIVATE` | S→C | `from:str, text:str` | Routed event |
-| `CHAT_ACK` | S→C | `status:"queued"` | Direct reply: **server queue admission only**, not recipient read/delivery |
+| `CHAT_PRIVATE` | C→S | `to:str, text:str` | Require online recipient, or store offline (see §3) |
+| `CHAT_PRIVATE` | S→C | `from:str, text:str`; `queued?:bool` | Routed event; `queued:true` means sent while recipient was offline |
+| `CHAT_ACK` | S→C | `status:"queued"\|"stored"` | Direct reply: **server queue admission only**, not recipient read/delivery. `"stored"` = recipient offline, message saved for their next login |
 | `FILE_OFFER` | C→S | `transfer_id:uuid-str, to:str, name:str, size:int, sha256:64 lowercase hex` | 0–50 MiB; receiver must consent |
 | `FILE_OFFER` | S→C | `transfer_id, from:str, name, size, sha256` | Incoming transfer notification |
 | `FILE_ACCEPT` | C→S/S→C | `transfer_id:uuid-str` | Only receiver may originate |
@@ -41,17 +42,20 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 | `FILE_RESULT` | C→S/S→C | `transfer_id, ok:bool`; `reason?:str` | Only receiver originates; success after exact size + SHA-256 |
 | `FILE_CANCEL` | C→S/S→C | `transfer_id, reason:str` | Either participant originates; server also generates on timeout, disconnect or queue failure |
 | `PING` / `PONG` | Both | `nonce:str` | TCP authenticated liveness; PONG echoes nonce |
-| `LOGOUT` | C→S | `reason?:str` | Client requests session closure |
+| `LOGOUT` | C→S | `reason?:str` | Client requests session closure **and revokes the session token**; sent only by `/logout`, never by `/quit`, Ctrl+C or a disconnect |
 | `ERROR` | S→C | `code:str, message:str` | Direct reply, same `request_id` as rejected request |
 
 **Strict schema:** no unknown payload keys; username, filename, size, nonnegative sequence/offset, hash and valid JSON types must be checked by TV2's real codec/server handlers. A schema-valid message can still be rejected for unauthorized sender, invalid state or capacity. `FILE_ACK` and `FILE_RESULT` forwarded by server get new event `request_id` and are correlated with `transfer_id`.
 
 ## 3. Authentication and sessions
 
-- **No REGISTER over the network in MVP.** Administrator provisions accounts using server CLI `python -m lancollab.server --add-user alice` (command is an implementation TODO), securely prompts for password and stores salted password hashes (e.g. `hashlib.scrypt` or PBKDF2) in SQLite. README must document exact command after implementation.
-- TLS handshake deadline: **5s**, executed in a bounded client worker, never in the accept loop. Complete `HELLO` plus `AUTH_REQUEST` within **10s** from TLS completion (client gathers username/password before opening the connection). Close silent/unauthenticated clients at deadline. Allow at most **3** failed authentication attempts per connection; use `AUTH_FAILED` generically for unknown user and bad password.
+- **Registration and admin approval (implemented).** A client self-registers with `REGISTER_REQUEST`; the account starts `pending` and cannot log in until an admin approves it (`PENDING_USERS_REQUEST` / `ACCOUNT_REVIEW_REQUEST` from an admin client, or the server CLI). The first admin is created on the server machine: `python -m lancollab.server --add-admin admin`. Passwords are stored as scrypt hashes with a per-account salt in SQLite (`accounts.db`, never committed).
+- **Password change (implemented, server CLI only).** `python -m lancollab.server --change-password USERNAME` prompts for a new password twice, re-hashes it with a fresh salt, and revokes all of that user's remember-me tokens.
+- TLS handshake deadline: **5s**, executed in a bounded client worker, never in the accept loop. Complete authentication with `AUTH_REQUEST` or `TOKEN_AUTH_REQUEST` within **10s** from TLS completion (client gathers username/password before opening the connection, or reuses a stored token). Close silent/unauthenticated clients at deadline. Allow at most **3** failed authentication attempts per connection; use `AUTH_FAILED` generically for unknown user, bad password and unknown token.
+- **Remember-me tokens (implemented, see `docs/token-remember-me.md`).** On a successful password login with `remember_me=true`, `AUTH_RESULT` carries a one-time `token`: a random 256-bit value (`secrets.token_urlsafe(32)`), valid 30 days, **not** derived from the password. The server stores only `SHA-256(token)` in a separate `tokens` table. A later run opens a new TLS connection and sends `TOKEN_AUTH_REQUEST` instead of a password; the server replies with the same `AUTH_RESULT` (no new token — the 30-day expiry is fixed, no sliding window). `LOGOUT` revokes the session's token; changing the password or rejecting the account revokes all of that user's tokens. A token login counts as authentication for takeover, presence and the 3-attempt limit; its failure codes are `TOKEN_EXPIRED` and `TOKEN_REVOKED` (unknown token returns generic `AUTH_FAILED`). Closing the app without logging out keeps the token; only `LOGOUT` forgets it.
 - Authenticated **new session replaces old session** for the same username (atomic takeover, after successful password check); close old connection. Session registry uses an identity/generation token so old connection cleanup cannot remove or mark newer session offline.
 - On login, under one registry lock: install authenticated session, build consistent USER_LIST snapshot, register ordering of future PRESENCE_UPDATE events, and queue notifications **nonblocking**; never block socket I/O while holding registry lock. Readers should handle duplicate/ordered presence updates idempotently.
+- **Offline private-message queue (implemented, `lancollab/server/queue.py`).** `CHAT_PRIVATE` to an existing, *active*, offline user is stored in SQLite (`queued_messages` in `accounts.db`) and answered with `CHAT_ACK {"status": "stored"}`. Unknown users, pending accounts and rejected accounts still get `ERROR USER_OFFLINE` — nothing is stored for them. On the recipient's next login (password or token), the server drains the queue oldest-first and delivers each message as `CHAT_PRIVATE` with `"queued": true`, then deletes it (deliver-then-delete, at-most-once: a crash between drain and delivery loses the message). Bounds: 100 messages per recipient, 24h TTL; when full, the oldest message is dropped. Group chat is never queued (live broadcast only) and files are never stored (both sides must be online for a transfer).
 - Server retains authenticated username, TCP peer IP and **ephemeral source port**. If exposed to clients, online PRESENCE_UPDATE carries same `ip`/`port` as USER_LIST; offline update does not carry them.
 - Each accepted TCP connection has an opaque, server-local `session_id`, never reused during the server process. It is not a wire field. Authenticate and route only while that session is the current registry identity; stale buffered requests cannot act as a replacement session.
 - Transfers bind immutable sender and receiver **session IDs**, as well as usernames. On successful takeover, atomically invalidate the old session, cancel its offers/transfers with `FILE_CANCEL(reason="SESSION_REPLACED")` to surviving peers, install the new session and enqueue presence changes. Do not migrate transfer state or queued events to the replacement connection. Old cleanup can remove only records bearing its exact session ID. Defer socket shutdown and other blocking I/O until after releasing locks.
@@ -62,20 +66,17 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 | State | Allowed client-originated messages | Transition / rejection |
 | --- | --- | --- |
-| WAIT_HELLO | HELLO | Queue HELLO_ACK, then WAIT_AUTH; other messages close the connection |
-| WAIT_AUTH | AUTH_REQUEST, LOGOUT | Success → AUTHENTICATED; failure stays until attempt/deadline limit; other valid requests → ERROR(INVALID_STATE) |
-| AUTHENTICATED | Chat/file requests, PING, matching PONG, LOGOUT | Repeated HELLO/AUTH_REQUEST → ERROR(INVALID_STATE); enforce per-transfer state and roles |
+| WAIT_AUTH | AUTH_REQUEST, TOKEN_AUTH_REQUEST, LOGOUT | Success → AUTHENTICATED; failure stays until attempt/deadline limit; other valid requests → ERROR(INVALID_STATE) |
+| AUTHENTICATED | Chat/file requests, PING, matching PONG, LOGOUT | Repeated AUTH_REQUEST → ERROR(INVALID_STATE); enforce per-transfer state and roles |
 | CLOSING / CLOSED | None | No more dispatch; invalidate session and perform idempotent cleanup |
 
-After TLS, the server starts in WAIT_HELLO. Client waits for HELLO_ACK before AUTH_REQUEST and for AUTH_RESULT(ok=true) before authenticated operations. Server queues AUTH_RESULT before USER_LIST and subsequent presence events. Malformed framing follows §1 in every state. LOGOUT, takeover, EOF, timeout or writer failure enters CLOSING. Three failed credentials or the absolute HELLO/AUTH deadline close the connection after a best-effort final response.
+After verified TLS, the server and client start in WAIT_AUTH. AUTH_REQUEST or TOKEN_AUTH_REQUEST is the first application request; the server validates envelope version 1 before authentication. Client waits for AUTH_RESULT(ok=true) before authenticated operations. Server queues AUTH_RESULT before USER_LIST and subsequent presence events. Malformed framing follows §1 in every state. LOGOUT, takeover, EOF, timeout or writer failure enters CLOSING. Three failed credentials or the absolute AUTH deadline close the connection after a best-effort final response.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> WAIT_HELLO: Verified TLS established
-    WAIT_HELLO --> WAIT_AUTH: HELLO and queued HELLO_ACK
+    [*] --> WAIT_AUTH: Verified TLS established
     WAIT_AUTH --> WAIT_AUTH: Failed authentication below limit
     WAIT_AUTH --> AUTHENTICATED: Valid authentication
-    WAIT_HELLO --> CLOSING: Deadline or invalid first message
     WAIT_AUTH --> CLOSING: Deadline, attempt limit or logout
     AUTHENTICATED --> CLOSING: Logout, EOF, timeout or takeover
     CLOSING --> CLOSED: Idempotent cleanup
@@ -157,15 +158,27 @@ UDP datagrams are independent JSON objects (not 4-byte TCP framing), up to **120
 | `HEARTBEAT` | client unicast → server | `version:1, type:"HEARTBEAT", instance_id:str, seq:int` | Probe network quality |
 | `HEARTBEAT_ACK` | server unicast → requester | `version:1, type:"HEARTBEAT_ACK", instance_id:str, seq:int` | Echo probe; client computes RTT and loss percentage |
 
-`instance_id` is an ephemeral random client-process identifier, **not an authentication credential** and need not be included in TCP `HELLO`. No UDP packet may authenticate, alter the server's online list or extend authenticated TCP session lifetime. Manual IP/port remains mandatory fallback if UDP broadcast fails. TCP `PING/PONG` determines authoritative liveness.
+`instance_id` is an ephemeral random client-process identifier, **not an authentication credential** and is not included in TCP authentication. No UDP packet may authenticate, alter the server's online list or extend authenticated TCP session lifetime. Manual IP/port remains mandatory fallback if UDP broadcast fails. TCP `PING/PONG` determines authoritative liveness.
+
+## TLS identity provisioning
+
+Clients directly trust the server's self-signed certificate distributed with the application
+through the repository agreed with the administrator. There is no separate CA key or signing
+service. The generator creates `server-public.pem` (public) and `server-secret.pem` (private); only
+`server-public.pem` is bundled in `lancollab/client/`. Standard-library `ssl` verifies the certificate,
+validity and expected hostname before AUTH. Missing trust or failed verification closes/fails
+the connection; no system trust fallback or automatic acceptance of a discovered certificate.
+This is direct certificate trust, not raw public-key pinning. Certificate/key rotation requires
+coordinated distribution of the replacement trusted certificate. See [TLS setup](tls-setup.md).
 
 ## 7. Deadlines, errors and limits
 
 | Setting | Value / handling |
 | --- | --- |
 | TCP/TLS handshake | 5 seconds maximum |
-| HELLO + AUTH | 10 seconds total after TLS completes |
+| AUTH | 10 seconds total after TLS completes |
 | Bad logins | 3 per connection; generic AUTH_FAILED |
+| Remember-me token | 30 days from issue, fixed (no sliding renewal); revoked on LOGOUT, password change, account rejection |
 | FILE_OFFER reply | 60 seconds |
 | After FILE_ACCEPT to first chunk | 10 seconds |
 | Transfer progress stall | 15 seconds without newly admitted bytes, newly acknowledged bytes or completed END write; duplicate ACKs/control traffic do not reset it |
@@ -177,7 +190,7 @@ UDP datagrams are independent JSON objects (not 4-byte TCP framing), up to **120
 
 Use `time.monotonic()` for every elapsed deadline. Start OFFER reply timeout after the offer frame is written, first-data timeout after ACCEPT is written to sender (empty FILE_END counts as first data), and stall tracking in accepted/transferring states. Keep the stall watchdog active until END is actually written; then use the verification deadline instead. ACKs in VERIFYING do not extend verification time. Send PING every 10s with a fresh nonce/ID; each completed PING write starts its 10s PONG deadline, a matching timely PONG resets consecutive misses, and three misses close the session. Unsolicited/wrong-nonce PONGs never renew liveness. Writer failures/timeouts trigger ordinary session/transfer cleanup.
 
-Error codes: `TRANSFER_ID_CONFLICT`, `TRANSFER_LIMIT_REACHED`, `INVALID_FRAME`, `INVALID_MESSAGE`, `UNSUPPORTED_VERSION`, `INVALID_STATE`, `NOT_AUTHENTICATED`, `AUTH_FAILED`, `USER_OFFLINE`, `RECIPIENT_NOT_FOUND`, `RECIPIENT_BUSY`, `FILE_TOO_LARGE`, `FILE_REJECTED`, `TRANSFER_NOT_FOUND`, `INVALID_CHUNK_OFFSET`, `TRANSFER_FAILED`, `QUEUE_FULL`, `TIMEOUT`, `INTERNAL_ERROR`.
+Error codes: `TRANSFER_ID_CONFLICT`, `TRANSFER_LIMIT_REACHED`, `INVALID_FRAME`, `INVALID_MESSAGE`, `UNSUPPORTED_VERSION`, `INVALID_STATE`, `NOT_AUTHENTICATED`, `AUTH_FAILED`, `ACCOUNT_PENDING`, `ACCOUNT_REJECTED`, `TOKEN_EXPIRED`, `TOKEN_REVOKED`, `USER_OFFLINE`, `RECIPIENT_NOT_FOUND`, `RECIPIENT_BUSY`, `FILE_TOO_LARGE`, `FILE_REJECTED`, `TRANSFER_NOT_FOUND`, `INVALID_CHUNK_OFFSET`, `TRANSFER_FAILED`, `QUEUE_FULL`, `TIMEOUT`, `INTERNAL_ERROR`.
 
 Never expose passwords/password hashes, stack traces or keys in errors. The former `DUPLICATE_LOGIN` error is removed in favor of the atomic successful-login takeover policy.
 
@@ -207,3 +220,13 @@ Keep dummy-driven work parallel; small reviewed PRs may merge between checkpoint
 Reference diagrams: [architecture](diagrams/transport-overview.md), [framing](diagrams/tcp-framing.md), [connection/chat](diagrams/connection-and-chat.md), [file transfer](diagrams/file-transfer.md), [queues](diagrams/outbound-queues.md), [parallel integration](diagrams/parallel-work-dependencies.md).
 
 **Important:** This document is a design contract. Existing `FakeTransport` and fixture checks are not production TCP/TLS/file implementations; no grading milestone is complete until demonstrated with real sockets and validated results.
+
+### Optional auto-approval mode
+
+The server flag `--auto-approve` activates new registrations and allows first password login
+to create an unknown account. The first account in an empty database becomes admin atomically;
+all subsequent auto-created accounts are members. Correct password authentication may activate
+an existing pending account; wrong passwords and rejected accounts remain denied. Default mode
+continues to require administrator approval. `REGISTER_RESULT(ok=true)` now permits `status`
+`"pending"` or `"active"`; clients display that status and reconnect to authenticate. All
+registration/login messages still require verified TLS and the existing frame validation.

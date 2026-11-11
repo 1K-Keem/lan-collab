@@ -1,6 +1,6 @@
 # Architecture and parallel development — revision 1.2
 
-**Status:** Updated baseline proposal after protocol review on 25 Oct 2026. Team acknowledgments remain pending in Issue #2.
+**Status:** Production server/client integration updated 10 Nov 2026. See [server flow](server-connections.md), [client guide](client-guide.md) and [acceptance evidence](acceptance.md). Team acknowledgments remain a separate review.
 
 ## Components and transport
 
@@ -14,8 +14,8 @@ Client Charlie -- TCP/TLS ----+     session/auth and presence registry
 
 - TCP/TLS: 4-byte unsigned big-endian length, UTF-8 JSON v1 envelope; control messages and file chunks use one serialized writer per connection.
 - UDP: `DISCOVER/DISCOVER_REPLY` and `HEARTBEAT/HEARTBEAT_ACK` (client UDP ephemeral source port). UDP measures discovery and network quality; TCP PING/PONG determines online status.
-- Single server; no HTTP/WebSocket, direct P2P, chat history, file resume, multiple data sockets or E2EE.
-- Main CLI package entry points (after implementation): `python -m lancollab.server` and `python -m lancollab.client`.
+- Single server; client-local chat history, no server history. No HTTP/WebSocket, direct P2P, file resume, multiple data sockets or E2EE.
+- Main CLI package entry points: `python -m lancollab.server` and `python -m lancollab.client`.
 
 ## Package owners and independent starts
 
@@ -30,7 +30,7 @@ Client Charlie -- TCP/TLS ----+     session/auth and presence registry
 ## Decisions to implement consistently
 
 - New valid login atomically supersedes stale authenticated session; attach generation token so stale cleanup cannot log off new session.
-- HELLO+AUTH 10s after TLS; three invalid attempts per connection; salted password hashes in SQLite via provisioning CLI, no network REGISTER.
+- AUTH 10s after TLS; three invalid attempts per connection; salted scrypt password hashes in SQLite. Network registration creates pending accounts; an admin approves them. The first admin is provisioned locally.
 - Enforce username charset; sanitize ANSI/control sequences for terminal display.
 - `USER_LIST` atomic snapshot plus ordered `PRESENCE_UPDATE`; online presence includes IP+ephemeral TCP source port, offline omits those fields.
 - Application sender window W=8 16-KiB chunks; receiver cumulative `FILE_ACK(next_offset)` every four chunks and final partial; window bounded at both client and server.

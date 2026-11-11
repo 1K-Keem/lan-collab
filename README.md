@@ -2,12 +2,12 @@
 
 Distributed LAN client-server collaboration application for a Computer Networking assignment. Networking must use raw TCP/UDP sockets (no Flask/HTTP/WebSocket networking layer).
 
-> **Status:** TV3 client message logic, CLI, UDP probes and client-side file I/O are implemented and **mock-tested** (PR #21). TV1 server, TV2 verified TLS/codec/core and real LAN integration remain pending. Green CI does **not** imply acceptance of real networking milestones.
+> **Status:** The production server supports verified TLS, registration/admin approval, remembered login, presence/chat, bounded file relay and liveness. The client provides a portable CLI, optional curses TUI and local chat history. Real loopback integration and load evidence are available; two-host LAN/capture acceptance remains to be recorded. Start with the [user guide](docs/client-guide.md) and [acceptance checks](docs/acceptance.md).
 
 ## Target system features and integration dependencies
 
 - TLS-protected TCP login, global/private messages, server presence list, 20 concurrent clients.
-- Admin-provisioned user accounts, secure salted password hashes, HELLO/AUTH deadlines.
+- User accounts in SQLite with scrypt password hashes, self-registration + admin approval, AUTH deadlines, and Remember Me tokens (30 days, revocable, server stores only SHA-256).
 - Session-bound transfers/events, globally unique active transfer IDs and explicit takeover cancellation.
 - Reliable streaming server file relay with **FILE_ACK receiver credit** (window 8 × 16KiB), SHA-256, safe filenames and nonblocking queues.
 - UDP broadcast discovery + unicast HEARTBEAT/HEARTBEAT_ACK RTT/loss estimates; manual host/IP fallback.
@@ -21,20 +21,20 @@ Distributed LAN client-server collaboration application for a Computer Networkin
 | TV2 | Codec/TLS and socket-independent transfer state/ACK/security core | Schema fixtures, codec and chunk tests |
 | TV3 | Client/CLI, file consent/disk I/O/streaming, UDP, integration testing | Fake server messages and mocked event streams |
 
-**Protocol:** [Design revision 1.2](docs/protocol-spec.md) supersedes v1.1, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.2). Do not merge incompatible handlers until the team confirms the contract.
+**Protocol:** [Design revision 1.3](docs/protocol-spec.md) supersedes v1.1, pending individual TV1/TV2/TV3 reviews in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2). The wire envelope `version` remains **1** (not 1.3). Do not merge incompatible handlers until the team confirms the contract.
 
 ## Layout
 
 ```text
-lancollab/common/   # Typed contracts, message_schema.py, test dummy, TV2 transport TODO
-lancollab/server/   # TV1 server TODO and main CLI
-lancollab/client/   # TV3 client logic, CLI, discovery and file I/O; TV2 TLS adapter still pending
-tests/              # Synthetic and unit/mock tests, NOT production/LAN proof
-scripts/            # Mock demo plus opt-in real smoke harness (requires TV1/TV2)
+lancollab/common/   # Typed contracts, schema, verified TLS transport and validators
+lancollab/server/   # Concurrent TCP/TLS + UDP, accounts, routing, bounded writers
+lancollab/client/   # Client logic, CLI/TUI, history, discovery and file I/O
+tests/              # Unit/mock tests and production-server loopback integration
+scripts/            # Mock demo, connection simulation and real workload harness
 docs/               # Architecture, protocol spec, diagrams, checkpoint gates
 ```
 
-## Developer setup (mock-only now)
+## Developer setup
 
 ```bash
 git clone https://github.com/1K-Keem/lan-collab.git
@@ -49,7 +49,7 @@ python -m lancollab.server --help
 python -m lancollab.client --help
 ```
 
-The server and admin account creation commands are still TV1 TODOs. The TV3 client CLI now parses commands and UDP/discovery options, but `python -m lancollab.client` deliberately **fails closed** until TV2 implements `SocketTransport.connect_verified` with verified TLS. Never use real credentials with FakeTransport or plaintext TCP.
+Run `python -m lancollab.server` for the production server (32 connections by default); see [server connections](docs/server-connections.md). First admin: `python -m lancollab.server --add-admin admin`; change a password: `python -m lancollab.server --change-password USERNAME`. The client connects using verified TLS and a directly trusted self-signed server certificate. It requires `--host` or `--discover` and a running server. Never use real credentials with FakeTransport or plaintext TCP.
 
 ## TV3 implementation and report handoff
 
@@ -72,6 +72,26 @@ The server and admin account creation commands are still TV1 TODOs. The TV3 clie
 - [Integration checkpoints CP-A/B/C](docs/checkpoints.md)
 - [Mocks/contract documentation](docs/mock-development.md)
 
+## Technical report draft
+
+[Markdown source](docs/technical-report.md) and [PDF draft](docs/technical-report.pdf)
+describe the architecture, protocol, sequences, challenges and evidence limits.
+Regenerate after updating the team's report:
+
+```bash
+python -m pip install -r requirements-report.txt
+python -m scripts.build_report
+```
+
+The PDF tools are optional development dependencies; the application does not use them.
+
 ## Workflow and academic integrity
 
 Contribute through short-lived branches/PRs with real authors and tests. Cross-review full codebase before oral defense. The assignment limits AI assistance to syntax references and debugging: mock scaffolding/documentation does **not** replace student-implemented networking logic. Clarify with lecturer whether TLS suffices for the encryption rubric and whether public/private repository submission is required.
+
+## Server identity
+
+The client trusts the public self-signed `lancollab/client/server-public.pem` distributed with the app
+from the group's agreed repository. No separate CA is required. The administrator keeps the
+matching private key on the server. See [TLS setup and migration](docs/tls-setup.md) for
+`--bundle-cert`, `--trusted-cert`, certificate renewal and the two-terminal handshake test.

@@ -1,4 +1,4 @@
-"""Mock-only example messages matching the v1.2 declarative schema."""
+"""Mock-only example messages matching the v1.3 declarative schema."""
 
 from base64 import b64encode
 from dataclasses import dataclass
@@ -21,16 +21,14 @@ def example_messages() -> dict[str, Envelope]:
     data = b"hello"
     transfer_id = "b1b2b3b4-1111-4222-8333-444455556666"
     return {
-        "hello": Envelope("HELLO", "req-hello", {"client_name": "mock-client"}),
-        "hello_ack": Envelope(
-            "HELLO_ACK", "req-hello", {"server_name": "mock-server", "protocol_version": 1}
-        ),
         "auth": Envelope(
             "AUTH_REQUEST",
             "req-auth",
             {"username": "alice", "password": "mock-only-never-use"},
         ),
-        "auth_ok": Envelope("AUTH_RESULT", "req-auth", {"ok": True, "username": "alice"}),
+        "auth_ok": Envelope(
+            "AUTH_RESULT", "req-auth", {"ok": True, "username": "alice", "role": "member"}
+        ),
         "user_list": Envelope(
             "USER_LIST",
             "event-1",
@@ -94,8 +92,6 @@ def example_messages() -> dict[str, Envelope]:
 def example_cases() -> dict[str, ExampleCase]:
     """Explicit direction for every fixture, including forwarded messages."""
     directions: dict[str, Literal["C", "S"]] = {
-        "hello": "C",
-        "hello_ack": "S",
         "auth": "C",
         "auth_ok": "S",
         "user_list": "S",

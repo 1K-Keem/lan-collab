@@ -133,6 +133,53 @@ class TransferManager:
         self._accepted_offers = 0
         self._closed = False
 
+    def snapshot(self):
+        """Copy presentation data under the transfer lock, without file handles."""
+        with self._cv:
+            rows = []
+            for tid, entry in self.incoming.items():
+                rows.append(
+                    dict(
+                        id=tid,
+                        direction="in",
+                        name=entry.name,
+                        peer=entry.sender,
+                        done=entry.written,
+                        size=entry.size,
+                        status="offer" if entry.handle is None else "receiving",
+                    )
+                )
+            for tid, entry in self.outgoing.items():
+                rows.append(
+                    dict(
+                        id=tid,
+                        direction="out",
+                        name=entry.path.name,
+                        peer=entry.recipient,
+                        done=entry.ack_bytes,
+                        size=entry.size,
+                        status="verifying"
+                        if entry.end_sent
+                        else "sending"
+                        if entry.started
+                        else "waiting",
+                    )
+                )
+            return rows
+
+    def resolve_id(self, prefix="", action="cancel"):
+        rows = self.snapshot()
+        if action in {"accept", "reject"}:
+            rows = [row for row in rows if row["status"] == "offer"]
+        matches = [row["id"] for row in rows if row["id"].startswith(prefix)]
+        if len(matches) != 1:
+            raise TransferError(
+                "No matching transfer"
+                if not matches
+                else "Ambiguous transfer; use /transfers and a longer ID"
+            )
+        return matches[0]
+
     def _announce(self, message: str) -> None:
         self._notify(message)
 
@@ -362,7 +409,9 @@ class TransferManager:
             entry.ack_bytes = offset
             size = entry.size
             self._cv.notify_all()
-        self._announce(f"File receiver-confirmed: {offset}/{size} bytes (not yet verified)")
+        filled = 20 if size == 0 else min(20, offset * 20 // size)
+        bar = "#" * filled + "-" * (20 - filled)
+        self._announce(f"File receiver-confirmed [{bar}]: {offset}/{size} bytes (not yet verified)")
 
     def on_chunk(self, payload: dict[str, Any]) -> None:
         if set(payload) != {"transfer_id", "seq", "offset", "data_b64"}:

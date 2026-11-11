@@ -8,7 +8,7 @@ Everything here is implemented against protocol revision 1.2 and covered by real
 | --- | --- |
 | `common/codec.py` | `JsonFrameCodec(role)`: 4-byte length + strict JSON, schema/direction/conditional validation, `RequestIdTracker` |
 | `common/socket_transport.py` | `SocketTransport`: exact reads, absolute deadlines, one serialized writer, `connect_verified` / `accept_verified` |
-| `common/tls.py`, `common/devcerts.py` | verified TLS contexts, bounded handshakes, CA bundling/resolution, certificate generator ([tls-setup.md](tls-setup.md)) |
+| `common/tls.py`, `common/devcerts.py` | verified TLS contexts, bounded handshakes, server certificate bundling/resolution, certificate generator ([tls-setup.md](tls-setup.md)) |
 | `common/transfer_core.py` | `TransferRegistry` (server), `OutgoingTransfer` (sender), `IncomingTransfer` + `DiskSink` (receiver), `AckLedger` |
 | `common/filenames.py` | receiver-side `sanitize_filename` |
 
@@ -55,9 +55,9 @@ whole-frame; a reader thread and a writer thread can share one transport.
 
 ## For TV3 (client)
 
-* `ca_file = resolve_ca_file(args.ca_file)` (already parsed by `python -m lancollab.client`:
-  `--ca-file`, then `$LANCOLLAB_CA_FILE`, then the bundled `lancollab/client/ca.pem`), then
-  `SocketTransport.connect_verified(host, port, ca_file)`; send `HELLO`, wait for `HELLO_ACK`.
+* `trusted_cert = resolve_trusted_cert(args.trusted_cert)` (already parsed by `python -m lancollab.client`:
+  `--trusted-cert`, then `$LANCOLLAB_TRUSTED_CERT`, then the bundled `lancollab/client/server-public.pem`), then
+  `SocketTransport.connect_verified(host, port, trusted_cert)`; send `AUTH_REQUEST` directly and wait for the matching `AUTH_RESULT`.
   Show a certificate failure (`ssl.SSLCertVerificationError`) as "server identity could not be
   verified" and never offer to continue anyway.
 * Sender: `out = OutgoingTransfer(tid, size)`; reader thread calls `out.on_accept()`,
@@ -93,10 +93,10 @@ whole-frame; a reader thread and a writer thread can share one transport.
    forwarded (needed for empty files, whose ACK 0 must precede a successful `FILE_RESULT`).
 7. Duplicate client request ids get `ERROR(INVALID_MESSAGE)` with the repeated id.
 
-## Not part of TV2 (still open)
+## Integration status (10 Nov 2026)
 
-TCP accept loop, authentication/SQLite, presence, chat routing and bounded writer queues (TV1);
-CLI, UDP discovery/RTT, control-character sanitation, the real client file worker (TV3); the
-two-host LAN run, Wireshark capture, 20-client load measurements and the lecturer's answer
-about TLS-only encryption (team, CP-C). `tests/test_tv2_integration.py` uses a throw-away relay
-to show the TV2 pieces work together over verified TLS; it is not a substitute for those.
+TV1 now integrates the registry with authenticated sessions, bounded writers, purge,
+mark-written notifications and expiration. TV3 supplies the client streaming workers,
+CLI/TUI and UDP probes. `tests/test_tv2_integration.py` runs the transfer primitives
+through the production server with isolated test accounts. See [acceptance](acceptance.md)
+for local evidence and remaining two-host/capture work.

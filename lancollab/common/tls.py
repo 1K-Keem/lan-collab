@@ -3,8 +3,8 @@
 The server presents a certificate whose SAN contains the fixed DNS name
 ``lan-collab.local``. Clients connect to whatever IP they discovered or were given but
 verify the certificate against ``SERVER_HOSTNAME``, so DHCP address changes never require
-a new certificate. Trust is anchored in an explicit CA file (``--ca-file``); the operating
-system trust store is never modified.
+a new certificate. Trust is anchored in a directly trusted server certificate
+(``--trusted-cert``); the operating system trust store is never modified.
 """
 
 from __future__ import annotations
@@ -20,24 +20,26 @@ from pathlib import Path
 SERVER_HOSTNAME = "lan-collab.local"
 HANDSHAKE_TIMEOUT = 5.0  # seconds, absolute, protocol-spec section 7
 
-# The public CA certificate shipped inside the client. It is committed to Git (see .gitignore)
+# The public self-signed server certificate shipped with the client (see .gitignore).
 # so every copy of the app carries its own trust anchor; it never contains a private key.
-BUNDLED_CA_FILE = Path(__file__).resolve().parents[1] / "client" / "ca.pem"
-CA_ENV_VAR = "LANCOLLAB_CA_FILE"
+BUNDLED_SERVER_CERT = Path(__file__).resolve().parents[1] / "client" / "server-public.pem"
+TRUST_ENV_VAR = "LANCOLLAB_TRUSTED_CERT"
 _PRIVATE_KEY_MARKER = "PRIVATE KEY-----"
 
 
-def validate_ca_file(path: str | Path) -> str:
-    """Return ``path`` as a string after checking it is a loadable, *public* CA file."""
+def validate_trusted_cert(path: str | Path) -> str:
+    """Return ``path`` as a string after checking it is a loadable, *public* certificate file."""
     path = Path(path)
     try:
         text = path.read_text(encoding="ascii")
     except FileNotFoundError:
-        raise FileNotFoundError(f"CA file not found: {path}") from None
+        raise FileNotFoundError(f"Trusted server certificate not found: {path}") from None
     except (OSError, UnicodeDecodeError) as exc:
-        raise ValueError(f"cannot read CA file {path}: {exc.__class__.__name__}") from exc
+        raise ValueError(f"cannot read certificate file {path}: {exc.__class__.__name__}") from exc
     if _PRIVATE_KEY_MARKER in text:
-        raise ValueError(f"{path} contains a private key; give clients only the public ca.pem")
+        raise ValueError(
+            f"{path} contains a private key; give clients only the public server-public.pem"
+        )
     try:
         ssl.create_default_context(cafile=str(path))
     except ssl.SSLError as exc:
@@ -45,27 +47,27 @@ def validate_ca_file(path: str | Path) -> str:
     return str(path)
 
 
-def resolve_ca_file(
+def resolve_trusted_cert(
     explicit: str | None = None,
     *,
     environ: Mapping[str, str] | None = None,
     bundled: Path | None = None,
-) -> str | None:
-    """Pick the CA file clients trust: ``--ca-file``, then ``$LANCOLLAB_CA_FILE``, then bundled.
+) -> str:
+    """Resolve --trusted-cert, LANCOLLAB_TRUSTED_CERT, then bundled server-public.pem.
 
-    Returns ``None`` only when none is configured, in which case the operating-system trust
-    store is used (right for a publicly trusted certificate, wrong for the development CA).
-    An explicitly named file that is missing or invalid is an error, never silently skipped.
+    Missing trust is an error: never fall back to unrelated system trust roots.
     """
     env = os.environ if environ is None else environ
     if explicit:
-        return validate_ca_file(explicit)
-    if env.get(CA_ENV_VAR):
-        return validate_ca_file(env[CA_ENV_VAR])
-    candidate = BUNDLED_CA_FILE if bundled is None else bundled
+        return validate_trusted_cert(explicit)
+    if env.get(TRUST_ENV_VAR):
+        return validate_trusted_cert(env[TRUST_ENV_VAR])
+    candidate = BUNDLED_SERVER_CERT if bundled is None else bundled
     if candidate.is_file():
-        return validate_ca_file(candidate)
-    return None
+        return validate_trusted_cert(candidate)
+    raise FileNotFoundError(
+        "No trusted server certificate; use --trusted-cert or bundle server-public.pem"
+    )
 
 
 def create_server_context(
@@ -78,9 +80,10 @@ def create_server_context(
     return context
 
 
-def create_client_context(ca_file: str | None = None) -> ssl.SSLContext:
-    """Verifying client context. With ``ca_file`` only that CA is trusted (pinned CA)."""
-    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=ca_file)
+def create_client_context(trusted_cert: str | None = None) -> ssl.SSLContext:
+    """Trust the provisioned server certificate; retain hostname and validity checks."""
+    trusted_cert = resolve_trusted_cert(trusted_cert)
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=trusted_cert)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED

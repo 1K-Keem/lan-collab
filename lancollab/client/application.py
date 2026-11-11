@@ -8,13 +8,18 @@ with real credentials until your connection bootstrap has verified TLS.
 from dataclasses import dataclass
 from enum import Enum
 from threading import Event, RLock
+from time import monotonic
 from pathlib import Path
 from typing import Any
 from unicodedata import category
 from uuid import uuid4
 import re
+import sqlite3
+
+from lancollab.client.history import HistoryStore
 
 from lancollab.common.contracts import Envelope, MessageTransport
+from lancollab.common.codec import ProtocolError
 from lancollab.client.transfers import TransferManager, TransferError
 
 _USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
@@ -23,12 +28,11 @@ _MAX_REQUESTS_PER_SESSION = 65536
 
 
 class ClientState(str, Enum):
-    READY = "READY"  # usable transport is supplied
-    WAIT_HELLO_ACK = "WAIT_HELLO_ACK"
     WAIT_AUTH = "WAIT_AUTH"
     WAIT_AUTH_RESULT = "WAIT_AUTH_RESULT"
     AUTHENTICATED = "AUTHENTICATED"
     CLOSED = "CLOSED"
+    WAIT_REGISTER_RESULT = "WAIT_REGISTER_RESULT"
 
 
 class ProtocolViolation(Exception):
@@ -66,23 +70,68 @@ class CollabClient:
         *,
         auth_allowed: bool = False,
         downloads_dir: str | Path = "downloads",
+        history: HistoryStore | None = None,
+        history_server: str = "",
     ) -> None:
+        self.history = history
+        self.history_server = history_server
+        self.auth_error: str | None = None
+        self.registration_result: bool | None = None
         self.transport = transport
         # Real application must set this True ONLY after verified TLS.
         # Tests may set True with FakeTransport and SYNTHETIC passwords only.
         self._auth_allowed = auth_allowed
-        self.state = ClientState.READY
+        self.state = ClientState.WAIT_AUTH
         self.username: str | None = None
+        self.role: str | None = None
+        self.reply_target: str | None = None
+        self.last_tcp_rtt: float | None = None
+        # Fresh id on every successful login: quitting and coming back
+        # starts a new history session instead of extending the old one.
+        self.session_id: str | None = None
+        self.pending_users: list[dict[str, str]] = []
+        self.issued_token: str | None = None  # set from AUTH_RESULT when remember_me
+        self._token_login = False  # True when the current login used a token
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
         self._pending: dict[str, str] = {}  # request_id -> message type, never passwords
+        self._quiet_pending: set[str] = set()  # request_ids whose results stay silent
+        self._pending_chat: dict[
+            str, tuple[str, str, str | None]
+        ] = {}  # request_id -> (kind, text, recipient)
         self._file_requests: dict[str, str] = {}  # request_id -> transfer_id for ERROR
+        self._pending_pings: dict[str, tuple[str, float]] = {}
+        self.ping_rtts: dict[str, float] = {}
         self._issued_count = 0
         self._request_prefix = uuid4().hex  # random per-client/session prefix
         self._notices: list[Notice] = []
         self._lock = RLock()
         self._send_lock = RLock()  # TV2's writer/transport must serialize frame bytes
         self.files = TransferManager(self._send_file, downloads_dir, notify=self._file_notice)
+
+    def _remember_chat(self, direction, kind, peer, text):
+        if self.history is not None and self.username is not None:
+            try:
+                self.history.append(
+                    self.history_server,
+                    self.username,
+                    direction,
+                    kind,
+                    peer,
+                    text,
+                    session=self.session_id or "",
+                )
+            except (OSError, sqlite3.Error):
+                self._notices.append(Notice("error", "Could not save local chat history"))
+
+    def ping(self) -> str:
+        with self._lock:
+            self._require_authenticated("PING")
+            nonce = uuid4().hex
+            request = self._new_request("PING", {"nonce": nonce})
+            self._pending_pings[request.request_id] = (nonce, monotonic())
+        self._send(request)
+        return request.request_id
 
     def _file_notice(self, message: str) -> None:
         with self._lock:
@@ -119,18 +168,7 @@ class CollabClient:
             self.close()
             raise
 
-    def send_hello(self, client_name: str) -> str:
-        if not isinstance(client_name, str) or not client_name.strip():
-            raise ValueError("client_name must be a non-empty string")
-        with self._lock:
-            if self.state is not ClientState.READY:
-                raise RuntimeError("HELLO is only allowed once on a new connection")
-            request = self._new_request("HELLO", {"client_name": client_name})
-            self.state = ClientState.WAIT_HELLO_ACK
-        self._send(request)
-        return request.request_id
-
-    def login(self, username: str, password: str) -> str:
+    def login(self, username: str, password: str, *, remember_me: bool = False) -> str:
         if not self._auth_allowed:
             raise RuntimeError("Do not send a password without verified TLS")
         if not isinstance(username, str) or _USERNAME.fullmatch(username) is None:
@@ -139,12 +177,76 @@ class CollabClient:
             raise ValueError("password must be a string")
         with self._lock:
             if self.state is not ClientState.WAIT_AUTH:
-                raise RuntimeError("Wait for HELLO_ACK before AUTH_REQUEST")
+                raise RuntimeError("AUTH_REQUEST requires WAIT_AUTH")
             request = self._new_request(
-                "AUTH_REQUEST", {"username": username, "password": password}
+                "AUTH_REQUEST",
+                {"username": username, "password": password, "remember_me": remember_me},
+            )
+            self.auth_error = None
+            self._requested_username = username
+            self._token_login = False
+            self.state = ClientState.WAIT_AUTH_RESULT
+        self._send(request)
+        return request.request_id
+
+    def login_with_token(self, token: str) -> str:
+        """Authenticate with a stored remember-me token, not a password."""
+        if not isinstance(token, str) or not token:
+            raise ValueError("token must be a non-empty string")
+        with self._lock:
+            if self.state is not ClientState.WAIT_AUTH:
+                raise RuntimeError("TOKEN_AUTH_REQUEST requires WAIT_AUTH")
+            request = self._new_request("TOKEN_AUTH_REQUEST", {"token": token})
+            self.auth_error = None
+            self._requested_username = None  # the server tells us who this token is
+            self._token_login = True
+            self.state = ClientState.WAIT_AUTH_RESULT
+        self._send(request)
+        return request.request_id
+
+    def register(self, username: str, password: str) -> str:
+        if not isinstance(username, str) or _USERNAME.fullmatch(username) is None:
+            raise ValueError("Invalid username")
+        if not isinstance(password, str) or len(password) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        with self._lock:
+            if self.state is not ClientState.WAIT_AUTH:
+                raise RuntimeError("REGISTER_REQUEST requires WAIT_AUTH")
+            request = self._new_request(
+                "REGISTER_REQUEST", {"username": username, "password": password}
             )
             self._requested_username = username
-            self.state = ClientState.WAIT_AUTH_RESULT
+            self.state = ClientState.WAIT_REGISTER_RESULT
+        self._send(request)
+        return request.request_id
+
+    def list_pending(self, *, quiet: bool = False) -> str:
+        """Ask the server for pending accounts.
+
+        quiet=True is the background sidebar refresh: it updates
+        pending_users but prints no "Pending users" notice, so the TUI
+        timer does not flood the admin's chat with one line per refresh.
+        """
+        with self._lock:
+            if self.state is not ClientState.AUTHENTICATED or self.role != "admin":
+                raise RuntimeError("Only an admin can list pending users")
+            request = self._new_request("PENDING_USERS_REQUEST", {})
+            if quiet:
+                self._quiet_pending.add(request.request_id)
+        self._send(request)
+        return request.request_id
+
+    def review(self, username: str, decision: str) -> str:
+        if decision not in ("approve", "reject"):
+            raise ValueError("Decision must be approve or reject")
+        if not isinstance(username, str) or _USERNAME.fullmatch(username) is None:
+            raise ValueError("Invalid username")
+        with self._lock:
+            if self.state is not ClientState.AUTHENTICATED or self.role != "admin":
+                raise RuntimeError("Only an admin can review accounts")
+            request = self._new_request(
+                "ACCOUNT_REVIEW_REQUEST", {"username": username, "decision": decision}
+            )
         self._send(request)
         return request.request_id
 
@@ -168,6 +270,9 @@ class CollabClient:
             if self.state is not ClientState.AUTHENTICATED:
                 raise RuntimeError("Authenticate before chatting")
             request = self._new_request(kind, payload)
+            # Remember what we sent, so CHAT_ACK can echo it back as our own
+            # message (the server never echoes a message to its sender).
+            self._pending_chat[request.request_id] = (kind, text, payload.get("to"))
         self._send(request)
         return request.request_id
 
@@ -177,7 +282,11 @@ class CollabClient:
     def send_private(self, recipient: str, text: str) -> str:
         if not isinstance(recipient, str) or _USERNAME.fullmatch(recipient) is None:
             raise ValueError("Invalid recipient username")
-        return self._chat("CHAT_PRIVATE", {"to": recipient, "text": text}, text)
+        request_id = self._chat("CHAT_PRIVATE", {"to": recipient, "text": text}, text)
+        with self._lock:
+            if self.state is ClientState.AUTHENTICATED:
+                self.reply_target = recipient
+        return request_id
 
     def _pop_expected(self, event: Envelope, expected: str) -> None:
         if self._pending.get(event.request_id) != expected:
@@ -213,47 +322,119 @@ class CollabClient:
                 if not isinstance(event.payload, dict):
                     raise ProtocolViolation("Invalid payload")
                 kind, payload = event.type, event.payload
-                if kind == "HELLO_ACK":
-                    if self.state is not ClientState.WAIT_HELLO_ACK:
-                        raise ProtocolViolation("HELLO_ACK in wrong state")
-                    if (
-                        set(payload) != {"server_name", "protocol_version"}
-                        or not isinstance(payload["server_name"], str)
-                        or type(payload["protocol_version"]) is not int
-                        or payload["protocol_version"] != 1
-                    ):
-                        raise ProtocolViolation("Invalid HELLO_ACK payload")
-                    self._pop_expected(event, "HELLO")
-                    self.state = ClientState.WAIT_AUTH
-                    self._notices.append(Notice("hello", "Server handshake acknowledged"))
-
-                elif kind == "AUTH_RESULT":
+                if kind == "AUTH_RESULT":
                     if self.state is not ClientState.WAIT_AUTH_RESULT:
                         raise ProtocolViolation("AUTH_RESULT in wrong state")
                     if type(payload.get("ok")) is not bool:
                         raise ProtocolViolation("Invalid AUTH_RESULT.ok")
                     if payload["ok"] is True:
                         if (
-                            set(payload) != {"ok", "username"}
+                            set(payload)
+                            not in ({"ok", "username", "role"}, {"ok", "username", "role", "token"})
                             or not isinstance(payload["username"], str)
-                            or payload["username"] != self._requested_username
+                            or (
+                                not self._token_login
+                                and payload["username"] != self._requested_username
+                            )
+                            or payload["role"] not in ("member", "admin")
                         ):
-                            raise ProtocolViolation("AUTH_RESULT username mismatch")
-                        self._pop_expected(event, "AUTH_REQUEST")
-                        self.username = self._requested_username
+                            raise ProtocolViolation("AUTH_RESULT username/role mismatch")
+                        self._pop_expected(
+                            event, "TOKEN_AUTH_REQUEST" if self._token_login else "AUTH_REQUEST"
+                        )
+                        self.username = payload["username"]
+                        self.role = payload["role"]
+                        self.session_id = uuid4().hex[:12]
+                        if self.history is not None:
+                            try:
+                                self.history.start_session(
+                                    self.history_server, self.username, self.session_id
+                                )
+                            except (OSError, sqlite3.Error):
+                                self._notices.append(
+                                    Notice("error", "Could not save login session")
+                                )
+                        self.issued_token = payload.get("token")
                         self._requested_username = None
+                        self._token_login = False
                         self.state = ClientState.AUTHENTICATED
-                        self._notices.append(Notice("auth", "Authenticated"))
+                        self._notices.append(Notice("auth", f"Authenticated as {self.role}"))
                     else:
-                        if (
-                            set(payload) != {"ok", "error_code"}
-                            or payload["error_code"] != "AUTH_FAILED"
+                        if set(payload) != {"ok", "error_code"} or payload["error_code"] not in (
+                            "AUTH_FAILED",
+                            "ACCOUNT_PENDING",
+                            "ACCOUNT_REJECTED",
+                            "TOKEN_EXPIRED",
+                            "TOKEN_REVOKED",
                         ):
                             raise ProtocolViolation("Invalid failed AUTH_RESULT")
-                        self._pop_expected(event, "AUTH_REQUEST")
+                        self._pop_expected(
+                            event, "TOKEN_AUTH_REQUEST" if self._token_login else "AUTH_REQUEST"
+                        )
+                        self.auth_error = payload["error_code"]
+                        self._token_login = False
                         self._requested_username = None
                         self.state = ClientState.WAIT_AUTH
-                        self._notices.append(Notice("auth_error", "Authentication failed"))
+                        self._notices.append(
+                            Notice("auth_error", f"Authentication failed: {payload['error_code']}")
+                        )
+
+                elif kind == "REGISTER_RESULT":
+                    if self.state is not ClientState.WAIT_REGISTER_RESULT:
+                        raise ProtocolViolation("REGISTER_RESULT in wrong state")
+                    self.registration_result = payload["ok"]
+                    self._pop_expected(event, "REGISTER_REQUEST")
+                    self._requested_username = None
+                    self.state = ClientState.WAIT_AUTH
+                    if payload["ok"] is True:
+                        self._notices.append(
+                            Notice(
+                                "auth",
+                                "Registered. You can log in now."
+                                if payload.get("status") == "active"
+                                else "Registered. Waiting for admin approval.",
+                            )
+                        )
+                    else:
+                        self._notices.append(
+                            Notice(
+                                "auth_error", f"Registration failed: {payload.get('error_code')}"
+                            )
+                        )
+
+                elif kind == "PENDING_USERS_RESULT":
+                    self._require_authenticated(kind)
+                    self._pop_expected(event, "PENDING_USERS_REQUEST")
+                    quiet = event.request_id in self._quiet_pending
+                    self._quiet_pending.discard(event.request_id)
+                    if set(payload) != {"users"} or not isinstance(payload["users"], list):
+                        raise ProtocolViolation("Invalid PENDING_USERS_RESULT")
+                    self.pending_users = payload["users"]
+                    if not quiet:
+                        self._notices.append(
+                            Notice(
+                                "admin",
+                                "Pending users: "
+                                + (
+                                    ", ".join(
+                                        safe_display(u["username"]) for u in self.pending_users
+                                    )
+                                    or "none"
+                                ),
+                            )
+                        )
+
+                elif kind == "ACCOUNT_REVIEW_RESULT":
+                    self._require_authenticated(kind)
+                    self._pop_expected(event, "ACCOUNT_REVIEW_REQUEST")
+                    if payload["ok"] is True:
+                        self._notices.append(
+                            Notice("admin", f"{payload['username']} is now {payload['status']}")
+                        )
+                    else:
+                        self._notices.append(
+                            Notice("admin", f"Review failed: {payload.get('error_code')}")
+                        )
 
                 elif kind == "USER_LIST":
                     self._require_authenticated(kind)
@@ -291,7 +472,8 @@ class CollabClient:
 
                 elif kind in {"CHAT_GLOBAL", "CHAT_PRIVATE"}:
                     self._require_authenticated(kind)
-                    if set(payload) != {"from", "text"}:
+                    allowed = {"from", "text"} | ({"queued"} if kind == "CHAT_PRIVATE" else set())
+                    if not {"from", "text"} <= set(payload) <= allowed:
                         raise ProtocolViolation("Invalid routed chat fields")
                     if (
                         not isinstance(payload["from"], str)
@@ -303,9 +485,17 @@ class CollabClient:
                         or not 1 <= len(payload["text"].encode("utf-8")) <= _MAX_CHAT_BYTES
                     ):
                         raise ProtocolViolation("Invalid chat text")
+                    if payload.get("queued") is not None and type(payload["queued"]) is not bool:
+                        raise ProtocolViolation("Invalid queued flag")
+                    if kind == "CHAT_PRIVATE":
+                        self.reply_target = payload["from"]
+                    self._remember_chat("received", kind, payload["from"], payload["text"])
                     sender = safe_display(payload["from"])
                     text = safe_display(payload["text"])
-                    self._notices.append(Notice("chat", f"[{kind}] {sender}: {text}"))
+                    queued_tag = (
+                        " [sent while you were offline]" if payload.get("queued") is True else ""
+                    )
+                    self._notices.append(Notice("chat", f"[{kind}] {sender}: {text}{queued_tag}"))
 
                 elif kind == "CHAT_ACK":
                     self._require_authenticated(kind)
@@ -314,12 +504,29 @@ class CollabClient:
                         raise ProtocolViolation("CHAT_ACK has no pending chat request")
                     if set(payload) != {"status"}:
                         raise ProtocolViolation("Invalid CHAT_ACK fields")
-                    if payload.get("status") != "queued":
+                    if payload.get("status") not in {"queued", "stored"}:
                         raise ProtocolViolation("Unexpected CHAT_ACK status")
                     self._pop_expected(event, expected)
-                    self._notices.append(
-                        Notice("chat_queued", "Queued on server; not delivered/read")
-                    )
+                    sent = self._pending_chat.pop(event.request_id, None)
+                    if sent is not None:
+                        kind_sent, text_sent, to_sent = sent
+                        self._remember_chat("sent", kind_sent, to_sent or "*", text_sent)
+                        if kind_sent == "CHAT_PRIVATE":
+                            stored_tag = (
+                                f" [stored — {safe_display(to_sent or '')} is offline]"
+                                if payload.get("status") == "stored"
+                                else ""
+                            )
+                            self._notices.append(
+                                Notice(
+                                    "chat",
+                                    f"[CHAT_PRIVATE] you -> {safe_display(to_sent or '')}: {safe_display(text_sent)}{stored_tag}",
+                                )
+                            )
+                        else:
+                            self._notices.append(
+                                Notice("chat", f"[CHAT_GLOBAL] you: {safe_display(text_sent)}")
+                            )
 
                 elif kind == "ERROR":
                     if set(payload) != {"code", "message"} or not all(
@@ -329,19 +536,31 @@ class CollabClient:
                     expected = self._pending.pop(event.request_id, None)
                     if expected is None:
                         raise ProtocolViolation("ERROR has no matching request")
+                    self._pending_chat.pop(event.request_id, None)
                     code = safe_display(payload["code"])
                     self._notices.append(Notice("error", code))
                     if expected == "AUTH_REQUEST":
                         self._requested_username = None
                         self.state = ClientState.WAIT_AUTH
-                    elif expected == "HELLO":
-                        should_close = True
                     elif expected.startswith("FILE_"):
                         rejected_file_transfer = self._file_requests.pop(event.request_id, None)
 
                 elif isinstance(kind, str) and kind.startswith("FILE_"):
                     self._require_authenticated(kind)
                     file_event = (kind, payload)
+
+                elif kind == "PONG":
+                    self._require_authenticated(kind)
+                    pending_ping = self._pending_pings.get(event.request_id)
+                    if pending_ping is None or payload != {"nonce": pending_ping[0]}:
+                        raise ProtocolViolation("PONG does not match outstanding PING")
+                    self._pop_expected(event, "PING")
+                    self._pending_pings.pop(event.request_id)
+                    self.ping_rtts[event.request_id] = (monotonic() - pending_ping[1]) * 1000
+                    self.last_tcp_rtt = self.ping_rtts[event.request_id]
+                    self._notices.append(
+                        Notice("network", f"TCP/TLS RTT: {self.last_tcp_rtt:.1f} ms")
+                    )
 
                 elif kind == "PING":
                     self._require_authenticated(kind)
@@ -407,7 +626,7 @@ class CollabClient:
         except (EOFError, ConnectionError, OSError) as error:
             with self._lock:
                 self._notices.append(Notice("disconnected", safe_display(str(error))))
-        except ProtocolViolation as error:
+        except (ProtocolViolation, ProtocolError) as error:
             with self._lock:
                 self._notices.append(Notice("protocol_error", safe_display(str(error))))
         finally:
@@ -426,11 +645,25 @@ class CollabClient:
         with self._lock:
             if self.state is ClientState.CLOSED:
                 return
+            if self.history is not None and self.username is not None and self.session_id:
+                try:
+                    self.history.end_session(self.history_server, self.username, self.session_id)
+                except (OSError, sqlite3.Error):
+                    self._notices.append(Notice("error", "Could not save session end time"))
             self.state = ClientState.CLOSED
             self.username = None
+            self.role = None
+            self.reply_target = None
+            self.session_id = None
+            self.pending_users = []
             self._requested_username = None
+            self.issued_token = None
+            self._token_login = False
             self.online_users.clear()
             self._pending.clear()
+            self._pending_pings.clear()
+            self.ping_rtts.clear()
+            self._pending_chat.clear()
             self._file_requests.clear()
         self.files.close()
         self.transport.close()

@@ -1,15 +1,9 @@
-"""TV2 pieces together over real sockets: verified TLS + codec + transport + transfer core.
-
-``MiniRelay`` is a TEST-ONLY stand-in for TV1's server: it trusts the HELLO client_name as the
-username and has no authentication, queues or presence. It exists to prove the TV2 components
-interoperate under real concurrency, not to replace the production server.
-"""
+"""TV2 transfer primitives exercised through the production authenticated TLS relay."""
 
 from typing import Any
 import hashlib
 import itertools
 import os
-import socket
 import tempfile
 import threading
 import time
@@ -17,14 +11,16 @@ import unittest
 import uuid
 from pathlib import Path
 
-from lancollab.common.contracts import Envelope, SessionIdentity
+from lancollab.common.contracts import Envelope
 from lancollab.common.socket_transport import SocketTransport
 from lancollab.common.tls import create_server_context
+from lancollab.server.accounts import AccountService
+from lancollab.server.application import CollabServer
+from lancollab.server.connections import ConnectionServer
 from lancollab.common.transfer_core import (
     DiskSink,
     IncomingTransfer,
     OutgoingTransfer,
-    TransferRegistry,
     TransferState,
 )
 
@@ -43,104 +39,42 @@ def rid() -> str:
     return f"q{next(_ids)}"
 
 
-class MiniRelay:
-    def __init__(self, context) -> None:
-        self.context = context
-        self.registry = TransferRegistry()
-        self.lock = threading.Lock()
-        self.users: dict[str, SessionIdentity] = {}
-        self.transports: dict[str, SocketTransport] = {}
-        self.listener = socket.socket()
-        self.listener.bind(("127.0.0.1", 0))
-        self.listener.listen(64)
-        self.port = self.listener.getsockname()[1]
-        threading.Thread(target=self._accept, daemon=True).start()
+class ProductionRelay:
+    """Isolated accounts and ports; no alternate network implementation in tests."""
 
-    def close(self) -> None:
-        self.listener.close()
-        for t in list(self.transports.values()):
-            t.close()
+    def __init__(self, context):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.accounts = AccountService(Path(self.tmp.name) / "accounts.db")
+        handler = CollabServer(self.accounts)
+        self.registry = handler.transfers
+        self.server = ConnectionServer(context, port=0, udp_port=0, handler=handler)
+        self.port = self.server.port
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.start()
 
-    def _accept(self) -> None:
-        while True:
-            try:
-                raw, addr = self.listener.accept()
-            except OSError:
-                return
-            threading.Thread(target=self._serve, args=(raw, addr), daemon=True).start()
-
-    def _serve(self, raw: socket.socket, addr) -> None:
-        try:
-            transport = SocketTransport.accept_verified(self.context, raw)
-            hello = transport.receive(timeout=5)
-        except Exception:  # noqa: BLE001
-            return
-        identity = SessionIdentity(addr[0], addr[1], uuid.uuid4().hex, hello.payload["client_name"])
-        assert identity.username is not None
-        with self.lock:
-            self.users[identity.username] = identity
-            self.transports[identity.session_id] = transport
-            self.registry.open_session(identity)
-        transport.send(
-            Envelope("HELLO_ACK", hello.request_id, {"server_name": "t", "protocol_version": 1})
-        )
-        try:
-            while True:
-                self._dispatch(identity, transport, transport.receive())
-        except Exception:  # noqa: BLE001  EOF, reset or protocol failure => session cleanup
-            pass
-        finally:
-            with self.lock:
-                if identity.username is not None and self.users.get(identity.username) == identity:
-                    del self.users[identity.username]
-                self._apply(self.registry.close_session(identity.session_id))
-                self.transports.pop(identity.session_id, None)
-            transport.close()
-
-    def _dispatch(self, identity, transport, message: Envelope) -> None:
-        if message.type == "FILE_OFFER":
-            receiver = self.users.get(message.payload["to"])
-            if receiver is None:
-                out = None
-                transport.send(
-                    Envelope(
-                        "ERROR", message.request_id, {"code": "USER_OFFLINE", "message": "offline"}
-                    )
-                )
-            else:
-                out = self.registry.offer(identity, receiver, message)
-        elif message.type.startswith("FILE_"):
-            out = self.registry.handle(identity, message)
-        else:
-            return
-        if out is not None:
-            self._apply(out, message.request_id, transport)
-
-    def _apply(self, out, request_id: str | None = None, reply_to=None) -> None:
-        if out.error and reply_to is not None and request_id:
-            reply_to.send(out.error.reply(request_id))
-        for fwd in out.forwards:
-            target = self.transports.get(fwd.recipient.session_id)
-            if target is None:
-                continue
-            try:
-                target.send(fwd.message)
-            except (ConnectionError, TimeoutError):
-                continue
-            if fwd.message.type in ("FILE_OFFER", "FILE_ACCEPT", "FILE_END"):
-                self.registry.mark_written(fwd.message.payload["transfer_id"], fwd.message.type)
+    def close(self):
+        self.server.close()
+        self.thread.join(5)
+        self.accounts.close()
+        self.tmp.cleanup()
 
 
 class Peer:
     """A client: one reader thread (never blocks on credit) plus caller-driven sender."""
 
-    def __init__(self, relay: MiniRelay, ca: str, name: str, download_dir: str, auto_accept=True):
+    def __init__(
+        self, relay: ProductionRelay, ca: str, name: str, download_dir: str, auto_accept=True
+    ):
+        relay.accounts.create_account(name, "synthetic-test-only", status="active")
         self.name = name
         self.dir = download_dir
         self.auto_accept = auto_accept
         self.transport = SocketTransport.connect_verified("127.0.0.1", relay.port, ca)
-        self.transport.send(Envelope("HELLO", rid(), {"client_name": name}))
+        self.transport.send(
+            Envelope("AUTH_REQUEST", rid(), {"username": name, "password": "synthetic-test-only"})
+        )
         self.transport.receive(timeout=5)
+        self.requests: dict[str, str] = {}
         self.outgoing: dict[str, OutgoingTransfer] = {}
         self.incoming: dict[str, IncomingTransfer] = {}
         self.results: dict[str, Any] = {}
@@ -149,13 +83,16 @@ class Peer:
         self.thread.start()
 
     def _send(self, kind: str, **payload) -> None:
-        self.transport.send(Envelope(kind, rid(), payload))
+        request_id = rid()
+        if "transfer_id" in payload:
+            self.requests[request_id] = payload["transfer_id"]
+        self.transport.send(Envelope(kind, request_id, payload))
 
     def _read(self) -> None:
         try:
             while True:
                 self._handle(self.transport.receive())
-        except Exception:  # noqa: BLE001  connection lost: every transfer must be abandoned
+        except Exception:  # disconnect/protocol failure abandons the active transfers
             for out in self.outgoing.values():
                 out.on_cancel("CONNECTION_LOST")
             for inc in self.incoming.values():
@@ -164,7 +101,9 @@ class Peer:
     def _handle(self, m: Envelope) -> None:
         p = m.payload
         tid = p.get("transfer_id")
-        if m.type == "FILE_OFFER" and self.auto_accept:
+        if m.type == "PING":
+            self.transport.send(Envelope("PONG", m.request_id, {"nonce": p["nonce"]}))
+        elif m.type == "FILE_OFFER" and self.auto_accept:
             assert isinstance(tid, str)
             sink = DiskSink(self.dir, p["name"])
             self.incoming[tid] = IncomingTransfer(tid, p["name"], p["size"], p["sha256"], sink)
@@ -186,10 +125,12 @@ class Peer:
             extra = {} if result.ok else {"reason": result.reason}
             self._send("FILE_RESULT", transfer_id=tid, ok=result.ok, **extra)
             self.results[tid] = result
-        elif m.type == "ERROR":  # a rejected request: fail any offer still waiting for a decision
-            for out in self.outgoing.values():
-                if out.state is TransferState.OFFERED:
-                    out.on_cancel(p["code"])
+        elif m.type == "ERROR":
+            # A late error for the cancelled transfer must not cancel a later offer.
+            rejected_id = self.requests.get(m.request_id)
+            out = self.outgoing.get(rejected_id)
+            if out is not None and not out.finished:
+                out.on_cancel(p["code"])
         elif m.type == "FILE_CANCEL":
             if tid in self.incoming:
                 self.incoming[tid].cancel()
@@ -197,6 +138,8 @@ class Peer:
                 self.outgoing[tid].on_cancel(p["reason"])
         elif isinstance(tid, str) and tid in self.outgoing:  # <--- add isinstance check
             out = self.outgoing[tid]
+            if out.finished:
+                return
             if m.type == "FILE_ACCEPT":
                 out.on_accept()
             elif m.type == "FILE_ACK":
@@ -256,9 +199,9 @@ class IntegrationTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def setUp(self) -> None:
-        self.relay = MiniRelay(self.ctx)
+        self.relay = ProductionRelay(self.ctx)
         self.addCleanup(self.relay.close)
-        self.ca = str(self.certs.ca_cert)
+        self.ca = str(self.certs.server_cert)
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
 

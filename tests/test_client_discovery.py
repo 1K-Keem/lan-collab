@@ -2,7 +2,7 @@ import json
 import socket
 import unittest
 
-from lancollab.client.discovery import DiscoveryClient, ServerEndpoint, _decode, select_server
+from lancollab.client.discovery import DiscoveryClient, ServerEndpoint, select_server
 
 
 class FakeDatagramSocket:
@@ -82,9 +82,25 @@ class DiscoveryTests(unittest.TestCase):
             select_server(None, host=None)
 
     def test_strict_datagram_validation(self):
-        self.assertIsNone(_decode(b'{"version":1,"version":1}'))
-        self.assertIsNone(_decode(b"x" * 1201))
-        self.assertIsNone(_decode(b"[123]"))
+        for raw in (
+            b'{"version":1,"version":1}',
+            b"x" * 1201,
+            b"[123]",
+            b"\xff",
+            b"not json",
+            b"",
+        ):
+            self.sock.events.append((raw, ("192.0.2.21", 40001)))
+        self.sock.queue(
+            {
+                "version": 1,
+                "type": "DISCOVER_REPLY",
+                "instance_id": self.client.instance_id,
+                "server_name": "test-server",
+                "tcp_port": 40000,
+            }
+        )
+        self.assertEqual(self.client.discover().host, "192.0.2.21")
 
     def test_heartbeat_ack_and_lost_packet(self):
         self.sock.queue(

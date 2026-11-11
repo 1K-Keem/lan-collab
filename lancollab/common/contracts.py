@@ -32,6 +32,7 @@ class SessionIdentity:
     remote_port: int
     session_id: str
     username: str | None = None
+    role: str = "member"
 
 
 @dataclass(frozen=True)

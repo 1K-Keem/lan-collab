@@ -1,4 +1,4 @@
-"""Opt-in TV3 real 20-client integration harness; requires TV1/TV2 complete.
+"""Opt-in 20-client production-server chat/file workload.
 
 NEVER labels mock coverage as real LAN evidence. Account input is local JSON
 [{'username':'...', 'password':'...'}]; do not commit credentials.
@@ -14,7 +14,7 @@ from tempfile import TemporaryDirectory
 from threading import Event, Thread
 from time import monotonic, sleep
 
-from lancollab.client.__main__ import connect_verified_transport
+from lancollab.common.socket_transport import SocketTransport
 from lancollab.client.application import ClientState, CollabClient
 
 
@@ -27,7 +27,12 @@ class Metrics:
     ack_p95_ms: float
     ack_max_ms: float
     file_bytes_verified: int | None
-    scope: str = "Real TCP/TLS only if TV1/TV2 provided working adapters and server"
+    pong_mean_ms: float
+    pong_p95_ms: float
+    pong_max_ms: float
+    chat_ack_raw_ms: list[float]
+    pong_raw_ms: list[float]
+    scope: str = "Real TCP/TLS to the selected host; chat ACK means queued, not read"
 
 
 def _wait(predicate, *, seconds: float, context: str) -> None:
@@ -56,8 +61,11 @@ def run(args: argparse.Namespace) -> Metrics:
     active: list[tuple[CollabClient, Event, Thread]] = []
 
     def connect(index: int) -> tuple[CollabClient, Event, Thread]:
-        transport = connect_verified_transport(
-            host=args.host, port=args.port, server_name=args.server_name, ca_file=args.ca_file
+        transport = SocketTransport.connect_verified(
+            host=args.host,
+            port=args.port,
+            server_hostname=args.server_name,
+            trusted_cert=args.trusted_cert,
         )
         client = CollabClient(
             transport,
@@ -69,15 +77,6 @@ def run(args: argparse.Namespace) -> Metrics:
         reader.start()
         deadline = monotonic() + 10
         try:
-            req = client.send_hello(f"probe-{index}")
-            del req
-            _wait(
-                lambda: client.state in {ClientState.WAIT_AUTH, ClientState.CLOSED},
-                seconds=max(0.01, deadline - monotonic()),
-                context="HELLO_ACK timeout",
-            )
-            if client.state is ClientState.CLOSED:
-                raise ConnectionError("HELLO rejected")
             credentials = accounts[index]
             client.login(credentials["username"], credentials["password"])
             _wait(
@@ -99,30 +98,15 @@ def run(args: argparse.Namespace) -> Metrics:
     try:
         with ThreadPoolExecutor(max_workers=min(args.clients, 32)) as pool:
             futures = [pool.submit(connect, i) for i in range(args.clients)]
+            failures = []
             for future in as_completed(futures):
-                active.append(future.result())
-        samples = []
-        with ThreadPoolExecutor(max_workers=min(args.clients, 32)) as pool:
-
-            def send_many(item):
-                client = item[0]
-                durations = []
-                for i in range(args.messages):
-                    started = monotonic()
-                    rid = client.send_global(f"TV3 smoke {i}")
-                    _wait(
-                        lambda: rid not in client._pending or client.state is ClientState.CLOSED,
-                        seconds=args.timeout,
-                        context="CHAT_ACK timed out",
-                    )
-                    if client.state is ClientState.CLOSED:
-                        raise ConnectionError("Client disconnected during chat")
-                    durations.append((monotonic() - started) * 1000)
-                return durations
-
-            for future in as_completed([pool.submit(send_many, item) for item in active]):
-                samples.extend(future.result())
-        verified = None
+                try:
+                    active.append(future.result())
+                except Exception as error:
+                    failures.append(error)
+            if failures:
+                raise failures[0]
+        file_id = None
         if args.file:
             file_path = Path(args.file)
             if file_path.stat().st_size < 10 * 1024 * 1024:
@@ -135,6 +119,42 @@ def run(args: argparse.Namespace) -> Metrics:
                 context="FILE_OFFER not relayed",
             )
             receiver.files.accept(file_id)
+        samples = []
+        pong_samples = []
+        with ThreadPoolExecutor(max_workers=min(args.clients, 32)) as pool:
+
+            def send_many(item):
+                client = item[0]
+                durations = []
+                pongs = []
+                for i in range(args.messages):
+                    started = monotonic()
+                    rid = client.send_global(f"TV3 smoke {i}")
+                    ping_id = client.ping()
+                    _wait(
+                        lambda: rid not in client._pending or client.state is ClientState.CLOSED,
+                        seconds=args.timeout,
+                        context="CHAT_ACK timed out",
+                    )
+                    if client.state is ClientState.CLOSED:
+                        raise ConnectionError("Client disconnected during chat")
+                    durations.append((monotonic() - started) * 1000)
+                    _wait(
+                        lambda: ping_id in client.ping_rtts or client.state is ClientState.CLOSED,
+                        seconds=args.timeout,
+                        context="PONG timed out",
+                    )
+                    if client.state is ClientState.CLOSED:
+                        raise ConnectionError("Client disconnected awaiting PONG")
+                    pongs.append(client.ping_rtts.pop(ping_id))
+                return durations, pongs
+
+            for future in as_completed([pool.submit(send_many, item) for item in active]):
+                chats, pongs = future.result()
+                samples.extend(chats)
+                pong_samples.extend(pongs)
+        verified = None
+        if file_id is not None:
             _wait(
                 lambda: file_id in sender.files.terminal and file_id in receiver.files.terminal,
                 seconds=max(args.timeout, 60),
@@ -153,6 +173,11 @@ def run(args: argparse.Namespace) -> Metrics:
             ack_p95_ms=_percentile_95(samples),
             ack_max_ms=max(samples),
             file_bytes_verified=verified,
+            pong_mean_ms=mean(pong_samples),
+            pong_p95_ms=_percentile_95(pong_samples),
+            pong_max_ms=max(pong_samples),
+            chat_ack_raw_ms=samples,
+            pong_raw_ms=pong_samples,
         )
     finally:
         for client, stop, reader in active:
@@ -163,12 +188,12 @@ def run(args: argparse.Namespace) -> Metrics:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Real TV3 smoke; requires TV1 and TV2 integration")
+    parser = argparse.ArgumentParser(description="Production server concurrent chat/file smoke")
     parser.add_argument("--accounts", required=True, help="LOCAL JSON; never commit secrets")
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=40000)
     parser.add_argument("--server-name", default="lan-collab.local")
-    parser.add_argument("--ca-file", required=True)
+    parser.add_argument("--trusted-cert", required=True)
     parser.add_argument("--clients", type=int, default=20)
     parser.add_argument("--messages", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=10)

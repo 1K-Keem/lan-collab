@@ -1,12 +1,14 @@
 # Integration checkpoints — 25 Oct to 1 Nov 2026 (internal target)
 
+**10 Nov integration update:** the production code and loopback tests now cover the server/client paths. See [acceptance](acceptance.md) and [local benchmark](local-benchmark.json). The checkboxes below remain review gates; automated implementation alone does not supply LAN/capture evidence or team signoff.
+
 Each checkpoint is a **gate**, not an exclusive phase. Merge small reviewed PRs as interfaces stabilize; checkpoints verify the assembled vertical slice and do not require long-lived per-person branches. All three members work in parallel with mocks and the revised contract. No gate can pass on in-memory mocks alone.
 
 ## CP-A — real TCP framing/handshake — 27 Oct, Issue #16
 
 - [ ] TV1/TV2/TV3 acknowledge v1.2 changes in Issue #2; declare any blocked fields before merging handlers.
-- [ ] Real server and client module commands connect with TCP; CP-A may exercise plaintext framing only with synthetic HELLO data on localhost. No AUTH_REQUEST/password is allowed until verified TLS works; basic TLS is a dependency of CP-B. Design bounded handshake workers/timeouts now.
-- [ ] HELLO/HELLO_ACK with identical request_id and 4-byte length-framed JSON.
+- [ ] Real server and client module commands connect with TCP; CP-A verifies TCP connection establishment and framing with synthetic non-credential data on localhost. No AUTH_REQUEST/password is allowed until verified TLS works; basic TLS is a dependency of CP-B. Design bounded handshake workers/timeouts now.
+- [ ] Verified TLS followed directly by AUTH_REQUEST/AUTH_RESULT with identical request_id and 4-byte length-framed JSON; AUTH_RESULT provides the application acknowledgment.
 - [ ] Two clients connect concurrently; fragmented and combined frame tests pass.
 - [ ] Codec follows declarative catalog and rejects unknown envelope/payload fields.
 - [ ] Commit SHA, tests, logs and cross-team walkthrough linked to Issue #16.
@@ -14,7 +16,7 @@ Each checkpoint is a **gate**, not an exclusive phase. Merge small reviewed PRs 
 ## CP-B — 3-client auth/chat/UDP — 29 Oct, Issue #17
 
 - [ ] Issue #10 basic verified TLS is integrated: trusted server identity, no CERT_NONE; only then enable AUTH_REQUEST.
-- [ ] Admin provisions users; 3 accounts authenticate within HELLO/AUTH deadline.
+- [ ] First admin is provisioned locally; registered members are approved by an admin; 3 accounts authenticate within AUTH deadline.
 - [ ] Three clients see correct atomic USER_LIST and online/offline updates with IP/ephemeral port.
 - [ ] Global fan-out, private routing, CHAT_ACK request_id semantics and offline rejection work.
 - [ ] 3 failed logins, timed-out silent client, stale-session takeover and safe terminal output tested.

@@ -5,11 +5,12 @@ import unittest
 from lancollab.client.application import (
     ClientState,
     CollabClient,
+    Notice,
     ProtocolViolation,
     safe_display,
 )
 from lancollab.common.contracts import Envelope
-from lancollab.common.fake_transport import FakeTransport
+from tests.fake_transport import FakeTransport
 
 
 class ClientLogicTests(unittest.TestCase):
@@ -19,28 +20,56 @@ class ClientLogicTests(unittest.TestCase):
         self.client = CollabClient(self.client_end, auth_allowed=True)
 
     def authenticate(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.assertEqual(self.server_end.receive().type, "HELLO")
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
         self.client.handle_event(
             Envelope(
                 "AUTH_RESULT",
                 auth_id,
-                {"ok": True, "username": "alice"},
+                {"ok": True, "username": "alice", "role": "member"},
             )
         )
         self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
 
-    def test_hello_and_auth_state(self):
-        self.assertEqual(self.client.state, ClientState.READY)
+    def authenticate_admin(self):
+        auth_id = self.client.login("admin", "synthetic-password-only")
+        self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
+        self.client.handle_event(
+            Envelope(
+                "AUTH_RESULT",
+                auth_id,
+                {"ok": True, "username": "admin", "role": "admin"},
+            )
+        )
+        self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
+
+    def _pending_result(self, request_id, users):
+        self.client.handle_event(Envelope("PENDING_USERS_RESULT", request_id, {"users": users}))
+
+    def test_quiet_pending_refresh_updates_list_without_notice(self):
+        # The TUI sidebar timer refreshes every 10s; it must not print one
+        # "Pending users" line into the chat per refresh.
+        self.authenticate_admin()
+        request_id = self.client.list_pending(quiet=True)
+        self.assertEqual(self.server_end.receive().type, "PENDING_USERS_REQUEST")
+        self._pending_result(request_id, [{"username": "bob"}])
+        self.assertEqual([u["username"] for u in self.client.pending_users], ["bob"])
+        # Login itself appends an "Authenticated as admin" notice; the quiet
+        # refresh must add no "Pending users" notice on top of it.
+        self.assertEqual([n for n in self.client._notices if n.kind == "admin"], [])
+
+    def test_explicit_pending_still_prints_notice(self):
+        self.authenticate_admin()
+        request_id = self.client.list_pending()
+        self.assertEqual(self.server_end.receive().type, "PENDING_USERS_REQUEST")
+        self._pending_result(request_id, [])
+        self.assertEqual(self.client.pending_users, [])
+        admin_notices = [n for n in self.client._notices if n.kind == "admin"]
+        self.assertEqual(len(admin_notices), 1)
+        self.assertEqual(admin_notices[0].text, "Pending users: none")
+
+    def test_direct_auth_state(self):
+        self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
         with self.assertRaises(RuntimeError):
             self.client.send_global("too early")
         self.authenticate()
@@ -48,31 +77,29 @@ class ClientLogicTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.client.login("alice", "synthetic-password-only")
 
-    def test_wrong_hello_ack_id_closes_client(self):
-        self.client.send_hello("mock-client")
+    def test_wrong_auth_result_id_closes_client(self):
+        self.client.login("alice", "synthetic-password-only")
+        self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
             self.client.handle_event(
                 Envelope(
-                    "HELLO_ACK",
-                    "wrong-id",
-                    {"server_name": "x", "protocol_version": 1},
+                    "AUTH_RESULT", "wrong-id", {"ok": True, "username": "alice", "role": "member"}
                 )
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
-    def test_hello_error_closes_transport(self):
-        req = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "ERROR",
-                req,
-                {"code": "INVALID_MESSAGE", "message": "bad hello"},
-            )
-        )
+    def test_pending_auth_cannot_login_or_chat(self):
+        self.client.login("alice", "synthetic-password-only")
+        self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
+        with self.assertRaises(RuntimeError):
+            self.client.login("bob", "synthetic-password-only")
+        with self.assertRaises(RuntimeError):
+            self.client.send_global("too early")
+
+    def test_logout_before_auth(self):
+        self.client.logout()
+        self.assertEqual(self.server_end.receive().type, "LOGOUT")
         self.assertEqual(self.client.state, ClientState.CLOSED)
-        with self.assertRaises(BrokenPipeError):
-            self.server_end.send(Envelope("PING", "x", {"nonce": "hi"}))
 
     def test_presence_before_auth_is_rejected(self):
         with self.assertRaises(ProtocolViolation):
@@ -86,15 +113,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_auth_failure_can_retry(self):
-        req = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                req,
-                {"server_name": "mock", "protocol_version": 1},
-            )
-        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         self.client.handle_event(
@@ -117,7 +135,30 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(msg2.payload, {"to": "bob", "text": "hello bob"})
         self.assertNotEqual(global_id, private_id)
         self.client.handle_event(Envelope("CHAT_ACK", private_id, {"status": "queued"}))
-        self.assertIn("not delivered/read", self.client.drain_notices()[-1].text)
+        notices = self.client.drain_notices()
+        self.assertIn(Notice("chat", "[CHAT_PRIVATE] you -> bob: hello bob"), notices)
+        self.client.handle_event(Envelope("CHAT_ACK", global_id, {"status": "queued"}))
+        self.assertIn(Notice("chat", "[CHAT_GLOBAL] you: hello all"), self.client.drain_notices())
+
+    def test_rejected_chats_release_only_their_cached_text(self):
+        self.authenticate()
+        kept = self.client.send_global("still pending")
+        self.server_end.receive()
+        for _ in range(100):
+            rejected = self.client.send_private("offline_user", "x" * 4096)
+            self.server_end.receive()
+            self.client.handle_event(
+                Envelope("ERROR", rejected, {"code": "USER_OFFLINE", "message": "offline"})
+            )
+            self.assertNotIn(rejected, self.client._pending)
+            self.assertNotIn(rejected, self.client._pending_chat)
+        self.assertEqual(set(self.client._pending_chat), {kept})
+        self.client.handle_event(Envelope("CHAT_ACK", kept, {"status": "queued"}))
+        self.assertFalse(self.client._pending_chat)
+        self.assertIn(
+            Notice("chat", "[CHAT_GLOBAL] you: still pending"), self.client.drain_notices()
+        )
+        self.client.close()
 
     def test_user_list_and_presence(self):
         self.authenticate()
@@ -158,23 +199,14 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(safe_display("hi\nthere"), "hi\\u000athere")
 
     def test_auth_success_username_must_match_request(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         auth_id = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
-        with self.assertRaisesRegex(ProtocolViolation, "username mismatch"):
+        with self.assertRaisesRegex(ProtocolViolation, "username/role mismatch"):
             self.client.handle_event(
                 Envelope(
                     "AUTH_RESULT",
                     auth_id,
-                    {"ok": True, "username": "mallory"},
+                    {"ok": True, "username": "mallory", "role": "member"},
                 )
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
@@ -191,15 +223,6 @@ class ClientLogicTests(unittest.TestCase):
             with self.subTest(payload=payload):
                 client_end, server_end = FakeTransport.pair()
                 client = CollabClient(client_end, auth_allowed=True)
-                hello_id = client.send_hello("mock-client")
-                server_end.receive()
-                client.handle_event(
-                    Envelope(
-                        "HELLO_ACK",
-                        hello_id,
-                        {"server_name": "mock-server", "protocol_version": 1},
-                    )
-                )
                 auth_id = client.login("alice", "synthetic-password-only")
                 server_end.receive()
                 with self.assertRaises(ProtocolViolation):
@@ -207,15 +230,6 @@ class ClientLogicTests(unittest.TestCase):
                 self.assertEqual(client.state, ClientState.CLOSED)
 
     def test_auth_fail_drops_requested_identity(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         self.client.handle_event(
@@ -232,21 +246,12 @@ class ClientLogicTests(unittest.TestCase):
             Envelope(
                 "AUTH_RESULT",
                 req2,
-                {"ok": True, "username": "bob"},
+                {"ok": True, "username": "bob", "role": "member"},
             )
         )
         self.assertEqual(self.client.username, "bob")
 
     def test_auth_error_drops_requested_identity(self):
-        hello_id = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        self.client.handle_event(
-            Envelope(
-                "HELLO_ACK",
-                hello_id,
-                {"server_name": "mock-server", "protocol_version": 1},
-            )
-        )
         req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         self.client.handle_event(
@@ -258,19 +263,6 @@ class ClientLogicTests(unittest.TestCase):
         )
         self.assertIsNone(self.client._requested_username)
         self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
-
-    def test_hello_ack_requires_exact_fields(self):
-        req = self.client.send_hello("mock-client")
-        self.server_end.receive()
-        with self.assertRaises(ProtocolViolation):
-            self.client.handle_event(
-                Envelope(
-                    "HELLO_ACK",
-                    req,
-                    {"server_name": "mock", "protocol_version": True},
-                )
-            )
-        self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_chat_ack_unmatched_is_rejected(self):
         self.authenticate()
@@ -308,21 +300,21 @@ class ClientLogicTests(unittest.TestCase):
             )
 
     def test_event_version_must_be_int_one(self):
-        self.client.send_hello("mock-client")
+        req = self.client.login("alice", "synthetic-password-only")
         self.server_end.receive()
         with self.assertRaises(ProtocolViolation):
             self.client.handle_event(
                 Envelope(
-                    "HELLO_ACK",
-                    "req-1",
-                    {"server_name": "mock", "protocol_version": 1},
+                    "AUTH_RESULT",
+                    req,
+                    {"ok": True, "username": "alice", "role": "member"},
                     version=True,
                 )
             )
         self.assertEqual(self.client.state, ClientState.CLOSED)
 
     def test_close_idempotent_and_clears_pending(self):
-        self.client.send_hello("mock-client")
+        self.client.login("alice", "synthetic-password-only")
         self.client.close()
         self.client.close()
         self.assertEqual(self.client.state, ClientState.CLOSED)
@@ -365,11 +357,6 @@ class ClientLogicTests(unittest.TestCase):
         self.assertEqual(message.type, "LOGOUT")
         self.assertEqual(message.payload, {})
         self.assertEqual(self.client.state, ClientState.CLOSED)
-
-    def test_logout_not_allowed_before_hello(self):
-        with self.assertRaises(RuntimeError):
-            self.client.logout()
-        self.assertEqual(self.client.state, ClientState.READY)
 
 
 if __name__ == "__main__":

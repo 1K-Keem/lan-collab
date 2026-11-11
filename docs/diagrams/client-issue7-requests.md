@@ -1,4 +1,4 @@
-# TV3 HELLO, AUTH and chat correlation — implemented state / planned socket wiring
+# TV3 AUTH and chat correlation — implemented state / planned socket wiring
 
 ```mermaid
 sequenceDiagram
@@ -9,10 +9,6 @@ sequenceDiagram
     participant S as Server or Fake
     Note over T,S: In tests transport and server are simulated
     U->>C: connect and login
-    C->>T: HELLO with request H
-    T->>S: HELLO
-    S-->>T: HELLO_ACK with H
-    T-->>C: HELLO_ACK
     C->>T: AUTH_REQUEST with request A
     T->>S: AUTH_REQUEST
     S-->>T: AUTH_RESULT with A

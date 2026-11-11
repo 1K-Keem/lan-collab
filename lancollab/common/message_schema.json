@@ -1,21 +1,16 @@
 {
-  "C:HELLO": {
-    "required": {
-      "client_name": "str"
-    },
-    "optional": {}
-  },
-  "S:HELLO_ACK": {
-    "required": {
-      "server_name": "str",
-      "protocol_version": "int:1"
-    },
-    "optional": {}
-  },
   "C:AUTH_REQUEST": {
     "required": {
       "username": "str:username",
       "password": "str"
+    },
+    "optional": {
+      "remember_me": "bool"
+    }
+  },
+  "C:TOKEN_AUTH_REQUEST": {
+    "required": {
+      "token": "str"
     },
     "optional": {}
   },
@@ -25,7 +20,9 @@
     },
     "optional": {
       "username": "str:username",
-      "error_code": "str:error"
+      "role": "enum:member|admin",
+      "error_code": "str:error",
+      "token": "str"
     }
   },
   "S:USER_LIST": {
@@ -69,11 +66,13 @@
       "from": "str:username",
       "text": "str:chat"
     },
-    "optional": {}
+    "optional": {
+      "queued": "bool"
+    }
   },
   "S:CHAT_ACK": {
     "required": {
-      "status": "enum:queued"
+      "status": "enum:queued|stored"
     },
     "optional": {}
   },
@@ -239,5 +238,48 @@
       "message": "str"
     },
     "optional": {}
+  },
+  "C:REGISTER_REQUEST": {
+    "required": {
+      "username": "str:username",
+      "password": "str"
+    },
+    "optional": {}
+  },
+  "S:REGISTER_RESULT": {
+    "required": {
+      "ok": "bool"
+    },
+    "optional": {
+      "status": "enum:pending|active",
+      "error_code": "str:error"
+    }
+  },
+  "C:PENDING_USERS_REQUEST": {
+    "required": {},
+    "optional": {}
+  },
+  "S:PENDING_USERS_RESULT": {
+    "required": {
+      "users": "list:pending_user"
+    },
+    "optional": {}
+  },
+  "C:ACCOUNT_REVIEW_REQUEST": {
+    "required": {
+      "username": "str:username",
+      "decision": "enum:approve|reject"
+    },
+    "optional": {}
+  },
+  "S:ACCOUNT_REVIEW_RESULT": {
+    "required": {
+      "ok": "bool"
+    },
+    "optional": {
+      "username": "str:username",
+      "status": "enum:active|rejected",
+      "error_code": "str:error"
+    }
   }
 }

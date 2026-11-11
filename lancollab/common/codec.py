@@ -1,4 +1,4 @@
-"""Strict length-prefixed JSON codec for protocol design revision 1.2.
+"""Strict length-prefixed JSON codec for protocol design revision 1.3.
 
 Frame layout: ``uint32_big_endian(N)`` followed by exactly ``N`` bytes of UTF-8 JSON,
 ``1 <= N <= 262144``. The decoder consumes the declarative catalog in
@@ -225,6 +225,25 @@ def _check_online_user_list(value: Any) -> None:
         seen.add(entry["username"])
 
 
+def _check_pending_user(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != {"username", "created_at"}:
+        raise _Invalid("entries need exactly username and created_at")
+    _check_username(value["username"])
+    if not isinstance(value["created_at"], str) or not 1 <= len(value["created_at"]) <= 64:
+        raise _Invalid("created_at must be a short string")
+
+
+def _check_pending_user_list(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > MAX_ONLINE_USERS:
+        raise _Invalid("must be a list of pending users")
+    seen: set[str] = set()
+    for entry in value:
+        _check_pending_user(entry)
+        if entry["username"] in seen:
+            raise _Invalid("contains a duplicate username")
+        seen.add(entry["username"])
+
+
 _STR_KINDS: dict[str, Validator] = {
     "username": _check_username,
     "chat": _str_bytes(1, FIELD_LIMITS["chat_utf8_bytes"]),
@@ -247,8 +266,6 @@ _INT_KINDS: dict[str, Validator] = {
 
 # Plain "str" fields: (min, max) UTF-8 bytes. Unlisted fields use the default.
 _PLAIN_STR_LIMITS: dict[str, tuple[int, int]] = {
-    "client_name": (1, 128),
-    "server_name": (1, 128),
     "password": (1, 1024),
     "message": (1, 1024),
 }
@@ -276,6 +293,8 @@ def _compile_field(field: str, spec: str) -> Validator:
         return _enum(frozenset(arg.split("|")))
     if spec == "list:online_user":
         return _check_online_user_list
+    if spec == "list:pending_user":
+        return _check_pending_user_list
     raise KeyError(f"unsupported field spec {spec!r} for {field!r}")
 
 
@@ -290,13 +309,45 @@ class _CompiledMessage:
 
 def _auth_result_rules(payload: dict[str, Any]) -> None:
     if payload["ok"]:
-        if "username" not in payload or "error_code" in payload:
-            raise _Invalid("success requires username and forbids error_code")
+        if "username" not in payload or "role" not in payload or "error_code" in payload:
+            raise _Invalid("success requires username and role and forbids error_code")
+        if payload["role"] not in ("member", "admin"):
+            raise _Invalid("role must be member or admin")
+        # "token" is optional: present only on a password login with remember_me.
     else:
-        if "error_code" not in payload or "username" in payload:
-            raise _Invalid("failure requires error_code and forbids username")
-        if payload["error_code"] != "AUTH_FAILED":
-            raise _Invalid("failure error_code must be AUTH_FAILED")
+        if (
+            "error_code" not in payload
+            or "username" in payload
+            or "role" in payload
+            or "token" in payload
+        ):
+            raise _Invalid("failure requires error_code and forbids username, role and token")
+        if payload["error_code"] not in (
+            "AUTH_FAILED",
+            "ACCOUNT_PENDING",
+            "ACCOUNT_REJECTED",
+            "TOKEN_EXPIRED",
+            "TOKEN_REVOKED",
+        ):
+            raise _Invalid("failure error_code is not a known auth error")
+
+
+def _register_result_rules(payload: dict[str, Any]) -> None:
+    if payload["ok"]:
+        if payload.get("status") not in {"pending", "active"} or "error_code" in payload:
+            raise _Invalid("success requires status pending/active and forbids error_code")
+    else:
+        if "error_code" not in payload or "status" in payload:
+            raise _Invalid("failure requires error_code and forbids status")
+
+
+def _review_result_rules(payload: dict[str, Any]) -> None:
+    if payload["ok"]:
+        if "username" not in payload or "status" not in payload or "error_code" in payload:
+            raise _Invalid("success requires username and status and forbids error_code")
+    else:
+        if "error_code" not in payload or "username" in payload or "status" in payload:
+            raise _Invalid("failure requires error_code and forbids username and status")
 
 
 def _presence_rules(payload: dict[str, Any]) -> None:
@@ -310,6 +361,8 @@ def _presence_rules(payload: dict[str, Any]) -> None:
 
 _CONDITIONAL_RULES: dict[str, Callable[[dict[str, Any]], None]] = {
     "S:AUTH_RESULT": _auth_result_rules,
+    "S:REGISTER_RESULT": _register_result_rules,
+    "S:ACCOUNT_REVIEW_RESULT": _review_result_rules,
     "S:PRESENCE_UPDATE": _presence_rules,
 }
 

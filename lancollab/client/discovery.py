@@ -11,8 +11,13 @@ from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
 
-UDP_MAX_BYTES = 1200
-UDP_PORT = 40001
+from lancollab.common.udp_validation import (
+    UDP_MAX_BYTES,
+    UDP_PORT,
+    reject_duplicate_keys,
+    validate_datagram_size,
+    validate_udp_message,
+)
 
 
 @dataclass(frozen=True)
@@ -29,32 +34,6 @@ class NetworkQuality:
     received: int
     loss_percent: float
     last_rtt_ms: float | None
-
-
-def _decode(raw: bytes) -> dict[str, Any] | None:
-    if not 0 < len(raw) <= UDP_MAX_BYTES:
-        return None
-
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        output: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in output:
-                raise ValueError("duplicate UDP field")
-            output[key] = value
-        return output
-
-    try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _encode(message: dict[str, Any]) -> bytes:
-    data = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    if len(data) > UDP_MAX_BYTES:
-        raise ValueError("UDP datagram exceeds 1200 bytes")
-    return data
 
 
 class DiscoveryClient:
@@ -101,31 +80,35 @@ class DiscoveryClient:
                 raw, source = self._socket.recvfrom(UDP_MAX_BYTES + 1)
             except (socket.timeout, TimeoutError):
                 return None
-            message = _decode(raw)
-            if message is not None and predicate(message, source[0]):
+            try:
+                validate_datagram_size(raw)
+                message = json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+                validate_udp_message(message)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if predicate(message, source[0]):
                 return message, source[0]
+
+    def _send(self, message: dict[str, Any], host: str) -> None:
+        validate_udp_message(message)
+        data = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        validate_datagram_size(data)
+        self._socket.sendto(data, (host, self.udp_port))
 
     def discover(
         self, *, timeout: float = 1.5, broadcast_host: str = "255.255.255.255"
     ) -> ServerEndpoint | None:
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        self._socket.sendto(
-            _encode({"version": 1, "type": "DISCOVER", "instance_id": self.instance_id}),
-            (broadcast_host, self.udp_port),
+        self._send(
+            {"version": 1, "type": "DISCOVER", "instance_id": self.instance_id},
+            broadcast_host,
         )
 
         def valid(message: dict[str, Any], source: str) -> bool:
             return (
-                set(message) == {"version", "type", "instance_id", "server_name", "tcp_port"}
-                and type(message["version"]) is int
-                and message["version"] == 1
-                and message["type"] == "DISCOVER_REPLY"
+                message["type"] == "DISCOVER_REPLY"
                 and message["instance_id"] == self.instance_id
-                and isinstance(message["server_name"], str)
-                and bool(message["server_name"])
-                and type(message["tcp_port"]) is int
-                and 1 <= message["tcp_port"] <= 65535
                 and bool(source)
             )
 
@@ -142,22 +125,16 @@ class DiscoveryClient:
         seq = self._seq
         self._sent += 1
         start = self._clock()
-        self._socket.sendto(
-            _encode(
-                {"version": 1, "type": "HEARTBEAT", "instance_id": self.instance_id, "seq": seq}
-            ),
-            (host, self.udp_port),
+        self._send(
+            {"version": 1, "type": "HEARTBEAT", "instance_id": self.instance_id, "seq": seq},
+            host,
         )
 
         def valid(message: dict[str, Any], source: str) -> bool:
             return (
                 source == host
-                and set(message) == {"version", "type", "instance_id", "seq"}
-                and type(message["version"]) is int
-                and message["version"] == 1
                 and message["type"] == "HEARTBEAT_ACK"
                 and message["instance_id"] == self.instance_id
-                and type(message["seq"]) is int
                 and message["seq"] == seq
             )
 
