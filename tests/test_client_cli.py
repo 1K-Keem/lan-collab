@@ -191,5 +191,39 @@ class CLITests(unittest.TestCase):
             b.receive()  # /quit closes without LOGOUT: the token is kept
 
 
+class AuthPromptTests(unittest.TestCase):
+    def _prompt(self, answers, passwords):
+        from unittest.mock import patch
+        from lancollab.client import cli
+
+        output = []
+        answers, passwords = iter(answers), iter(passwords)
+        with (
+            patch("builtins.input", side_effect=lambda *_: next(answers)),
+            patch.object(cli, "getpass", side_effect=lambda *_: next(passwords)),
+            patch(
+                "builtins.print",
+                side_effect=lambda *parts, **_: output.append(" ".join(map(str, parts))),
+            ),
+        ):
+            result = cli.prompt_welcome()
+        return result, output
+
+    def test_invalid_username_is_retried_before_connecting(self):
+        result, output = self._prompt(["login", "bad name", "alice"], ["secret"])
+        self.assertEqual(result, ("login", "alice", "secret"))
+
+    def test_empty_login_password_is_retried(self):
+        result, output = self._prompt(["login", "alice"], ["", "secret"])
+        self.assertEqual(result, ("login", "alice", "secret"))
+
+    def test_signup_retypes_both_passwords_after_short_or_mismatch(self):
+        result, output = self._prompt(
+            ["signup", "bob"],
+            ["short", "longenough", "different", "longenough", "longenough"],
+        )
+        self.assertEqual(result, ("signup", "bob", "longenough"))
+
+
 if __name__ == "__main__":
     unittest.main()

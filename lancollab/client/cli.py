@@ -14,11 +14,13 @@ from time import monotonic, sleep
 from threading import Event, Thread, Lock
 from typing import Callable
 
-from lancollab.client.application import ClientState, CollabClient, safe_display
+from lancollab.client.application import ClientState, CollabClient, safe_display, _USERNAME
 from lancollab.client.token_store import TokenStore
 from lancollab.client.discovery import DiscoveryClient
 from lancollab.client.transfers import TransferError
 from lancollab.common.contracts import MessageTransport
+
+_MIN_PASSWORD_LEN = 8  # Must match the server's account policy.
 
 _HELP = (
     "/help, /users, /status, /history [USER|all|show ID], /all TEXT, /msg USER TEXT, "
@@ -202,6 +204,10 @@ class AuthenticationError(RuntimeError):
     """A verified server explicitly rejected the supplied credentials/token."""
 
 
+class RegistrationError(RuntimeError):
+    """A verified server rejected the sign-up request (e.g. username taken)."""
+
+
 class ConsoleSession:
     """Authenticated session UI; input loop never calls transport.receive()."""
 
@@ -299,7 +305,7 @@ class ConsoleSession:
                 raise AuthenticationError(self.client.auth_error)
             if state is ClientState.WAIT_AUTH and self.client.registration_result is not None:
                 if not self.client.registration_result:
-                    raise RuntimeError("Registration rejected; see the server response")
+                    raise RegistrationError("Registration rejected; see the server response")
                 return
             if self.client.state is state:
                 self._drain()
@@ -336,6 +342,7 @@ class ConsoleSession:
         self.start_reader()
         self.client.register(username, password)
         self._wait_for(ClientState.WAIT_AUTH, timeout=10.0)
+        self._drain()
 
     def refresh_pending_quietly(self) -> None:
         """Background sidebar refresh: update pending_users without printing.
@@ -569,18 +576,32 @@ class ConsoleSession:
 
 def prompt_welcome() -> tuple[str, str, str]:
     """Ask Login or Sign up BEFORE connecting, to meet the server AUTH deadline.
-    Returns (choice, username, password); choice is 'login' or 'signup'."""
+
+    Invalid input is retried here, so no TLS connection is ever opened for it.
+    Returns (choice, username, password); choice is 'login' or 'signup'.
+    """
     while True:
         choice = input("Login or Sign up? [login/signup]: ").strip().lower()
         if choice in ("login", "signup"):
             break
         print("Type 'login' or 'signup'.")
-    username = input("Username: ").strip()
-    password = getpass("Password: ")
-    if choice == "signup":
+    while True:
+        username = input("Username: ").strip()
+        if _USERNAME.fullmatch(username) is not None:
+            break
+        print("Username must be 1-32 characters: letters, digits, '_', '.', '-'.")
+    if choice == "login":
         while True:
-            confirm = getpass("Confirm password: ")
-            if password == confirm:
-                break
-            print("Passwords do not match. Please try again.")
-    return choice, username, password
+            password = getpass("Password: ")
+            if password:
+                return choice, username, password
+            print("Password cannot be empty.")
+    while True:
+        password = getpass("Password: ")
+        if len(password) < _MIN_PASSWORD_LEN:
+            print(f"Password must be at least {_MIN_PASSWORD_LEN} characters.")
+            continue
+        confirm = getpass("Confirm password: ")
+        if password == confirm:
+            return choice, username, password
+        print("Passwords do not match; re-enter both.")

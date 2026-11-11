@@ -251,22 +251,23 @@ class TransferManager:
             f"Incoming file from {payload['from']}: {name} ({size} bytes); /accept {transfer_id}"
         )
 
-    def accept(self, transfer_id: str) -> None:
+    def accept(self, transfer_id: str, *, directory: Path | str | None = None) -> None:
         checked_id(transfer_id)
         with self._cv:
             entry = self.incoming.get(transfer_id)
             if entry is None or entry.handle is not None:
                 raise TransferError("No pending file offer")
-            self.downloads_dir.mkdir(parents=True, exist_ok=True)
+            destination = Path(directory) if directory is not None else self.downloads_dir
+            destination.mkdir(parents=True, exist_ok=True)
             # Reserve a unique filename by choosing candidates, then link atomically on success.
             base = Path(entry.name)
-            candidate = self.downloads_dir / base.name
+            candidate = destination / base.name
             number = 1
             while candidate.exists():
-                candidate = self.downloads_dir / f"{base.stem} ({number}){base.suffix}"
+                candidate = destination / f"{base.stem} ({number}){base.suffix}"
                 number += 1
             fd, temp_name = tempfile.mkstemp(
-                prefix=".lancollab-", suffix=".part", dir=self.downloads_dir
+                prefix=".lancollab-", suffix=".part", dir=destination
             )
             entry.handle = os.fdopen(fd, "wb")
             entry.temp_path = Path(temp_name)

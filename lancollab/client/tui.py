@@ -1,4 +1,4 @@
-"""Colored terminal workspace with slash completion; standard-library curses only."""
+"""Terminal workspace with slash completion and a native tkinter file picker."""
 
 from collections import deque
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ import sqlite3
 from unicodedata import combining, east_asian_width
 
 from lancollab.client.application import ClientState, safe_display
-from lancollab.client.cli import _DETAILED_HELP, parse_command, progress_bar
+from lancollab.client.cli import Command, _DETAILED_HELP, parse_command, progress_bar
 from lancollab.client.branding import banner_lines
 
 
@@ -169,6 +169,49 @@ def chat_sender(message):
     return match.group(1) if match else None
 
 
+_USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
+
+def valid_username(name):
+    """Only names the command parser can address unambiguously become prefills."""
+    return isinstance(name, str) and _USERNAME.fullmatch(name) is not None
+
+def prefill_text(action, name):
+    """Composer template for a clicked person; the user still confirms with Enter."""
+    return f"/{action} {name} "
+
+
+def choose_file(*, folder=False):
+    """Native file/folder dialog; an empty result means cancellation."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as error:
+        raise RuntimeError("Picker needs tkinter; use /accept ID or /send USER PATH instead.") from error
+    root = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        if folder:
+            return filedialog.askdirectory(parent=root, title="Choose where to save the file", mustexist=True)
+        return filedialog.askopenfilename(parent=root, title="Choose a file to send")
+    except tk.TclError as error:
+        raise RuntimeError("Cannot open picker; use /accept ID or /send USER PATH instead.") from error
+    finally:
+        if root is not None:
+            root.destroy()
+
+def composer_guidance(text):
+    """Hint for a bare /msg or /send template, including path guidance."""
+    head, _, rest = text.partition(" ")
+    argument = rest.strip()
+    if argument and " " not in argument:
+        if head == "/send":
+            return "File: type or paste a path (quote spaces), then Enter"
+        if head == "/msg":
+            return "Message: type your private message, then Enter"
+    return None
+
 SENDER_STYLES = ("sender_a", "sender_b", "sender_c", "sender_d", "sender_e")
 
 
@@ -323,12 +366,17 @@ def run_tui(session):
         styles = _palette(curses)
         window.timeout(100)
         window.keypad(True)
+        mouse_mask = (
+            getattr(curses, "BUTTON1_CLICKED", 0)
+            | getattr(curses, "BUTTON3_CLICKED", 0)
+            | getattr(curses, "BUTTON3_PRESSED", 0)
+            | getattr(curses, "BUTTON4_PRESSED", 0)
+            | getattr(curses, "BUTTON5_PRESSED", 0)
+        )
         try:
-            curses.mousemask(
-                curses.BUTTON4_PRESSED | curses.BUTTON5_PRESSED | curses.BUTTON1_CLICKED
-            )
+            curses.mousemask(mouse_mask)
         except curses.error:
-            pass  # Mouse-less terminals keep keyboard scrolling.
+            pass  # Mouse-less terminals keep keyboard navigation.
         try:
             curses.curs_set(1)
         except curses.error:
@@ -342,6 +390,9 @@ def run_tui(session):
         history_wrapped_width = None
         history_rows = []
         sidebar_enabled = True
+        # Transient context menu: kind, target, index, anchor. Rebuilt and
+        # validated on every frame so resizes and disappearing people are safe.
+        menu = None
         clear_generation = session.clear_generation
         next_pending_refresh = monotonic() + 10
         probe_worker = None
@@ -380,6 +431,87 @@ def run_tui(session):
                 window.addstr(y, x, fit_cells(text, width), styles.get(style, 0))
             except curses.error:
                 pass  # Resizes and the bottom-right cell can interrupt a draw.
+
+        def run_command(line):
+            """Dispatch through the same backend as typed commands; False means quit."""
+            try:
+                if not session.execute(parse_command(line)):
+                    return False
+            except ValueError as error:
+                add(str(error), "error")
+            return True
+
+        def native_picker(*, folder=False):
+            """Release the terminal for the desktop dialog, then restore input."""
+            curses.def_prog_mode()
+            curses.endwin()
+            try:
+                return choose_file(folder=folder)
+            finally:
+                curses.reset_prog_mode()
+                window.keypad(True)
+                window.timeout(100)
+                try:
+                    # Force re-enabling reporting even if curses cached the mask.
+                    curses.mousemask(0)
+                    curses.mousemask(mouse_mask)
+                    curses.curs_set(1)
+                except curses.error:
+                    pass
+                window.clearok(True)
+                window.refresh()
+
+        def perform(action):
+            """Apply a menu/button action built from the current frame."""
+            nonlocal menu, scroll, dismissed
+            if action[0] == "prefill":
+                # Selecting a person loads a command template; sending still
+                # needs Enter, so a click can never fire a message or file.
+                composer.replace(action[1])
+                menu, dismissed, scroll = None, False, 0
+                return True
+            if action[0] == "command":
+                menu = None
+                return run_command(action[1])
+            if action[0] == "accept_file":
+                menu = None
+                try:
+                    directory = native_picker(folder=True)
+                    if directory:
+                        session.client.files.accept(action[1], directory=directory)
+                except (RuntimeError, ValueError, OSError) as error:
+                    add(str(error), "error")
+                finally:
+                    window.clearok(True)
+                return True
+            if action[0] == "send_file":
+                menu = None
+                try:
+                    path = native_picker()
+                    if path:
+                        with session.client._lock:
+                            online = action[1] in session.client.online_users
+                        if not online:
+                            add("Recipient went offline; no file sent.", "error")
+                        else:
+                            session.execute(Command("/send", (action[1], path)))
+                except (RuntimeError, OSError) as error:
+                    add(str(error), "error")
+                finally:
+                    window.clearok(True)
+                return True
+            if action[0] == "open_user":
+                menu = ["user", action[1], 0, None, None]
+            elif action[0] == "open_pending":
+                menu = ["pending", action[1], 0, None, None]
+            return True
+
+        def hit_at(x, y):
+            """Topmost drawn hitbox; rebuilt every frame, so resize-safe."""
+            for row, left, right, action in reversed(hits):
+                if row == y and left <= x < right:
+                    return action
+            return None
 
         while session.client.state is not ClientState.CLOSED:
             if monotonic() >= next_pending_refresh:
@@ -551,7 +683,7 @@ def run_tui(session):
             client = session.client
             with client._lock:
                 username, role = client.username, client.role
-                users = sorted(client.online_users)
+                users = sorted(name for name in client.online_users if name != username)
                 pending = [item["username"] for item in client.pending_users]
                 reply_target = client.reply_target
                 tcp_rtt = client.last_tcp_rtt
@@ -576,7 +708,7 @@ def run_tui(session):
             popup_height = min(6, len(options), max(0, height - 12))
             input_y = height - 3
             popup_y = input_y - popup_height - 1
-            dock_height = min(3, len(transfers), max(0, height - popup_height - 14))
+            dock_height = min(3, len(transfers), max(0, height - popup_height - 10))
             dock_y = popup_y - dock_height
             capacity = max(1, dock_y - 5)
             write(0, 2, "LAN COLLAB", 12, "accent")
@@ -608,7 +740,7 @@ def run_tui(session):
                 ("dm", "3:Direct"),
                 ("files", "4:Files"),
             )
-            tab_hits = []
+            hits = []
             tab_x = 2
             for category, label in tabs:
                 write(
@@ -618,7 +750,7 @@ def run_tui(session):
                     len(label),
                     "selected" if session.display_filter == category else "muted",
                 )
-                tab_hits.append((tab_x, tab_x + len(label), category))
+                hits.append((3, tab_x, tab_x + len(label), ("filter", category)))
                 tab_x += len(label) + 2
             rows = []
             for stamp, message, kind in messages:
@@ -639,40 +771,77 @@ def run_tui(session):
                 if pre:
                     write(y, 2, pre, chat_width, "muted")
                 write(y, 2 + cell_width(pre), line, chat_width - cell_width(pre), style)
-            user_hits = {}
+            # Offers sort first so active transfers cannot push Approve/Accept
+            # buttons out of the visible dock.
+            dock_rows = sorted(transfers, key=lambda row: row["status"] != "offer")
             if sidebar:
                 x = width - sidebar
                 for y in range(3, dock_y):
                     write(y, x - 1, "│", 1)
-                sidebar_rows = [("ONLINE", "accent", None)]
+                sidebar_rows = [("ONLINE", "accent", None, None)]
                 sidebar_rows += [
-                    ("● " + name, "success", name) for name in users[: max(1, (dock_y - 8) // 2)]
+                    ("● " + name, "success", "user", name)
+                    for name in users[: max(1, (dock_y - 12) // 2)]
                 ]
-                sidebar_rows += [("TRANSFERS", "accent", None)]
-                sidebar_rows += [
-                    (f"{row['direction']} {row['id'][:8]} {row['status']}", "file", None)
-                    for row in transfers[:2]
-                ] or [("No active transfers", "muted", None)]
+                sidebar_rows += [("ACTIVE TRANSFERS", "accent", None, None)]
+                for row in dock_rows[:2]:
+                    sidebar_rows.append((f"{row['peer']}: {row['name']}", "file", None, None))
+                    if row["status"] == "offer":
+                        sidebar_rows.append(("[Accept] [Reject]", "file", "file_buttons", row["id"]))
+                    else:
+                        sidebar_rows.append((f"{row['status']} {progress_bar(row, 6)}", "file", None, None))
+                if not dock_rows:
+                    sidebar_rows.append(("No active transfers", "muted", None, None))
                 if role == "admin":
-                    sidebar_rows += [(f"PENDING ({len(pending)})", "admin", None)]
-                    sidebar_rows += [(name, "admin", None) for name in pending]
-                for y, (label, style, name) in enumerate(sidebar_rows[: max(0, dock_y - 3)], 3):
-                    write(y, x + 1, safe_display(label), sidebar - 3, style)
-                    if name is not None:
-                        user_hits[y] = name
-            for y, row in enumerate(transfers[:dock_height], dock_y):
-                label = (
-                    f"INCOMING /accept {row['id'][:8]} · {row['peer']}: {fit_cells(row['name'], 16)}"
-                    if row["status"] == "offer"
-                    else f"{row['direction']} {row['id'][:8]} {fit_cells(row['name'], 12)} {progress_bar(row, 10)}"
-                )
-                write(
-                    y,
-                    2,
-                    safe_display(label),
-                    width - 4,
-                    "selected" if row["status"] == "offer" else "file",
-                )
+                    sidebar_rows += [(f"PENDING ({len(pending)})", "admin", None, None)]
+                    for name in pending:
+                        sidebar_rows.append((name, "admin", "pending", name))
+                        if sidebar - 3 >= 19:
+                            sidebar_rows.append(("[Approve] [Reject]", "admin", "buttons", name))
+                for y, (label, style, kind, name) in enumerate(
+                    sidebar_rows[: max(0, dock_y - 3)], 3
+                ):
+                    if kind == "file_buttons":
+                        write(y, x + 1, "[Accept]", 8, "success")
+                        write(y, x + 10, "[Reject]", 8, "error")
+                        hits.append((y, x + 1, x + 9, ("accept_file", name)))
+                        hits.append((y, x + 10, x + 18, ("command", f"/reject {name}")))
+                        continue
+                    if kind == "buttons" and valid_username(name):
+                        write(y, x + 1, "[Approve]", sidebar - 3, "success")
+                        reject_x = x + 1 + 9 + 1
+                        write(y, reject_x, "[Reject]", width - reject_x - 2, "error")
+                        hits.append((y, x + 1, x + 10, ("command", f"/approve {name}")))
+                        hits.append(
+                            (y, reject_x, reject_x + 8, ("command", f"/reject-user {name}"))
+                        )
+                        continue
+                    text = safe_display(label)
+                    visible_label = fit_cells(text, sidebar - 3)
+                    write(y, x + 1, visible_label, sidebar - 3, style)
+                    if name is not None and valid_username(name):
+                        hits.append(
+                            (y, x + 1, x + 1 + cell_width(visible_label), ("person", kind, name))
+                        )
+            # The dock always keeps rows for offers: Accept/Reject stay
+            # clickable even when the sidebar has more people than fits.
+            for y, row in enumerate(dock_rows[:dock_height], dock_y):
+                if row["status"] == "offer" and not sidebar:
+                    buttons = "[Accept] [Reject]"
+                    room = max(1, width - 4 - cell_width(buttons) - 1)
+                    label = fit_cells(
+                        f"INCOMING {safe_display(row['peer'])}: {safe_display(row['name'])}", room
+                    )
+                    accept_x = 2 + cell_width(label) + 1
+                    reject_x = accept_x + cell_width("[Accept]") + 1
+                    write(y, 2, label, width - 4, "muted")
+                    write(y, accept_x, "[Accept]", width - accept_x - 2, "success")
+                    write(y, reject_x, "[Reject]", width - reject_x - 2, "error")
+                    hits.append((y, accept_x, accept_x + 8, ("accept_file", row["id"])))
+                    hits.append((y, reject_x, reject_x + 8, ("command", f"/reject {row['id']}")))
+                else:
+                    label = f"{row['direction']} {row['id'][:8]} {fit_cells(row['name'], 12)} {progress_bar(row, 10)}"
+                    write(y, 2, safe_display(label), width - 4, "file")
             if popup_height:
                 start = max(0, selection - popup_height + 1)
                 for row, index in enumerate(range(start, min(len(options), start + popup_height))):
@@ -686,6 +855,14 @@ def run_tui(session):
                         label,
                         width - 4,
                         "selected" if index == selection else "muted",
+                    )
+                    hits.append(
+                        (
+                            popup_y + row,
+                            2,
+                            min(width - 2, 2 + cell_width(label)),
+                            ("suggestion", index),
+                        )
                     )
             write(input_y - 1, 2, "─" * (width - 4), width - 4)
             write(input_y, 2, "› ", 2, "accent")
@@ -701,12 +878,123 @@ def run_tui(session):
                 width - 6,
                 "accent" if visible else "muted",
             )
+            guidance = composer_guidance(composer.text)
+            ghost = (
+                "path/to/file"
+                if guidance and guidance.startswith("File:")
+                else "message text"
+                if guidance
+                else ""
+            )
+            if ghost and composer.cursor == len(composer.text):
+                write(
+                    input_y,
+                    4 + cell_width(visible),
+                    ghost,
+                    max(0, width - 5 - cell_width(visible)),
+                    "muted",
+                )
+            entries = []
+            if menu is not None:
+                kind, target = menu[0], menu[1]
+                if kind == "people":
+                    entries = [
+                        (f"● {name}", ("open_user", name))
+                        for name in users
+                        if valid_username(name)
+                    ]
+                    if role == "admin":
+                        entries += [
+                            (f"pending {name}", ("open_pending", name))
+                            for name in pending
+                            if valid_username(name)
+                        ]
+                elif kind == "user" and target in users and valid_username(target):
+                    entries = [
+                        ("Direct message", ("prefill", prefill_text("msg", target))),
+                        ("Send file", ("send_file", target)),
+                    ]
+                elif (
+                    kind == "pending"
+                    and role == "admin"
+                    and target in pending
+                    and valid_username(target)
+                ):
+                    entries = [
+                        ("Approve", ("command", f"/approve {target}")),
+                        ("Reject", ("command", f"/reject-user {target}")),
+                    ]
+                if not entries:
+                    menu = None
+            if menu is not None:
+                menu[2] = min(menu[2], len(entries) - 1)
+                title = (
+                    "People"
+                    if menu[0] == "people"
+                    else f"Pending: {menu[1]}"
+                    if menu[0] == "pending"
+                    else menu[1]
+                )
+                menu_visible = min(len(entries), max(1, input_y - 6))
+                menu_start = min(
+                    max(0, menu[2] - menu_visible + 1),
+                    max(0, len(entries) - menu_visible),
+                )
+                if len(entries) > menu_visible:
+                    title = f"{title} {menu[2] + 1}/{len(entries)}"
+                menu_width = min(
+                    width - 4,
+                    max(
+                        [cell_width(title)]
+                        + [cell_width("  " + label) for label, _ in entries]
+                    )
+                    + 4,
+                )
+                menu_height = menu_visible + 1
+                anchor_x, anchor_y = menu[3], menu[4]
+                if anchor_x is None:
+                    menu_x = max(2, (width - menu_width) // 2)
+                    menu_y = max(4, (height - menu_height) // 2)
+                else:
+                    menu_x = min(max(2, anchor_x), width - menu_width - 2)
+                    menu_y = min(max(4, anchor_y), input_y - 1 - menu_height)
+                if menu_width >= 12 and menu_y >= 4:
+                    write(menu_y, menu_x, " " * menu_width, menu_width, "muted")
+                    write(menu_y, menu_x + 2, title, menu_width - 4, "accent")
+                    for menu_offset, (label, _) in enumerate(
+                        entries[menu_start : menu_start + menu_visible]
+                    ):
+                        row = menu_y + 1 + menu_offset
+                        index = menu_start + menu_offset
+                        write(
+                            row,
+                            menu_x + 1,
+                            " " * (menu_width - 2),
+                            menu_width - 2,
+                            "muted",
+                        )
+                        write(
+                            row,
+                            menu_x + 2,
+                            ("› " if index == menu[2] else "  ") + label,
+                            menu_width - 4,
+                            "selected" if index == menu[2] else "muted",
+                        )
+                        hits.append(
+                            (row, menu_x, menu_x + menu_width, ("menu_item", index))
+                        )
+                else:
+                    menu = None
             hint = (
-                "↑↓ choose · Tab complete · Enter use · Esc dismiss"
+                "↑↓ choose · Enter select · Esc close"
+                if menu is not None
+                else "↑↓ choose · Tab complete · Enter use · Esc dismiss"
                 if options
-                else "Enter send · / cmds · ↑↓ history · wheel scroll · click user · F1 Help · Ctrl+C exit"
+                else guidance
+                if guidance
+                else "Enter send · / cmds · ↑↓ history · wheel scroll · right-click user · F7 people · F1 Help · Ctrl+C exit"
                 if sidebar
-                else "Enter send · / cmds · ↑↓ history · PgUp/wheel scroll · F1 Help · Ctrl+C exit"
+                else "Enter send · / cmds · ↑↓ history · PgUp/wheel scroll · F7 people · F1 Help · Ctrl+C exit"
             )
             write(height - 1, 2, hint, width - 4)
             try:
@@ -718,6 +1006,36 @@ def run_tui(session):
             before = composer.text
             if key in ("\x03", "\x04"):
                 return
+            if key == getattr(curses, "KEY_RESIZE", -999):
+                menu = None  # Hitboxes and positions are rebuilt from the new size.
+                continue
+            if menu is not None:
+                if key == curses.KEY_MOUSE:
+                    try:
+                        _, mouse_x, mouse_y, _, bstate = curses.getmouse()
+                    except curses.error:
+                        pass
+                    else:
+                        if bstate & getattr(curses, "BUTTON1_CLICKED", 0):
+                            hit = hit_at(mouse_x, mouse_y)
+                            if (
+                                hit
+                                and hit[0] == "menu_item"
+                                and 0 <= hit[1] < len(entries)
+                            ):
+                                if not perform(entries[hit[1]][1]):
+                                    return
+                            else:
+                                menu = None
+                elif key in ("\x1b", "\x03"):
+                    menu = None
+                elif key in (curses.KEY_UP, curses.KEY_DOWN):
+                    step = -1 if key == curses.KEY_UP else 1
+                    menu[2] = (menu[2] + step) % max(1, len(entries))
+                elif key in ("\n", "\r", curses.KEY_ENTER) and entries:
+                    if not perform(entries[menu[2]][1]):
+                        return
+                continue
             if key == "\x1b":
                 dismissed = True
                 window.timeout(30)
@@ -747,7 +1065,15 @@ def run_tui(session):
             elif key == getattr(curses, "KEY_F5", -5):
                 session.execute(parse_command("/transfers"))
             elif key == getattr(curses, "KEY_F6", -6):
-                session.execute(parse_command("/accept"))
+                offers = [row for row in transfers if row["status"] == "offer"]
+                if not run_command(f"/accept {offers[0]['id']}" if offers else "/accept"):
+                    return
+            elif key == getattr(curses, "KEY_F7", -7):
+                # Keyboard route to the same menu a right-click opens.
+                if users or (role == "admin" and pending):
+                    menu = ["people", None, 0, None, None]
+                else:
+                    add("No one online or awaiting approval yet.", "muted")
             elif key == "\x0b":
                 composer.replace(composer.text[: composer.cursor])
             elif key == "\x0c":
@@ -817,24 +1143,58 @@ def run_tui(session):
                 except curses.error:
                     pass
                 else:
-                    if bstate & curses.BUTTON4_PRESSED:
+                    right = bool(
+                        bstate
+                        & (
+                            getattr(curses, "BUTTON3_CLICKED", 0)
+                            | getattr(curses, "BUTTON3_PRESSED", 0)
+                        )
+                    )
+                    if bstate & getattr(curses, "BUTTON4_PRESSED", 0):
                         scroll += 3  # Wheel up: older messages.
-                    elif bstate & curses.BUTTON5_PRESSED:
+                    elif bstate & getattr(curses, "BUTTON5_PRESSED", 0):
                         scroll = max(0, scroll - 3)  # Wheel down: back to live.
-                    elif bstate & curses.BUTTON1_CLICKED:
-                        if mouse_y == 3 and mouse_x < width - sidebar:
-                            for left, right, category in tab_hits:
-                                if left <= mouse_x < right:
-                                    session.display_filter = category
-                                    scroll = 0
-                        elif sidebar and mouse_x >= width - sidebar:
-                            if mouse_y in user_hits:
-                                composer.replace(f"/msg {user_hits[mouse_y]} ")
-                        elif popup_height and popup_y <= mouse_y < popup_y + popup_height:
-                            start = max(0, selection - popup_height + 1)
-                            index = start + (mouse_y - popup_y)
-                            if index < len(options):
-                                composer.replace(options[index].value + " ")
+                    elif right:
+                        hit = hit_at(mouse_x, mouse_y)
+                        if hit and hit[0] == "person":
+                            anchor_x = (
+                                width - sidebar
+                                if sidebar and mouse_x >= width - sidebar
+                                else mouse_x
+                            )
+                            menu = [hit[1], hit[2], 0, anchor_x, mouse_y]
+                        else:
+                            menu = None
+                    elif bstate & getattr(curses, "BUTTON1_CLICKED", 0):
+                        hit = hit_at(mouse_x, mouse_y)
+                        if menu is not None:
+                            if (
+                                hit
+                                and hit[0] == "menu_item"
+                                and 0 <= hit[1] < len(entries)
+                            ):
+                                if not perform(entries[hit[1]][1]):
+                                    return
+                            else:
+                                menu = None
+                        elif hit:
+                            if hit[0] == "person":
+                                # Left click is the fallback opener when the
+                                # terminal cannot report right-clicks.
+                                anchor_x = (
+                                    width - sidebar
+                                    if sidebar and mouse_x >= width - sidebar
+                                    else mouse_x
+                                )
+                                menu = [hit[1], hit[2], 0, anchor_x, mouse_y]
+                            elif hit[0] == "filter":
+                                session.display_filter = hit[1]
+                                scroll = 0
+                            elif hit[0] in {"command", "accept_file"}:
+                                if not perform(hit):
+                                    return
+                            elif hit[0] == "suggestion" and 0 <= hit[1] < len(options):
+                                composer.replace(options[hit[1]].value + " ")
             elif isinstance(key, str) and key.isprintable():
                 composer.insert(key)
             if composer.text != before:

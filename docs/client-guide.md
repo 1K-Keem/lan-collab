@@ -35,14 +35,34 @@ python -m lancollab.client --discover
 python -m lancollab.client --host SERVER_IP
 ```
 
-On Windows Python without curses, the default CLI supports the same features. Choose
-Login or Sign up in the initial prompt. A mistyped confirmation at signup just asks
-again; after a successful signup the client logs in with the same credentials, so a
-pending account stops with an approval notice instead of requiring a restart. New
-accounts are pending until an admin logs in and uses `/pending` and `/approve USER`
-(or the server runs `--auto-approve`). `/reject-user USER` rejects a pending request.
+On Windows, the full-screen launcher requires curses support:
+
+```powershell
+python -m pip install windows-curses
+.\lan-collab.bat --host 127.0.0.1
+# Plain CLI without curses (the launcher always enables the TUI):
+python -m lancollab.client --host 127.0.0.1
+```
+
+Both interfaces provide the same network features. Choose
+Login or Sign up in the initial prompt. Invalid usernames, short signup passwords and
+mismatched password confirmation ask for correction before connecting. A successful
+signup logs in automatically with the same credentials. Wrong login credentials,
+rejected registration and accounts waiting for approval return to the login/signup
+menu without restarting the app. After an admin approves your account, choose Login
+again. EOF or Ctrl+C exits the prompt. New accounts require admin approval via
+`/pending` and `/approve USER` unless the server runs `--auto-approve`.
+`/reject-user USER` rejects a pending request.
 The password is sent inside verified TLS and stored as a salted scrypt hash. Admin review
 shows account names and creation times, not passwords.
+
+The TUI starts with a full-screen login/signup form. Click the tabs or press **F2**
+to switch modes. **Tab / Shift+Tab / Up / Down** moves focus; Enter advances to the
+next field and submits from the button. Passwords are masked. Click the Remember me
+checkbox or focus it and press Space. **Esc / Ctrl+C** exits. Validation and rejected
+login messages appear inside the form; the username stays filled but passwords are
+cleared after a server rejection. The form needs at least **48 columns × 22 rows**;
+resize to continue. The plain CLI retains line-oriented prompts.
 
 Remember Me stores a revocable token on this machine. Every launch still performs a new
 TCP/TLS handshake and server authentication. `/quit` preserves the token; `/logout`
@@ -81,7 +101,23 @@ or ANSI color sequences.
 - Up/Down recall submitted input when the suggestion menu is closed; Esc dismisses the menu.
 - PageUp/PageDown or the mouse wheel scroll the conversation. While scrolled up, the
   header shows how many new messages arrived (`Scrollback · 3 new ↓`).
-- Click a name in the online-users sidebar to start a private message to them.
+- Right-click (or left-click) another online user to open **Direct message / Send file**.
+  Your own account is hidden from the online interaction list and People menu.
+  Choose with a click or Up/Down + Enter; Esc closes the menu. Direct message fills
+  the composer; type the message and Enter. Send file opens the native file dialog:
+  selecting a file sends an offer to that user, while Cancel sends nothing. The
+  receiver still has to accept. File dialog errors leave chat usable; `/send USER PATH`
+  remains available when tkinter or a desktop display is unavailable.
+  Native dialogs temporarily release curses; closing, cancelling or failing a dialog
+  restores terminal keyboard/mouse input and redraws the workspace.
+  **F7** opens the People menu when the terminal captures right-clicks or no mouse is available.
+- Incoming offers show **Accept / Reject** in the right **ACTIVE TRANSFERS** panel.
+  Accept opens a folder picker: choose a directory to accept and save this file there;
+  Cancel leaves the offer pending. Each file can use a different folder without changing
+  the default. With the sidebar hidden or a narrow terminal, the same buttons appear in
+  the bottom dock. `/accept ID` and F6 retain the default download folder.
+  Admin pending accounts show **Approve / Reject** controls; they still require admin
+  permission. Slash commands remain available on narrow terminals.
 - Chat lines are colored by sender (your own messages are bold); timestamps are dimmed.
 - `F1` or `/help` opens the help screen — a separate full-screen view, not lines in
   the chat. Scroll it with `↑↓` / `PgUp` / `PgDn`; `Ctrl+C` or `Esc` returns to the
@@ -90,7 +126,9 @@ or ANSI color sequences.
 The layout adapts when resized; very small terminals show a resize hint. The normal CLI
 remains available without `--tui`.
 
-Files are saved in `downloads/` (change with `--downloads-dir`). The receiver validates
+Files accepted via `/accept` or F6 are saved in `downloads/` (change with
+`--downloads-dir`); the Accept button uses the folder chosen in its dialog. `/files`
+lists the default downloads directory, not arbitrary chosen folders. The receiver validates
 size, order and SHA-256 before committing a unique destination name. The sender reports
 success only after the receiver's final success result. Offline recipients cannot receive
 files (both sides must be online for a transfer); private messages to an offline user are
