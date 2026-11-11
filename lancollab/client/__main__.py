@@ -105,29 +105,41 @@ def main(argv: list[str] | None = None) -> int:
             # honor the server's auth deadline.
             choice, username, password = prompt_welcome()
             remember_me = choice != "signup" and _ask_remember_me()
-            transport = SocketTransport.connect_verified(
-                host=endpoint.host,
-                port=endpoint.tcp_port,
-                server_hostname=args.server_name,
-                trusted_cert=trusted_cert,
-            )
-            shell = ConsoleSession(
-                transport,
-                downloads_dir=args.downloads_dir,
-                udp=discovery,
-                server_host=endpoint.host,
-                token_store=store,
-                history=history,
-                history_server=history_server,
-            )
+
+            def connect() -> ConsoleSession:
+                return ConsoleSession(
+                    SocketTransport.connect_verified(
+                        host=endpoint.host,
+                        port=endpoint.tcp_port,
+                        server_hostname=args.server_name,
+                        trusted_cert=trusted_cert,
+                    ),
+                    downloads_dir=args.downloads_dir,
+                    udp=discovery,
+                    server_host=endpoint.host,
+                    token_store=store,
+                    history=history,
+                    history_server=history_server,
+                )
+
+            shell = connect()
             try:
                 if choice == "signup":
                     shell.register(username, password)
+                    shell.close()
+                    # The server closes the connection after REGISTER_RESULT.
+                    print("Registration finished; logging in.")
+                    shell = connect()
+                try:
+                    shell.authenticate(username, password, remember_me=remember_me)
+                except AuthenticationError as error:
+                    if choice != "signup" or str(error) != "ACCOUNT_PENDING":
+                        raise
                     print(
-                        "Registration finished. See account status above; run the client again to log in."
+                        "Account pending admin approval; log in again after an admin approves it.",
+                        file=sys.stderr,
                     )
                     return 0
-                shell.authenticate(username, password, remember_me=remember_me)
                 _run_interface(shell, args.tui)
             finally:
                 shell.close()

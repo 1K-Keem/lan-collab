@@ -36,8 +36,11 @@ python -m lancollab.client --host SERVER_IP
 ```
 
 On Windows Python without curses, the default CLI supports the same features. Choose
-Login or Sign up in the initial prompt. New accounts are pending until an admin logs in
-and uses `/pending` and `/approve USER`. `/reject-user USER` rejects a pending request.
+Login or Sign up in the initial prompt. A mistyped confirmation at signup just asks
+again; after a successful signup the client logs in with the same credentials, so a
+pending account stops with an approval notice instead of requiring a restart. New
+accounts are pending until an admin logs in and uses `/pending` and `/approve USER`
+(or the server runs `--auto-approve`). `/reject-user USER` rejects a pending request.
 The password is sent inside verified TLS and stored as a salted scrypt hash. Admin review
 shows account names and creation times, not passwords.
 

@@ -578,7 +578,9 @@ def prompt_welcome() -> tuple[str, str, str]:
     username = input("Username: ").strip()
     password = getpass("Password: ")
     if choice == "signup":
-        confirm = getpass("Confirm password: ")
-        if password != confirm:
-            raise ValueError("Passwords do not match")
+        while True:
+            confirm = getpass("Confirm password: ")
+            if password == confirm:
+                break
+            print("Passwords do not match. Please try again.")
     return choice, username, password
