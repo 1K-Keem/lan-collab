@@ -95,7 +95,8 @@ or ANSI color sequences.
 - Use Up/Down to choose a suggestion and Tab to complete it. Enter completes a partial
   suggestion; Enter on a complete command executes it. Clicking a suggestion completes it.
 - `/msg`, `/send`, and `/history` also suggest online usernames for their first argument.
-- Plain text without `/` sends a global message to everyone online.
+- Plain text sends global chat outside Direct. On a Direct conversation page, plain
+  text goes only to the selected peer; the Direct inbox never sends to global chat.
 - Left/Right, Home/End, Backspace and Delete edit the input. Ctrl+U clears it, Ctrl+W
   deletes the word before the cursor.
 - Up/Down recall submitted input when the suggestion menu is closed; Esc dismisses the menu.
@@ -103,8 +104,8 @@ or ANSI color sequences.
   header shows how many new messages arrived (`Scrollback · 3 new ↓`).
 - Right-click (or left-click) another online user to open **Direct message / Send file**.
   Your own account is hidden from the online interaction list and People menu.
-  Choose with a click or Up/Down + Enter; Esc closes the menu. Direct message fills
-  the composer; type the message and Enter. Send file opens the native file dialog:
+  Choose with a click or Up/Down + Enter; Esc closes the menu. Direct message opens
+  that user's conversation page. Send file opens the native file dialog:
   selecting a file sends an offer to that user, while Cancel sends nothing. The
   receiver still has to accept. File dialog errors leave chat usable; `/send USER PATH`
   remains available when tkinter or a desktop display is unavailable.
@@ -125,6 +126,22 @@ or ANSI color sequences.
 
 The layout adapts when resized; very small terminals show a resize hint. The normal CLI
 remains available without `--tui`.
+
+### Direct conversations
+
+Select **3:Direct** to browse people you have exchanged private messages with, most
+recent first. Click a conversation or select it with Up/Down and Enter to open its
+message page. Type and Enter to send directly to that peer; no `/msg` prefix is needed.
+Use the Back control or Esc to return to the conversation list. To start with someone
+new, choose Direct message from their online-user menu (F7 is the keyboard route).
+
+The page combines private messages across your saved login sessions, including
+messages from offline peers; it never mixes global chat into a conversation. History
+is scoped to the logged-in account and trusted server. With `--no-history`, only this
+session's private messages are available. Slash commands remain usable; switching away
+from Direct restores the normal global composer. Offline private messages are queued
+by the server for delivery when the recipient next logs in.
+
 
 Files accepted via `/accept` or F6 are saved in `downloads/` (change with
 `--downloads-dir`); the Accept button uses the folder chosen in its dialog. `/files`
@@ -220,5 +237,6 @@ trusted repository; automatic generation does not distribute trust across the ne
 
 `/reply TEXT` uses the last DM peer shown in the header; `/msg USER TEXT` explicitly
 chooses a recipient. The `/r` alias has been removed. `/help` includes a display-filter
-guide: All includes every notice, Global shows group chat, Direct shows private chat,
-and Files shows transfer notices. Filters affect visibility only, not delivery or recipients.
+guide: All includes every notice, Global shows group chat, Direct opens private
+conversations, and Files shows transfer notices. A selected Direct conversation changes
+the plain-text recipient; the other tabs use global chat.

@@ -1,4 +1,4 @@
-"""Headless event-loop proof for TUI menus, click hitboxes and prefills.
+"""Headless event-loop proof for TUI menus, click hitboxes and Direct pages.
 
 The runtime Python here cannot import the native _curses extension, so a
 fake curses module drives the real run_tui loop: frames are rendered by the
@@ -40,17 +40,29 @@ class FakeClient:
         self.pending_users = [{"username": name} for name in pending]
         self.reply_target = None
         self.last_tcp_rtt = None
+        self.direct_revision = 0
         self.files = FakeFiles(transfers)
 
 class FakeSession:
-    def __init__(self, **client):
+    def __init__(self, *, conversations=(), transcripts=None, **client):
         self.output = lambda _text: None
         self.client = FakeClient(**client)
         self.clear_generation = 0
         self.display_filter = "all"
         self.udp = None
+        self.conversations = list(conversations)
+        self.transcripts = dict(transcripts or {})
         self.executed = []
         self.closed = False
+
+    def direct_conversations(self):
+        return list(self.conversations)
+
+    def direct_transcript(self, peer):
+        rows = self.transcripts.get(peer, ())
+        if isinstance(rows, Exception):
+            raise rows
+        return list(rows)
 
     def execute(self, command):
         self.executed.append(command)
@@ -212,6 +224,10 @@ def expect(condition, then):
 
     return event
 
+def timeout(window):
+    """Simulate curses reporting no follow-up byte after a lone Esc."""
+    raise window.module.error("timeout")
+
 def run(session, events, rows=24, columns=100):
     window = FakeWindow(rows, columns, events)
     module = fake_curses(window)
@@ -291,7 +307,11 @@ class ContextMenuEventLoopTests(unittest.TestCase):
                 expect(lambda w: "Direct message" in w.all_text(), "\x1b"),
                 click("[Accept]"), click("bob"),
                 expect(lambda w: "Direct message" in w.all_text(), click("Direct message")),
-                expect(lambda w: "/msg bob" in w.input_text(), "\x03"),
+                expect(
+                    lambda w: "[Back] ← bob" in w.all_text()
+                    and "Message bob privately" in w.input_text(),
+                    "\x03",
+                ),
             ])
             module = fake_curses(window)
             window.module = module
@@ -373,6 +393,184 @@ class ContextMenuEventLoopTests(unittest.TestCase):
         ]
         run(session, events)
         self.assertEqual(session.executed, [])
+
+class DirectTabEventLoopTests(unittest.TestCase):
+    STAMP = "2026-11-11T03:24:00+00:00"
+
+    def test_inbox_is_newest_first_and_keyboard_opens_selected_peer(self):
+        session = FakeSession(
+            conversations=[
+                ("bob", self.STAMP, "bob latest"),
+                ("carol", self.STAMP, "carol latest"),
+            ],
+            transcripts={"carol": [(self.STAMP, "received", "CHAT_PRIVATE", "carol", "hello")]},
+        )
+        events = [
+            click("3:Direct"),
+            expect(
+                lambda w: w.find("bob latest")[0] < w.find("carol latest")[0],
+                lambda w: w.module.KEY_DOWN,
+            ),
+            expect(lambda w: w.find("› carol")[0], lambda w: w.module.KEY_ENTER),
+            expect(
+                lambda w: "[Back] ← carol" in w.all_text() and "hello" in w.all_text(),
+                "\x03",
+            ),
+        ]
+        run(session, events)
+        self.assertEqual(session.executed, [])
+
+    def test_plain_text_on_peer_page_is_private_and_never_global(self):
+        session = FakeSession(conversations=[("bob", self.STAMP, "old")])
+        events = [
+            click("3:Direct"),
+            expect(lambda w: "bob" in w.all_text(), click("bob")),
+            expect(lambda w: "[Back] ← bob" in w.all_text(), "hello bob"),
+            expect(
+                lambda w: "hello bob" in w.input_text(),
+                "\r",
+            ),
+            expect(
+                lambda w: session.executed
+                and session.executed[-1].name == "/msg"
+                and session.executed[-1].args == ("bob", "hello bob"),
+                "\x03",
+            ),
+        ]
+        run(session, events)
+        self.assertNotIn("/all", [command.name for command in session.executed])
+
+    def test_esc_and_back_button_return_to_inbox(self):
+        session = FakeSession(
+            conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []}
+        )
+        events = [
+            click("3:Direct"),
+            click("bob"),
+            expect(lambda w: "[Back] ← bob" in w.all_text(), "\x1b"),
+            timeout,
+            expect(lambda w: "Direct conversations" in w.all_text(), click("bob")),
+            expect(lambda w: "[Back] ← bob" in w.all_text(), click("[Back]")),
+            expect(lambda w: "Direct conversations" in w.all_text(), "\x03"),
+        ]
+        run(session, events)
+
+    def test_plain_text_in_inbox_never_falls_through_to_global(self):
+        session = FakeSession(conversations=[("bob", self.STAMP, "old")])
+        events = [
+            click("3:Direct"),
+            "hello",
+            "\r",
+            expect(
+                lambda w: "never sent globally" in w.all_text() and session.executed == [],
+                "\x03",
+            ),
+        ]
+        run(session, events)
+        self.assertNotIn("/all", [command.name for command in session.executed])
+
+    def test_switching_tabs_keeps_per_peer_drafts_and_never_leaks_them(self):
+        session = FakeSession(
+            conversations=[("bob", self.STAMP, "one"), ("carol", self.STAMP, "two")],
+            transcripts={"bob": [], "carol": []},
+        )
+        events = [
+            click("3:Direct"),
+            click("bob"),
+            expect(lambda w: "[Back] ← bob" in w.all_text(), "secret"),
+            expect(lambda w: "secret" in w.input_text(), "\x1b"),
+            timeout,
+            expect(
+                lambda w: "Direct conversations" in w.all_text()
+                and "secret" not in w.input_text(),
+                click("carol"),
+            ),
+            expect(
+                lambda w: "[Back] ← carol" in w.all_text()
+                and "secret" not in w.input_text(),
+                click("1:All"),
+            ),
+            expect(lambda w: "secret" not in w.input_text(), click("3:Direct")),
+            expect(
+                lambda w: "Direct conversations" in w.all_text()
+                and "secret" not in w.input_text(),
+                click("bob"),
+            ),
+            expect(
+                lambda w: "[Back] ← bob" in w.all_text() and "secret" in w.input_text(),
+                "\x03",
+            ),
+        ]
+        run(session, events)
+        self.assertEqual(session.executed, [])
+
+    def test_incoming_conversation_appears_live(self):
+        session = FakeSession(
+            conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []}
+        )
+
+        def arrives(window):
+            session.conversations.insert(0, ("carol", self.STAMP, "brand new"))
+            session.client.direct_revision += 1
+            return window.module.KEY_RESIZE
+
+        events = [
+            click("3:Direct"),
+            expect(lambda w: "bob" in w.all_text(), arrives),
+            expect(
+                lambda w: "carol" in w.all_text() and "brand new" in w.all_text(),
+                "\x03",
+            ),
+        ]
+        run(session, events)
+
+    def test_transcript_errors_are_visible_instead_of_silent(self):
+        session = FakeSession(
+            conversations=[("bob", self.STAMP, "one")],
+            transcripts={"bob": RuntimeError("Database unavailable")},
+        )
+        events = [
+            click("3:Direct"),
+            click("bob"),
+            expect(lambda w: "Database unavailable" in w.all_text(), "\x03"),
+        ]
+        run(session, events)
+
+    def test_slash_commands_still_dispatch_inside_peer_page(self):
+        session = FakeSession(
+            conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []}
+        )
+        events = [
+            click("3:Direct"),
+            click("bob"),
+            expect(lambda w: "[Back] ← bob" in w.all_text(), "/whoami"),
+            "\n",
+            expect(
+                lambda w: session.executed and session.executed[-1].name == "/whoami",
+                "\x03",
+            ),
+        ]
+        run(session, events)
+        self.assertNotIn("/all", [command.name for command in session.executed])
+
+    def test_transcript_scrolls_with_keyboard(self):
+        rows = [
+            (self.STAMP, "received", "CHAT_PRIVATE", "bob", f"msg{index}")
+            for index in range(8)
+        ]
+        session = FakeSession(
+            conversations=[("bob", self.STAMP, "msg7")], transcripts={"bob": rows}
+        )
+        events = [
+            click("3:Direct"),
+            click("bob"),
+            expect(lambda w: "msg7" in w.all_text(), lambda w: w.module.KEY_PPAGE),
+            expect(
+                lambda w: "msg2" in w.all_text() and "msg7" not in w.all_text(),
+                "\x03",
+            ),
+        ]
+        run(session, events, rows=12, columns=80)
 
 if __name__ == "__main__":
     unittest.main()

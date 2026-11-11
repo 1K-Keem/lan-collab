@@ -107,6 +107,34 @@ class HistoryStore:
                 (server, account, session),
             ).fetchall()
 
+    def direct_conversations(self, server, account):
+        """Private conversations only: (peer, last_timestamp, last_text).
+
+        Newest last message first, across every saved login session.
+        """
+        with self._lock:
+            return self._db.execute(
+                "SELECT m.peer, m.timestamp, m.text FROM messages m JOIN ("
+                "SELECT peer, MAX(id) AS id FROM messages "
+                "WHERE server=? AND account=? AND kind='CHAT_PRIVATE' AND peer<>? "
+                "GROUP BY peer) last ON m.id=last.id ORDER BY m.id DESC",
+                (server, account, account),
+            ).fetchall()
+
+    def direct_transcript(self, server, account, peer):
+        """Every private message with ``peer``, oldest first, all sessions.
+
+        Unlike :meth:`recent` this has no row limit; the complete conversation
+        is returned for the Direct tab's peer page.
+        """
+        with self._lock:
+            return self._db.execute(
+                "SELECT timestamp, direction, kind, peer, text FROM messages "
+                "WHERE server=? AND account=? AND kind='CHAT_PRIVATE' AND peer=? "
+                "ORDER BY id",
+                (server, account, peer),
+            ).fetchall()
+
     def append(self, server, account, direction, kind, peer, text, session=""):
         """Save one message. ``session`` is the login session that produced it.
 

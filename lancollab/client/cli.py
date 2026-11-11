@@ -107,14 +107,15 @@ _DETAILED_HELP += (
     "/clear — Clear the TUI display without deleting history.",
     "/filter [all|global|dm|files] — Select visible TUI message categories.",
     "F1 help; F2 sidebar; F3 cycle filter; F4 TCP+UDP probe; F5 transfers; F6 accept sole offer.",
-    "DISPLAY FILTER GUIDE — these tabs change what you see, not who receives your messages.",
+    "DISPLAY FILTER GUIDE — the Direct tab also changes who receives plain text.",
     "  1:All — All messages and notices. /filter all",
     "  2:Global — Group chat only. /filter global",
-    "  3:Direct — Private DMs only. /filter dm",
+    "  3:Direct — Inbox of everyone you have DMed; click a peer to read the full transcript. /filter dm",
     "  4:Files — File-transfer notices only. /filter files",
     "  Click a tab, use Alt+1/2/3/4, or press F3 to cycle filters.",
     "  Typing 1, 2, 3 or 4 alone is normal message input, not a filter shortcut.",
-    "  Filters do not delete history, stop incoming messages, or change your outgoing recipient.",
+    "  In a Direct conversation, plain text sends privately to the selected peer; Back or Esc returns to the inbox.",
+    "  Outside Direct, plain text still sends to everyone. Filters never delete history or stop incoming messages.",
     "NETWORK CHECKS — manual only: /ping for TCP, /net for UDP, or F4 for both.",
     "  The header shows the last measurement; background server keepalives remain silent.",
     "Ctrl+W deletes a word; Ctrl+K deletes to end; Ctrl+L clears display.",
@@ -276,6 +277,51 @@ class ConsoleSession:
     def history_message(row):
         timestamp, direction, kind, peer, text = row
         return safe_display(f"{local_time(timestamp)} [{kind}] {direction} {peer}: {text}")
+
+    def direct_conversations(self):
+        """Private conversations, newest last message first: (peer, timestamp, text).
+
+        Uses saved history when enabled; otherwise the current session's
+        in-memory DMs, so the Direct inbox works with --no-history.
+        """
+        username = self.client.username
+        if username is None:
+            return []
+        if self.client.history is not None:
+            return [
+                row
+                for row in self.client.history.direct_conversations(
+                    self.client.history_server, username
+                )
+                if row[0] != username
+            ]
+        latest = {}
+        for timestamp, _direction, kind, peer, text in self.client.direct_messages():
+            if kind == "CHAT_PRIVATE" and peer != username:
+                latest.pop(peer, None)
+                latest[peer] = (timestamp, text)
+        return [(peer, *last) for peer, last in reversed(list(latest.items()))]
+
+    def direct_transcript(self, peer):
+        """Full private transcript with ``peer`` across sessions, oldest first.
+
+        Rows are (timestamp, direction, kind, peer, text), same as
+        HistoryStore.transcript. No 50-message cap is applied.
+        """
+        username = self.client.username
+        if username is None or peer == username:
+            return []
+        if self.client.history is not None:
+            return list(
+                self.client.history.direct_transcript(
+                    self.client.history_server, username, peer
+                )
+            )
+        return [
+            row
+            for row in self.client.direct_messages()
+            if row[2] == "CHAT_PRIVATE" and row[3] == peer
+        ]
 
     def _drain(self) -> None:
         for notice in self.client.drain_notices():

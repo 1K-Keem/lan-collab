@@ -6,8 +6,9 @@ with real credentials until your connection bootstrap has verified TLS.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from threading import Event, RLock
+from threading import Event, Lock, RLock
 from time import monotonic
 from pathlib import Path
 from typing import Any
@@ -107,9 +108,17 @@ class CollabClient:
         self._notices: list[Notice] = []
         self._lock = RLock()
         self._send_lock = RLock()  # TV2's writer/transport must serialize frame bytes
+        # Current-session private DMs, kept even when history saving is off.
+        # The TUI polls direct_revision instead of rescanning history.
+        self._direct_lock = Lock()
+        self._direct_messages: list[tuple[str, str, str, str, str]] = []
+        self.direct_revision = 0
         self.files = TransferManager(self._send_file, downloads_dir, notify=self._file_notice)
 
     def _remember_chat(self, direction, kind, peer, text):
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        private = kind == "CHAT_PRIVATE"
+        saved = False
         if self.history is not None and self.username is not None:
             try:
                 self.history.append(
@@ -121,8 +130,21 @@ class CollabClient:
                     text,
                     session=self.session_id or "",
                 )
+                saved = True
             except (OSError, sqlite3.Error):
                 self._notices.append(Notice("error", "Could not save local chat history"))
+        if private:
+            # Revision is the refresh barrier: bump it only after the SQL
+            # commit above, or the TUI could cache a transcript without the row.
+            with self._direct_lock:
+                if not saved:
+                    self._direct_messages.append((timestamp, direction, kind, peer, text))
+                self.direct_revision += 1
+
+    def direct_messages(self):
+        """Current session's private DMs in order: (timestamp, direction, kind, peer, text)."""
+        with self._direct_lock:
+            return list(self._direct_messages)
 
     def ping(self) -> str:
         with self._lock:
@@ -665,5 +687,8 @@ class CollabClient:
             self.ping_rtts.clear()
             self._pending_chat.clear()
             self._file_requests.clear()
+            with self._direct_lock:
+                self._direct_messages.clear()
+                self.direct_revision += 1
         self.files.close()
         self.transport.close()

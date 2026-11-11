@@ -13,6 +13,7 @@ from unicodedata import combining, east_asian_width
 
 from lancollab.client.application import ClientState, safe_display
 from lancollab.client.cli import Command, _DETAILED_HELP, parse_command, progress_bar
+from lancollab.client.history import local_time
 from lancollab.client.branding import banner_lines
 
 
@@ -172,12 +173,8 @@ def chat_sender(message):
 _USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
 
 def valid_username(name):
-    """Only names the command parser can address unambiguously become prefills."""
+    """Only names the command parser can address unambiguously become clickable."""
     return isinstance(name, str) and _USERNAME.fullmatch(name) is not None
-
-def prefill_text(action, name):
-    """Composer template for a clicked person; the user still confirms with Enter."""
-    return f"/{action} {name} "
 
 
 def choose_file(*, folder=False):
@@ -383,6 +380,20 @@ def run_tui(session):
             pass
         composer = Composer()
         scroll, selection, dismissed = 0, 0, False
+        # Direct tab: None shows the inbox; a peer name shows that transcript.
+        # Reads are cached against client.direct_revision, never polled per frame.
+        direct_peer = None
+        direct_selected = direct_scroll = 0
+        direct_conversations = None
+        direct_conversations_revision = None
+        direct_page_rows = None
+        direct_page_revision = None
+        direct_page_error = None
+        direct_dirty = True
+        direct_flash = None  # (text, style, expires)
+        drafts = {}
+        context_key = "dm-inbox" if session.display_filter == "dm" else "main"
+        last_filter = session.display_filter
         show_help, help_scroll = False, 0
         history_records = None
         history_selected = history_scroll = 0
@@ -434,11 +445,15 @@ def run_tui(session):
 
         def run_command(line):
             """Dispatch through the same backend as typed commands; False means quit."""
+            nonlocal direct_flash
             try:
                 if not session.execute(parse_command(line)):
                     return False
             except ValueError as error:
-                add(str(error), "error")
+                message = safe_display(str(error))
+                add(message, "error")
+                if session.display_filter == "dm":
+                    direct_flash = (message, "error", monotonic() + 10)
             return True
 
         def native_picker(*, folder=False):
@@ -461,18 +476,122 @@ def run_tui(session):
                 window.clearok(True)
                 window.refresh()
 
+        def switch_context(key):
+            """Save the composer under the current context, then load another.
+
+            Direct drafts are keyed by peer, so text typed for one conversation
+            can never become a global message after a tab or peer switch.
+            """
+            nonlocal context_key, selection, dismissed
+            if key == context_key:
+                return
+            drafts[context_key] = composer.text
+            context_key = key
+            composer.replace(drafts.get(key, ""))
+            selection, dismissed = 0, False
+
+        def reset_direct_page():
+            nonlocal direct_peer, direct_page_rows, direct_page_revision
+            nonlocal direct_page_error, direct_scroll
+            direct_peer = None
+            direct_page_rows = None
+            direct_page_revision = None
+            direct_page_error = None
+            direct_scroll = 0
+
+        def open_direct(peer):
+            nonlocal direct_peer, direct_page_rows, direct_page_revision
+            nonlocal direct_page_error, direct_scroll, last_filter, direct_dirty
+            nonlocal direct_flash
+            if not valid_username(peer):
+                return False
+            switch_context(f"direct:{peer}")
+            direct_peer = peer
+            direct_page_rows = None
+            direct_page_revision = None
+            direct_page_error = None
+            direct_scroll = 0
+            direct_dirty = True
+            direct_flash = None
+            session.display_filter = "dm"
+            last_filter = "dm"
+            return True
+
+        def back_to_inbox():
+            nonlocal direct_peer, direct_page_rows, direct_page_revision
+            nonlocal direct_page_error, direct_scroll
+            if direct_peer is None:
+                return
+            switch_context("dm-inbox")
+            direct_peer = None
+            direct_page_rows = None
+            direct_page_revision = None
+            direct_page_error = None
+            direct_scroll = 0
+
+        def refresh_direct():
+            """Re-read Direct data only when the backend revision or a notice changed it."""
+            nonlocal direct_conversations, direct_conversations_revision
+            nonlocal direct_page_rows, direct_page_revision, direct_page_error
+            nonlocal direct_selected, direct_dirty, direct_flash
+            revision = getattr(session.client, "direct_revision", None)
+            previous = None
+            if direct_conversations and 0 <= direct_selected < len(direct_conversations):
+                previous = direct_conversations[direct_selected][0]
+            if (
+                direct_dirty
+                or direct_conversations is None
+                or (revision is not None and revision != direct_conversations_revision)
+            ):
+                try:
+                    direct_conversations = [
+                        tuple(row) for row in session.direct_conversations()
+                    ]
+                except (ValueError, RuntimeError, OSError, sqlite3.Error):
+                    direct_conversations = direct_conversations or []
+                    direct_flash = (
+                        "Could not load conversations; showing the last known list.",
+                        "error",
+                        monotonic() + 10,
+                    )
+                direct_conversations_revision = revision
+                if previous is not None:
+                    peers = [row[0] for row in direct_conversations]
+                    if previous in peers:
+                        direct_selected = peers.index(previous)
+            if direct_conversations:
+                direct_selected = max(0, min(len(direct_conversations) - 1, direct_selected))
+            else:
+                direct_selected = 0
+            if direct_peer is not None and (
+                direct_dirty
+                or direct_page_rows is None
+                or (revision is not None and revision != direct_page_revision)
+            ):
+                try:
+                    direct_page_rows = [
+                        tuple(row) for row in session.direct_transcript(direct_peer)
+                    ]
+                    direct_page_error = None
+                except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
+                    direct_page_rows = None
+                    direct_page_error = safe_display(str(error))
+                direct_page_revision = revision
+            direct_dirty = False
+
         def perform(action):
             """Apply a menu/button action built from the current frame."""
             nonlocal menu, scroll, dismissed
-            if action[0] == "prefill":
-                # Selecting a person loads a command template; sending still
-                # needs Enter, so a click can never fire a message or file.
-                composer.replace(action[1])
-                menu, dismissed, scroll = None, False, 0
-                return True
             if action[0] == "command":
                 menu = None
                 return run_command(action[1])
+            if action[0] == "direct_peer":
+                menu = None
+                return open_direct(action[1])
+            if action[0] == "direct_back":
+                menu = None
+                back_to_inbox()
+                return True
             if action[0] == "accept_file":
                 menu = None
                 try:
@@ -541,10 +660,29 @@ def run_tui(session):
                         else "muted"
                     )
                     add(notice, kind, stamp=notice.startswith("["))
+                    if kind == "dm":
+                        direct_dirty = True
+                    if session.display_filter == "dm" and not notice.startswith("[presence]"):
+                        # Errors and send results stay visible even though the
+                        # Direct view replaces ordinary scrollback.
+                        direct_flash = (
+                            safe_display(notice),
+                            "error" if kind == "error" else kind,
+                            monotonic() + 10,
+                        )
                     if scroll:
                         unseen += 1
                 except Empty:
                     break
+            if session.display_filter != last_filter:
+                # Leaving Direct must never keep a peer route (or its draft)
+                # active; drafts are stored per peer and restored on return.
+                reset_direct_page()
+                last_filter = session.display_filter
+                menu = None
+                direct_flash = None
+                scroll = 0
+                switch_context("dm-inbox" if last_filter == "dm" else "main")
             if history_records is not None:
                 height, width = window.getmaxyx()
                 window.erase()
@@ -752,25 +890,111 @@ def run_tui(session):
                 )
                 hits.append((3, tab_x, tab_x + len(label), ("filter", category)))
                 tab_x += len(label) + 2
-            rows = []
-            for stamp, message, kind in messages:
-                if (
-                    session.display_filter != "all"
-                    and notice_category(message) != session.display_filter
+            if session.display_filter == "dm":
+                refresh_direct()
+                if direct_peer is None:
+                    write(4, 2, "Direct conversations · newest first", width - 4, "accent")
+                    body_start = 5
+                    if not direct_conversations:
+                        write(5, 2, "No private conversations yet. Open one from ONLINE.", width - 4)
+                    else:
+                        visible = max(1, capacity)
+                        start = max(
+                            0,
+                            min(
+                                direct_selected - visible + 1,
+                                len(direct_conversations) - visible,
+                            ),
+                        )
+                        for y, index in enumerate(
+                            range(start, min(len(direct_conversations), start + visible)),
+                            body_start,
+                        ):
+                            peer, timestamp, text = direct_conversations[index]
+                            label = (
+                                ("› " if index == direct_selected else "  ")
+                                + safe_display(peer)
+                                + "  "
+                                + local_time(timestamp)
+                                + "  "
+                                + safe_display(text)
+                            )
+                            write(
+                                y,
+                                2,
+                                fit_cells(label, chat_width),
+                                chat_width,
+                                "selected" if index == direct_selected else "muted",
+                            )
+                            hits.append((y, 2, width - 2, ("direct_peer", peer)))
+                else:
+                    online = direct_peer in users
+                    write(
+                        4,
+                        2,
+                        f"[Back] ← {direct_peer} · "
+                        + ("online" if online else "offline · new messages stored"),
+                        chat_width,
+                        "accent" if online else "muted",
+                    )
+                    hits.append((4, 2, 2 + len("[Back]"), ("direct_back", None)))
+                    body_start = 5
+                    if direct_page_error is not None:
+                        write(body_start, 2, direct_page_error, chat_width, "error")
+                    else:
+                        rows = []
+                        for timestamp, direction, _kind, peer, text in direct_page_rows or []:
+                            sender = "you" if direction == "sent" else safe_display(peer)
+                            prefix = f"{local_time(timestamp)}  {sender}: "
+                            style = "accent" if direction == "sent" else "dm"
+                            for pre, line in wrap_prefixed(
+                                prefix, safe_display(text), chat_width
+                            ):
+                                rows.append((pre, line, style))
+                        if not rows:
+                            rows = [("", "No private messages in this conversation yet.", "muted")]
+                        direct_scroll = min(direct_scroll, max(0, len(rows) - capacity))
+                        end = len(rows) - direct_scroll
+                        for y, (pre, line, style) in enumerate(
+                            rows[max(0, end - capacity) : end], body_start
+                        ):
+                            if pre:
+                                write(y, 2, pre, chat_width, "muted")
+                            write(
+                                y,
+                                2 + cell_width(pre),
+                                line,
+                                chat_width - cell_width(pre),
+                                style,
+                            )
+            else:
+                rows = []
+                for stamp, message, kind in messages:
+                    if (
+                        session.display_filter != "all"
+                        and notice_category(message) != session.display_filter
+                    ):
+                        continue
+                    prefix = f"{stamp}  " if stamp else ""
+                    style = kind
+                    for pre, line in wrap_prefixed(prefix, message, chat_width):
+                        rows.append((pre, line, style))
+                scroll = min(scroll, max(0, len(rows) - capacity))
+                if scroll == 0:
+                    unseen = 0
+                end = len(rows) - scroll
+                for y, (pre, line, style) in enumerate(
+                    rows[max(0, end - capacity) : end], 4
                 ):
-                    continue
-                prefix = f"{stamp}  " if stamp else ""
-                style = kind
-                for pre, line in wrap_prefixed(prefix, message, chat_width):
-                    rows.append((pre, line, style))
-            scroll = min(scroll, max(0, len(rows) - capacity))
-            if scroll == 0:
-                unseen = 0
-            end = len(rows) - scroll
-            for y, (pre, line, style) in enumerate(rows[max(0, end - capacity) : end], 4):
-                if pre:
-                    write(y, 2, pre, chat_width, "muted")
-                write(y, 2 + cell_width(pre), line, chat_width - cell_width(pre), style)
+                    if pre:
+                        write(y, 2, pre, chat_width, "muted")
+                    write(
+                        y,
+                        2 + cell_width(pre),
+                        line,
+                        chat_width - cell_width(pre),
+                        style,
+                    )
             # Offers sort first so active transfers cannot push Approve/Accept
             # buttons out of the visible dock.
             dock_rows = sorted(transfers, key=lambda row: row["status"] != "offer")
@@ -871,10 +1095,17 @@ def run_tui(session):
             while cell_width(composer.text[offset : composer.cursor]) > width - 7:
                 offset += 1
             visible = composer.text[offset:]
+            placeholder = (
+                f"Message {direct_peer} privately, or / for commands"
+                if direct_peer is not None
+                else "Open a conversation, or / for commands"
+                if session.display_filter == "dm"
+                else "Message everyone, or / for commands"
+            )
             write(
                 input_y,
                 4,
-                visible or "Message everyone, or / for commands",
+                visible or placeholder,
                 width - 6,
                 "accent" if visible else "muted",
             )
@@ -911,7 +1142,7 @@ def run_tui(session):
                         ]
                 elif kind == "user" and target in users and valid_username(target):
                     entries = [
-                        ("Direct message", ("prefill", prefill_text("msg", target))),
+                        ("Direct message", ("direct_peer", target)),
                         ("Send file", ("send_file", target)),
                     ]
                 elif (
@@ -985,18 +1216,26 @@ def run_tui(session):
                         )
                 else:
                     menu = None
-            hint = (
-                "↑↓ choose · Enter select · Esc close"
-                if menu is not None
-                else "↑↓ choose · Tab complete · Enter use · Esc dismiss"
-                if options
-                else guidance
-                if guidance
-                else "Enter send · / cmds · ↑↓ history · wheel scroll · right-click user · F7 people · F1 Help · Ctrl+C exit"
-                if sidebar
-                else "Enter send · / cmds · ↑↓ history · PgUp/wheel scroll · F7 people · F1 Help · Ctrl+C exit"
-            )
-            write(height - 1, 2, hint, width - 4)
+            hint_style = "muted"
+            if direct_flash is not None and monotonic() < direct_flash[2]:
+                hint, hint_style = direct_flash[0], direct_flash[1]
+            else:
+                hint = (
+                    "↑↓ choose · Enter select · Esc close"
+                    if menu is not None
+                    else "↑↓ choose · Tab complete · Enter use · Esc dismiss"
+                    if options
+                    else "Enter send private · Esc inbox · ↑↓/PgUp scroll · / cmds · F1 Help"
+                    if direct_peer is not None
+                    else "↑↓ choose · Enter open · Esc dismiss · / cmds · F1 Help"
+                    if session.display_filter == "dm"
+                    else guidance
+                    if guidance
+                    else "Enter send · / cmds · ↑↓ history · wheel scroll · right-click user · F7 people · F1 Help · Ctrl+C exit"
+                    if sidebar
+                    else "Enter send · / cmds · ↑↓ history · PgUp/wheel scroll · F7 people · F1 Help · Ctrl+C exit"
+                )
+            write(height - 1, 2, hint, width - 4, hint_style)
             try:
                 window.move(input_y, 4 + cell_width(composer.text[offset : composer.cursor]))
                 window.refresh()
@@ -1038,6 +1277,7 @@ def run_tui(session):
                 continue
             if key == "\x1b":
                 dismissed = True
+                alternate = None
                 window.timeout(30)
                 try:
                     alternate = window.get_wch()
@@ -1050,6 +1290,8 @@ def run_tui(session):
                     pass
                 finally:
                     window.timeout(100)
+                if alternate is None and direct_peer is not None:
+                    back_to_inbox()
             elif key == getattr(curses, "KEY_F1", -1):
                 show_help = True
                 help_scroll = 0
@@ -1083,6 +1325,22 @@ def run_tui(session):
             elif key in ("\n", "\r", curses.KEY_ENTER):
                 if options and composer.text != options[selection].value:
                     composer.replace(options[selection].value + " ")
+                elif (
+                    session.display_filter == "dm"
+                    and direct_peer is None
+                    and composer.text
+                    and not composer.text.startswith(("/", "@"))
+                ):
+                    message = "Open a conversation first; plain text is never sent globally."
+                    add(message, "error")
+                    direct_flash = (message, "error", monotonic() + 10)
+                elif (
+                    session.display_filter == "dm"
+                    and direct_peer is None
+                    and not composer.text
+                    and direct_conversations
+                ):
+                    open_direct(direct_conversations[direct_selected][0])
                 else:
                     line = composer.take()
                     if line:
@@ -1098,10 +1356,17 @@ def run_tui(session):
                                 add(str(error), "error")
                         else:
                             if not line.startswith(("/", "@")):
-                                line = "/all " + line
+                                line = (
+                                    f"/msg {direct_peer} {line}"
+                                    if direct_peer is not None
+                                    else "/all " + line
+                                )
                             try:
                                 if not session.execute(parse_command(line)):
                                     return
+                                if session.display_filter == "dm":
+                                    direct_dirty = True
+                                    direct_flash = None
                             except ValueError as error:
                                 add(str(error), "error")
                     scroll = 0
@@ -1109,6 +1374,13 @@ def run_tui(session):
                 direction = -1 if key == curses.KEY_UP else 1
                 if options:
                     selection = (selection + direction) % len(options)
+                elif session.display_filter == "dm":
+                    if direct_peer is None and direct_conversations:
+                        direct_selected = max(
+                            0, min(len(direct_conversations) - 1, direct_selected + direction)
+                        )
+                    elif direct_peer is not None:
+                        direct_scroll = max(0, direct_scroll - direction)
                 else:
                     composer.recall(direction)
             elif key in ("\b", "\x7f", curses.KEY_BACKSPACE):
@@ -1134,9 +1406,15 @@ def run_tui(session):
             elif key == "\x17":
                 composer.delete_word()
             elif key == curses.KEY_PPAGE:
-                scroll += capacity
+                if direct_peer is not None:
+                    direct_scroll += capacity
+                else:
+                    scroll += capacity
             elif key == curses.KEY_NPAGE:
-                scroll = max(0, scroll - capacity)
+                if direct_peer is not None:
+                    direct_scroll = max(0, direct_scroll - capacity)
+                else:
+                    scroll = max(0, scroll - capacity)
             elif key == curses.KEY_MOUSE:
                 try:
                     _, mouse_x, mouse_y, _, bstate = curses.getmouse()
@@ -1151,9 +1429,15 @@ def run_tui(session):
                         )
                     )
                     if bstate & getattr(curses, "BUTTON4_PRESSED", 0):
-                        scroll += 3  # Wheel up: older messages.
+                        if direct_peer is not None:
+                            direct_scroll += 3  # Wheel up: older transcript.
+                        else:
+                            scroll += 3  # Wheel up: older messages.
                     elif bstate & getattr(curses, "BUTTON5_PRESSED", 0):
-                        scroll = max(0, scroll - 3)  # Wheel down: back to live.
+                        if direct_peer is not None:
+                            direct_scroll = max(0, direct_scroll - 3)
+                        else:
+                            scroll = max(0, scroll - 3)  # Wheel down: back to live.
                     elif right:
                         hit = hit_at(mouse_x, mouse_y)
                         if hit and hit[0] == "person":
@@ -1178,7 +1462,11 @@ def run_tui(session):
                             else:
                                 menu = None
                         elif hit:
-                            if hit[0] == "person":
+                            if hit[0] == "direct_peer":
+                                open_direct(hit[1])
+                            elif hit[0] == "direct_back":
+                                back_to_inbox()
+                            elif hit[0] == "person":
                                 # Left click is the fallback opener when the
                                 # terminal cannot report right-clicks.
                                 anchor_x = (
