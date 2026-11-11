@@ -6,8 +6,10 @@ import logging
 from pathlib import Path
 
 from lancollab.common.tls import create_server_context
+from lancollab.common.devcerts import ensure_server_certs
 from lancollab.server.accounts import AccountError, AccountService
 from lancollab.server.application import CollabServer
+from lancollab.server.queue import MessageQueue
 from lancollab.server.tokens import TokenService
 from lancollab.server.connections import ConnectionServer
 
@@ -60,24 +62,35 @@ def main() -> int:
     parser.add_argument(
         "--change-password", metavar="USERNAME", help="Change an account password and exit"
     )
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help="Activate new accounts on signup/first login; first account in an empty DB becomes admin",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(threadName)s: %(message)s")
     if args.add_admin:
         return _add_admin(args.db, args.add_admin)
     if args.change_password:
         return _change_password(args.db, args.change_password)
-    accounts = tokens = server = None
+    accounts = tokens = queue = server = None
     try:
+        if (args.cert, args.key) == (
+            "certs/direct-trust/server-public.pem",
+            "certs/direct-trust/server-secret.pem",
+        ):
+            ensure_server_certs()
         context = create_server_context(args.cert, args.key)
         accounts = AccountService(args.db)
         tokens = TokenService(args.db)
+        queue = MessageQueue(args.db)
         server = ConnectionServer(
             context,
             port=args.port,
             udp_port=args.udp_port,
             max_clients=args.max_clients,
             accounts=accounts,
-            handler=CollabServer(accounts, tokens),
+            handler=CollabServer(accounts, tokens, queue, auto_approve=args.auto_approve),
         )
         server.serve_forever()
     except KeyboardInterrupt:
@@ -87,6 +100,8 @@ def main() -> int:
     finally:
         if server is not None:
             server.close()
+        if queue is not None:
+            queue.close()
         if tokens is not None:
             tokens.close()
         if accounts is not None:

@@ -64,7 +64,13 @@ class AccountService:
         )
 
     def create_account(
-        self, username: str, password: str, *, role: str = "member", status: str = "pending"
+        self,
+        username: str,
+        password: str,
+        *,
+        role: str = "member",
+        status: str = "pending",
+        bootstrap: bool = False,
     ) -> None:
         if not isinstance(username, str) or _USERNAME_RE.fullmatch(username) is None:
             raise AccountError("INVALID_USERNAME")
@@ -75,6 +81,15 @@ class AccountService:
         salt = os.urandom(16)
         digest = self._hash(password, salt)
         with self._lock, self._conn:
+            # Serialize the first-user decision across separate DB connections too.
+            self._conn.execute("BEGIN IMMEDIATE")
+            if bootstrap:
+                role = (
+                    "admin"
+                    if self._conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+                    else "member"
+                )
+                status = "active"
             try:
                 self._conn.execute(
                     "INSERT INTO accounts (username, password_hash, salt, scrypt_n,"
@@ -120,7 +135,9 @@ class AccountService:
         except sqlite3.OperationalError:
             pass
 
-    def authenticate(self, username: str, password: str) -> tuple[bool, str | None, str | None]:
+    def authenticate(
+        self, username: str, password: str, *, auto_approve=False
+    ) -> tuple[bool, str | None, str | None]:
         """Return (ok, error_code, role). Password is checked BEFORE status,
         so a wrong password always returns AUTH_FAILED and never reveals
         whether the account exists or is pending/rejected."""
@@ -138,7 +155,15 @@ class AccountService:
         if not hmac.compare_digest(digest, row["password_hash"]):
             return False, "AUTH_FAILED", None
         if row["status"] == "pending":
-            return False, "ACCOUNT_PENDING", None
+            if not auto_approve:
+                return False, "ACCOUNT_PENDING", None
+            with self._lock, self._conn:
+                updated = self._conn.execute(
+                    "UPDATE accounts SET status='active', reviewed_by='auto-approve', reviewed_at=? WHERE username=? AND status='pending'",
+                    (self._now(), username),
+                )
+                if updated.rowcount != 1:
+                    return False, "AUTH_FAILED", None
         if row["status"] == "rejected":
             return False, "ACCOUNT_REJECTED", None
         return True, None, row["role"]

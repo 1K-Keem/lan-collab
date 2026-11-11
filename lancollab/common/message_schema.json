@@ -66,11 +66,13 @@
       "from": "str:username",
       "text": "str:chat"
     },
-    "optional": {}
+    "optional": {
+      "queued": "bool"
+    }
   },
   "S:CHAT_ACK": {
     "required": {
-      "status": "enum:queued"
+      "status": "enum:queued|stored"
     },
     "optional": {}
   },
@@ -249,7 +251,7 @@
       "ok": "bool"
     },
     "optional": {
-      "status": "enum:pending",
+      "status": "enum:pending|active",
       "error_code": "str:error"
     }
   },

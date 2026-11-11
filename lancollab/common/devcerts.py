@@ -3,7 +3,7 @@
 Run: python -m lancollab.common.devcerts --out certs/direct-trust --bundle-cert
 Only server-public.pem is distributed to clients. Keep server-secret.pem private.
 No separate CA or CA key is created. TLS runtime uses the standard ssl module;
-this provisioning command requires the development dependency cryptography.
+the explicit generator uses cryptography; first-launch provisioning can fall back to openssl.
 """
 
 from __future__ import annotations
@@ -161,6 +161,101 @@ def main(argv: list[str] | None = None) -> int:
         bundled = install_bundled_cert(paths.server_cert, force=args.force)
         print(f"Bundled server certificate into the client:      {bundled}  (commit this file)")
     return 0
+
+
+def _generate_openssl(out_dir: Path) -> DevCerts:
+    """Development provisioning fallback; never used for runtime TLS verification."""
+    import shutil
+    import subprocess
+
+    executable = shutil.which("openssl")
+    if executable is None:
+        raise ValueError(
+            "Install cryptography or the openssl command to generate server certificates"
+        )
+    paths = DevCerts(out_dir / "server-public.pem", out_dir / "server-secret.pem")
+    result = subprocess.run(
+        [
+            executable,
+            "req",
+            "-x509",
+            "-newkey",
+            "ec",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-nodes",
+            "-sha256",
+            "-days",
+            "365",
+            "-subj",
+            f"/CN={SERVER_HOSTNAME}",
+            "-addext",
+            f"subjectAltName=DNS:{SERVER_HOSTNAME}",
+            "-addext",
+            "basicConstraints=critical,CA:FALSE",
+            "-addext",
+            "keyUsage=critical,digitalSignature",
+            "-addext",
+            "extendedKeyUsage=serverAuth",
+            "-keyout",
+            str(paths.server_key),
+            "-out",
+            str(paths.server_cert),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode:
+        raise ValueError("OpenSSL certificate generation failed: " + result.stderr.strip()[:500])
+    paths.server_key.chmod(0o600)
+    return paths
+
+
+def ensure_server_certs(out_dir="certs/direct-trust", *, bundled=BUNDLED_SERVER_CERT):
+    """Provision only a missing pair; never rotate an existing or partial identity.
+
+    A fresh pair replaces the public bundle in this server checkout. Clients on
+    other machines still obtain that public certificate through the trusted repo.
+    """
+    import importlib.util
+    import tempfile
+    from .tls import create_server_context
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    paths = DevCerts(out / "server-public.pem", out / "server-secret.pem")
+    lock = out / ".provision.lock"
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as error:
+        raise ValueError(
+            "Certificate provisioning is already running; inspect .provision.lock if a previous run crashed"
+        ) from error
+    try:
+        exists = (paths.server_cert.exists(), paths.server_key.exists())
+        if any(exists):
+            if not all(exists):
+                raise ValueError(
+                    "Incomplete certificate pair; restore the missing file instead of generating a new identity"
+                )
+            create_server_context(str(paths.server_cert), str(paths.server_key))
+            if not Path(bundled).exists():
+                install_bundled_cert(paths.server_cert, Path(bundled))
+            return paths
+        with tempfile.TemporaryDirectory(dir=out) as temporary:
+            if importlib.util.find_spec("cryptography") is not None:
+                generated = generate_dev_certs(temporary)
+            else:
+                generated = _generate_openssl(Path(temporary))
+            create_server_context(str(generated.server_cert), str(generated.server_key))
+            generated.server_key.replace(paths.server_key)
+            generated.server_cert.replace(paths.server_cert)
+        install_bundled_cert(paths.server_cert, Path(bundled), force=True)
+        return paths
+    finally:
+        os.close(fd)
+        lock.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

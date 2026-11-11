@@ -31,6 +31,43 @@ class ClientLogicTests(unittest.TestCase):
         )
         self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
 
+    def authenticate_admin(self):
+        auth_id = self.client.login("admin", "synthetic-password-only")
+        self.assertEqual(self.server_end.receive().type, "AUTH_REQUEST")
+        self.client.handle_event(
+            Envelope(
+                "AUTH_RESULT",
+                auth_id,
+                {"ok": True, "username": "admin", "role": "admin"},
+            )
+        )
+        self.assertEqual(self.client.state, ClientState.AUTHENTICATED)
+
+    def _pending_result(self, request_id, users):
+        self.client.handle_event(Envelope("PENDING_USERS_RESULT", request_id, {"users": users}))
+
+    def test_quiet_pending_refresh_updates_list_without_notice(self):
+        # The TUI sidebar timer refreshes every 10s; it must not print one
+        # "Pending users" line into the chat per refresh.
+        self.authenticate_admin()
+        request_id = self.client.list_pending(quiet=True)
+        self.assertEqual(self.server_end.receive().type, "PENDING_USERS_REQUEST")
+        self._pending_result(request_id, [{"username": "bob"}])
+        self.assertEqual([u["username"] for u in self.client.pending_users], ["bob"])
+        # Login itself appends an "Authenticated as admin" notice; the quiet
+        # refresh must add no "Pending users" notice on top of it.
+        self.assertEqual([n for n in self.client._notices if n.kind == "admin"], [])
+
+    def test_explicit_pending_still_prints_notice(self):
+        self.authenticate_admin()
+        request_id = self.client.list_pending()
+        self.assertEqual(self.server_end.receive().type, "PENDING_USERS_REQUEST")
+        self._pending_result(request_id, [])
+        self.assertEqual(self.client.pending_users, [])
+        admin_notices = [n for n in self.client._notices if n.kind == "admin"]
+        self.assertEqual(len(admin_notices), 1)
+        self.assertEqual(admin_notices[0].text, "Pending users: none")
+
     def test_direct_auth_state(self):
         self.assertEqual(self.client.state, ClientState.WAIT_AUTH)
         with self.assertRaises(RuntimeError):

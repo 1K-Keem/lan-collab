@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Zero-install executable entrypoint for the LAN Collab client (TUI).
+
+Discovers the LAN server (or localhost) and opens the full-screen TUI.
+Any extra argument passes through to the client, e.g.:
+
+  ./lan-collab                    # Discover the server and open the TUI
+  ./lan-collab --host 192.168.1.5 # Join a server by IP instead of discovery
+"""
+
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from lancollab.client.__main__ import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main(["--discover", "--tui", *sys.argv[1:]]))

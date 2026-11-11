@@ -29,9 +29,9 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 | `PRESENCE_UPDATE` | S→C | `username:str, status:"online"\|"offline"`; **online requires** `ip:str, port:int`; offline omits them | Ordered relative to USER_LIST under registry lock |
 | `CHAT_GLOBAL` | C→S | `text:str` | Broadcast to authenticated users, excluding sender; agreed behavior |
 | `CHAT_GLOBAL` | S→C | `from:str, text:str` | Routed event |
-| `CHAT_PRIVATE` | C→S | `to:str, text:str` | Require online recipient |
-| `CHAT_PRIVATE` | S→C | `from:str, text:str` | Routed event |
-| `CHAT_ACK` | S→C | `status:"queued"` | Direct reply: **server queue admission only**, not recipient read/delivery |
+| `CHAT_PRIVATE` | C→S | `to:str, text:str` | Require online recipient, or store offline (see §3) |
+| `CHAT_PRIVATE` | S→C | `from:str, text:str`; `queued?:bool` | Routed event; `queued:true` means sent while recipient was offline |
+| `CHAT_ACK` | S→C | `status:"queued"\|"stored"` | Direct reply: **server queue admission only**, not recipient read/delivery. `"stored"` = recipient offline, message saved for their next login |
 | `FILE_OFFER` | C→S | `transfer_id:uuid-str, to:str, name:str, size:int, sha256:64 lowercase hex` | 0–50 MiB; receiver must consent |
 | `FILE_OFFER` | S→C | `transfer_id, from:str, name, size, sha256` | Incoming transfer notification |
 | `FILE_ACCEPT` | C→S/S→C | `transfer_id:uuid-str` | Only receiver may originate |
@@ -55,6 +55,7 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 - **Remember-me tokens (implemented, see `docs/token-remember-me.md`).** On a successful password login with `remember_me=true`, `AUTH_RESULT` carries a one-time `token`: a random 256-bit value (`secrets.token_urlsafe(32)`), valid 30 days, **not** derived from the password. The server stores only `SHA-256(token)` in a separate `tokens` table. A later run opens a new TLS connection and sends `TOKEN_AUTH_REQUEST` instead of a password; the server replies with the same `AUTH_RESULT` (no new token — the 30-day expiry is fixed, no sliding window). `LOGOUT` revokes the session's token; changing the password or rejecting the account revokes all of that user's tokens. A token login counts as authentication for takeover, presence and the 3-attempt limit; its failure codes are `TOKEN_EXPIRED` and `TOKEN_REVOKED` (unknown token returns generic `AUTH_FAILED`). Closing the app without logging out keeps the token; only `LOGOUT` forgets it.
 - Authenticated **new session replaces old session** for the same username (atomic takeover, after successful password check); close old connection. Session registry uses an identity/generation token so old connection cleanup cannot remove or mark newer session offline.
 - On login, under one registry lock: install authenticated session, build consistent USER_LIST snapshot, register ordering of future PRESENCE_UPDATE events, and queue notifications **nonblocking**; never block socket I/O while holding registry lock. Readers should handle duplicate/ordered presence updates idempotently.
+- **Offline private-message queue (implemented, `lancollab/server/queue.py`).** `CHAT_PRIVATE` to an existing, *active*, offline user is stored in SQLite (`queued_messages` in `accounts.db`) and answered with `CHAT_ACK {"status": "stored"}`. Unknown users, pending accounts and rejected accounts still get `ERROR USER_OFFLINE` — nothing is stored for them. On the recipient's next login (password or token), the server drains the queue oldest-first and delivers each message as `CHAT_PRIVATE` with `"queued": true`, then deletes it (deliver-then-delete, at-most-once: a crash between drain and delivery loses the message). Bounds: 100 messages per recipient, 24h TTL; when full, the oldest message is dropped. Group chat is never queued (live broadcast only) and files are never stored (both sides must be online for a transfer).
 - Server retains authenticated username, TCP peer IP and **ephemeral source port**. If exposed to clients, online PRESENCE_UPDATE carries same `ip`/`port` as USER_LIST; offline update does not carry them.
 - Each accepted TCP connection has an opaque, server-local `session_id`, never reused during the server process. It is not a wire field. Authenticate and route only while that session is the current registry identity; stale buffered requests cannot act as a replacement session.
 - Transfers bind immutable sender and receiver **session IDs**, as well as usernames. On successful takeover, atomically invalidate the old session, cancel its offers/transfers with `FILE_CANCEL(reason="SESSION_REPLACED")` to surviving peers, install the new session and enqueue presence changes. Do not migrate transfer state or queued events to the replacement connection. Old cleanup can remove only records bearing its exact session ID. Defer socket shutdown and other blocking I/O until after releasing locks.
@@ -219,3 +220,13 @@ Keep dummy-driven work parallel; small reviewed PRs may merge between checkpoint
 Reference diagrams: [architecture](diagrams/transport-overview.md), [framing](diagrams/tcp-framing.md), [connection/chat](diagrams/connection-and-chat.md), [file transfer](diagrams/file-transfer.md), [queues](diagrams/outbound-queues.md), [parallel integration](diagrams/parallel-work-dependencies.md).
 
 **Important:** This document is a design contract. Existing `FakeTransport` and fixture checks are not production TCP/TLS/file implementations; no grading milestone is complete until demonstrated with real sockets and validated results.
+
+### Optional auto-approval mode
+
+The server flag `--auto-approve` activates new registrations and allows first password login
+to create an unknown account. The first account in an empty database becomes admin atomically;
+all subsequent auto-created accounts are members. Correct password authentication may activate
+an existing pending account; wrong passwords and rejected accounts remain denied. Default mode
+continues to require administrator approval. `REGISTER_RESULT(ok=true)` now permits `status`
+`"pending"` or `"active"`; clients display that status and reconnect to authenticate. All
+registration/login messages still require verified TLS and the existing frame validation.

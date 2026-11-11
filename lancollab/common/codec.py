@@ -334,8 +334,8 @@ def _auth_result_rules(payload: dict[str, Any]) -> None:
 
 def _register_result_rules(payload: dict[str, Any]) -> None:
     if payload["ok"]:
-        if payload.get("status") != "pending" or "error_code" in payload:
-            raise _Invalid("success requires status pending and forbids error_code")
+        if payload.get("status") not in {"pending", "active"} or "error_code" in payload:
+            raise _Invalid("success requires status pending/active and forbids error_code")
     else:
         if "error_code" not in payload or "status" in payload:
             raise _Invalid("failure requires error_code and forbids status")

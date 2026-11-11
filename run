@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""Zero-install executable entrypoint for the LAN Collab server.
+
+Usage:
+  ./run                          # Start the server on 0.0.0.0:40000 (UDP 40001)
+  ./run --port 40000             # Any server flag passes through
+  ./run --add-admin vinjr        # Create the first admin and exit
+  ./run --change-password vinjr  # Change an account password and exit
+"""
+
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from lancollab.server.__main__ import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())

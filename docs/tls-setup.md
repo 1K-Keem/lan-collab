@@ -152,3 +152,13 @@ The generator's identity key is EC P-256 and the certificate is self-signed with
 The ephemeral exchange group and traffic cipher are negotiated separately. TLS 1.2 is also
 allowed; the description above specifically illustrates TLS 1.3, as used in the local demo.
 See [RFC 8446, authentication and key schedule](https://www.rfc-editor.org/rfc/rfc8446.html).
+
+### Automatic first launch
+
+`python -m lancollab.server` calls `ensure_server_certs()` for the default paths. If both
+files are absent it generates an EC P-256 self-signed server certificate and private key,
+using cryptography or the system OpenSSL CLI, then updates the public client bundle in this
+checkout. Only the public PEM is copied. Existing pairs are not rotated; missing half-pairs
+or mismatched keys fail closed. A provisioning lock prevents simultaneous startup generation.
+Custom certificate paths still require manual provisioning. Share the new public bundle via
+the group's trusted repository before clients on other machines connect.

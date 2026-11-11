@@ -13,6 +13,7 @@ from threading import RLock
 from lancollab.common.transfer_core import TransferRegistry
 from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
 from lancollab.server.accounts import AccountError, AccountService
+from lancollab.server.queue import MessageQueue
 from lancollab.server.tokens import TokenService
 
 MAX_FAILED_ATTEMPTS = 3
@@ -28,12 +29,21 @@ def synchronized(method):
 
 
 class CollabServer:
-    def __init__(self, accounts: AccountService, tokens: TokenService | None = None) -> None:
+    def __init__(
+        self,
+        accounts: AccountService,
+        tokens: TokenService | None = None,
+        queue: MessageQueue | None = None,
+        *,
+        auto_approve: bool = False,
+    ) -> None:
         self.lock = RLock()
         self.transfers = TransferRegistry()
         self._purges: set[str] = set()
+        self.auto_approve = auto_approve
         self.accounts = accounts
         self.tokens = tokens
+        self.queue = queue
         self._sessions: dict[str, SessionIdentity] = {}  # session_id -> identity
         self._by_username: dict[str, str] = {}  # username -> session_id
         self._failed: dict[str, int] = {}  # session_id -> failed auth attempts
@@ -108,7 +118,52 @@ class CollabServer:
         ]
         for old_id in closed:
             events += self.transfer_events(self.transfers.close_session(old_id, "SESSION_REPLACED"))
+        events += self._drain_queue(ident)
         return events + self._presence(ident, "online", exclude=ident.session_id)
+
+    def _store_offline(self, sender: str | None, payload: dict) -> bool:
+        """Store a private message for an offline recipient.
+
+        Returns True if stored. Only existing *active* accounts get a
+        queue: unknown users stay USER_OFFLINE (no account to deliver
+        to), pending users cannot log in yet, and rejected users must
+        never receive anything. Files are never stored.
+        """
+        if self.queue is None or sender is None:
+            return False
+        account = self.accounts.get_account(payload["to"])
+        if account is None or account["status"] != "active":
+            return False
+        return self.queue.enqueue(payload["to"], sender, "CHAT_PRIVATE", {"text": payload["text"]})
+
+    def _drain_queue(self, ident: SessionIdentity) -> list[OutboundEvent]:
+        """Deliver messages stored while ``ident`` was offline, oldest first.
+
+        Only CHAT_PRIVATE is ever queued. The ``queued`` flag lets the
+        client show the message was sent while the recipient was away.
+        Drain deletes on read (at-most-once delivery).
+        """
+        if self.queue is None or ident.username is None:
+            return []
+        events = []
+        for item in self.queue.drain(ident.username):
+            if item["kind"] != "CHAT_PRIVATE":
+                continue
+            events.append(
+                OutboundEvent(
+                    ident,
+                    Envelope(
+                        "CHAT_PRIVATE",
+                        uuid.uuid4().hex,
+                        {
+                            "from": item["sender"],
+                            "text": item["payload"]["text"],
+                            "queued": True,
+                        },
+                    ),
+                )
+            )
+        return events
 
     def _login_failed(
         self, session: SessionIdentity, rid: str, error_code: str
@@ -153,7 +208,9 @@ class CollabServer:
             if authed is not None:
                 return [self._error(session, rid, "INVALID_STATE")]
             try:
-                self.accounts.create_account(payload["username"], payload["password"])
+                self.accounts.create_account(
+                    payload["username"], payload["password"], bootstrap=self.auto_approve
+                )
             except AccountError as exc:
                 return [
                     self._reply(
@@ -161,13 +218,28 @@ class CollabServer:
                     )
                 ]
             self._close_after.add(session.session_id)  # close after delivery; log in later
-            return [self._reply(session, "REGISTER_RESULT", rid, {"ok": True, "status": "pending"})]
+            return [
+                self._reply(
+                    session,
+                    "REGISTER_RESULT",
+                    rid,
+                    {"ok": True, "status": "active" if self.auto_approve else "pending"},
+                )
+            ]
 
         if kind == "AUTH_REQUEST":
             if authed is not None:
                 return [self._error(session, rid, "INVALID_STATE")]
+            if self.auto_approve and self.accounts.get_account(payload["username"]) is None:
+                try:
+                    self.accounts.create_account(
+                        payload["username"], payload["password"], bootstrap=True
+                    )
+                except AccountError as error:
+                    if error.code != "USERNAME_TAKEN":
+                        return self._login_failed(session, rid, "AUTH_FAILED")
             ok, error_code, role = self.accounts.authenticate(
-                payload["username"], payload["password"]
+                payload["username"], payload["password"], auto_approve=self.auto_approve
             )
             if not ok:
                 return self._login_failed(session, rid, error_code)
@@ -265,6 +337,8 @@ class CollabServer:
             else:
                 target_id = self._by_username.get(payload["to"])
                 if target_id is None:
+                    if self._store_offline(authed.username, payload):
+                        return [self._reply(session, "CHAT_ACK", rid, {"status": "stored"})]
                     return [self._error(session, rid, "USER_OFFLINE")]
                 target = self._sessions[target_id]
                 events = [

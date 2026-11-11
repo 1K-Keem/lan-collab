@@ -84,12 +84,18 @@ class CollabClient:
         self.state = ClientState.WAIT_AUTH
         self.username: str | None = None
         self.role: str | None = None
+        self.reply_target: str | None = None
+        self.last_tcp_rtt: float | None = None
+        # Fresh id on every successful login: quitting and coming back
+        # starts a new history session instead of extending the old one.
+        self.session_id: str | None = None
         self.pending_users: list[dict[str, str]] = []
         self.issued_token: str | None = None  # set from AUTH_RESULT when remember_me
         self._token_login = False  # True when the current login used a token
         self._requested_username: str | None = None
         self.online_users: dict[str, tuple[str, int]] = {}
         self._pending: dict[str, str] = {}  # request_id -> message type, never passwords
+        self._quiet_pending: set[str] = set()  # request_ids whose results stay silent
         self._pending_chat: dict[
             str, tuple[str, str, str | None]
         ] = {}  # request_id -> (kind, text, recipient)
@@ -106,7 +112,15 @@ class CollabClient:
     def _remember_chat(self, direction, kind, peer, text):
         if self.history is not None and self.username is not None:
             try:
-                self.history.append(self.history_server, self.username, direction, kind, peer, text)
+                self.history.append(
+                    self.history_server,
+                    self.username,
+                    direction,
+                    kind,
+                    peer,
+                    text,
+                    session=self.session_id or "",
+                )
             except (OSError, sqlite3.Error):
                 self._notices.append(Notice("error", "Could not save local chat history"))
 
@@ -206,11 +220,19 @@ class CollabClient:
         self._send(request)
         return request.request_id
 
-    def list_pending(self) -> str:
+    def list_pending(self, *, quiet: bool = False) -> str:
+        """Ask the server for pending accounts.
+
+        quiet=True is the background sidebar refresh: it updates
+        pending_users but prints no "Pending users" notice, so the TUI
+        timer does not flood the admin's chat with one line per refresh.
+        """
         with self._lock:
             if self.state is not ClientState.AUTHENTICATED or self.role != "admin":
                 raise RuntimeError("Only an admin can list pending users")
             request = self._new_request("PENDING_USERS_REQUEST", {})
+            if quiet:
+                self._quiet_pending.add(request.request_id)
         self._send(request)
         return request.request_id
 
@@ -260,7 +282,11 @@ class CollabClient:
     def send_private(self, recipient: str, text: str) -> str:
         if not isinstance(recipient, str) or _USERNAME.fullmatch(recipient) is None:
             raise ValueError("Invalid recipient username")
-        return self._chat("CHAT_PRIVATE", {"to": recipient, "text": text}, text)
+        request_id = self._chat("CHAT_PRIVATE", {"to": recipient, "text": text}, text)
+        with self._lock:
+            if self.state is ClientState.AUTHENTICATED:
+                self.reply_target = recipient
+        return request_id
 
     def _pop_expected(self, event: Envelope, expected: str) -> None:
         if self._pending.get(event.request_id) != expected:
@@ -318,6 +344,16 @@ class CollabClient:
                         )
                         self.username = payload["username"]
                         self.role = payload["role"]
+                        self.session_id = uuid4().hex[:12]
+                        if self.history is not None:
+                            try:
+                                self.history.start_session(
+                                    self.history_server, self.username, self.session_id
+                                )
+                            except (OSError, sqlite3.Error):
+                                self._notices.append(
+                                    Notice("error", "Could not save login session")
+                                )
                         self.issued_token = payload.get("token")
                         self._requested_username = None
                         self._token_login = False
@@ -352,7 +388,12 @@ class CollabClient:
                     self.state = ClientState.WAIT_AUTH
                     if payload["ok"] is True:
                         self._notices.append(
-                            Notice("auth", "Registered. Waiting for admin approval.")
+                            Notice(
+                                "auth",
+                                "Registered. You can log in now."
+                                if payload.get("status") == "active"
+                                else "Registered. Waiting for admin approval.",
+                            )
                         )
                     else:
                         self._notices.append(
@@ -364,19 +405,24 @@ class CollabClient:
                 elif kind == "PENDING_USERS_RESULT":
                     self._require_authenticated(kind)
                     self._pop_expected(event, "PENDING_USERS_REQUEST")
+                    quiet = event.request_id in self._quiet_pending
+                    self._quiet_pending.discard(event.request_id)
                     if set(payload) != {"users"} or not isinstance(payload["users"], list):
                         raise ProtocolViolation("Invalid PENDING_USERS_RESULT")
                     self.pending_users = payload["users"]
-                    self._notices.append(
-                        Notice(
-                            "admin",
-                            "Pending users: "
-                            + (
-                                ", ".join(safe_display(u["username"]) for u in self.pending_users)
-                                or "none"
-                            ),
+                    if not quiet:
+                        self._notices.append(
+                            Notice(
+                                "admin",
+                                "Pending users: "
+                                + (
+                                    ", ".join(
+                                        safe_display(u["username"]) for u in self.pending_users
+                                    )
+                                    or "none"
+                                ),
+                            )
                         )
-                    )
 
                 elif kind == "ACCOUNT_REVIEW_RESULT":
                     self._require_authenticated(kind)
@@ -426,7 +472,8 @@ class CollabClient:
 
                 elif kind in {"CHAT_GLOBAL", "CHAT_PRIVATE"}:
                     self._require_authenticated(kind)
-                    if set(payload) != {"from", "text"}:
+                    allowed = {"from", "text"} | ({"queued"} if kind == "CHAT_PRIVATE" else set())
+                    if not {"from", "text"} <= set(payload) <= allowed:
                         raise ProtocolViolation("Invalid routed chat fields")
                     if (
                         not isinstance(payload["from"], str)
@@ -438,10 +485,17 @@ class CollabClient:
                         or not 1 <= len(payload["text"].encode("utf-8")) <= _MAX_CHAT_BYTES
                     ):
                         raise ProtocolViolation("Invalid chat text")
+                    if payload.get("queued") is not None and type(payload["queued"]) is not bool:
+                        raise ProtocolViolation("Invalid queued flag")
+                    if kind == "CHAT_PRIVATE":
+                        self.reply_target = payload["from"]
                     self._remember_chat("received", kind, payload["from"], payload["text"])
                     sender = safe_display(payload["from"])
                     text = safe_display(payload["text"])
-                    self._notices.append(Notice("chat", f"[{kind}] {sender}: {text}"))
+                    queued_tag = (
+                        " [sent while you were offline]" if payload.get("queued") is True else ""
+                    )
+                    self._notices.append(Notice("chat", f"[{kind}] {sender}: {text}{queued_tag}"))
 
                 elif kind == "CHAT_ACK":
                     self._require_authenticated(kind)
@@ -450,7 +504,7 @@ class CollabClient:
                         raise ProtocolViolation("CHAT_ACK has no pending chat request")
                     if set(payload) != {"status"}:
                         raise ProtocolViolation("Invalid CHAT_ACK fields")
-                    if payload.get("status") != "queued":
+                    if payload.get("status") not in {"queued", "stored"}:
                         raise ProtocolViolation("Unexpected CHAT_ACK status")
                     self._pop_expected(event, expected)
                     sent = self._pending_chat.pop(event.request_id, None)
@@ -458,10 +512,15 @@ class CollabClient:
                         kind_sent, text_sent, to_sent = sent
                         self._remember_chat("sent", kind_sent, to_sent or "*", text_sent)
                         if kind_sent == "CHAT_PRIVATE":
+                            stored_tag = (
+                                f" [stored — {safe_display(to_sent or '')} is offline]"
+                                if payload.get("status") == "stored"
+                                else ""
+                            )
                             self._notices.append(
                                 Notice(
                                     "chat",
-                                    f"[CHAT_PRIVATE] you -> {safe_display(to_sent or '')}: {safe_display(text_sent)}",
+                                    f"[CHAT_PRIVATE] you -> {safe_display(to_sent or '')}: {safe_display(text_sent)}{stored_tag}",
                                 )
                             )
                         else:
@@ -498,6 +557,10 @@ class CollabClient:
                     self._pop_expected(event, "PING")
                     self._pending_pings.pop(event.request_id)
                     self.ping_rtts[event.request_id] = (monotonic() - pending_ping[1]) * 1000
+                    self.last_tcp_rtt = self.ping_rtts[event.request_id]
+                    self._notices.append(
+                        Notice("network", f"TCP/TLS RTT: {self.last_tcp_rtt:.1f} ms")
+                    )
 
                 elif kind == "PING":
                     self._require_authenticated(kind)
@@ -582,9 +645,16 @@ class CollabClient:
         with self._lock:
             if self.state is ClientState.CLOSED:
                 return
+            if self.history is not None and self.username is not None and self.session_id:
+                try:
+                    self.history.end_session(self.history_server, self.username, self.session_id)
+                except (OSError, sqlite3.Error):
+                    self._notices.append(Notice("error", "Could not save session end time"))
             self.state = ClientState.CLOSED
             self.username = None
             self.role = None
+            self.reply_target = None
+            self.session_id = None
             self.pending_users = []
             self._requested_username = None
             self.issued_token = None

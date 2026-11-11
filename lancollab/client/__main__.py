@@ -8,6 +8,7 @@ import sqlite3
 
 from lancollab.client.cli import AuthenticationError, ConsoleSession, prompt_welcome
 from lancollab.client.history import HistoryStore
+from lancollab.client.branding import print_welcome
 from lancollab.client.discovery import DiscoveryClient, select_server
 from lancollab.client.token_store import TokenStore, _config_dir
 from lancollab.common.tls import resolve_trusted_cert
@@ -59,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as error:
         parser.error(str(error))
     try:
+        print_welcome()
         store = TokenStore()
         with DiscoveryClient(udp_port=args.udp_port) as discovery:
             found = discovery.discover() if args.discover and not args.host else None
@@ -122,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                 if choice == "signup":
                     shell.register(username, password)
                     print(
-                        "Registered. Waiting for admin approval — run the client again after approval."
+                        "Registration finished. See account status above; run the client again to log in."
                     )
                     return 0
                 shell.authenticate(username, password, remember_me=remember_me)
@@ -130,6 +132,9 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 shell.close()
 
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        return 130
     except (ConnectionError, OSError, RuntimeError, TimeoutError, sqlite3.Error) as error:
         print(f"Client stopped: {error}", file=sys.stderr)
         return 1
