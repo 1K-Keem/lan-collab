@@ -41,7 +41,7 @@ The real file must contain one distinct entry per simulated client. Prepare a no
 file of at least 10 MiB, then run on the client machine:
 
 ```bash
-python -m scripts.tv3_real_smoke --accounts data/accounts.json --host SERVER_IP --trusted-cert lancollab/client/server-public.pem --clients 20 --messages 5 --file data/sample10m.bin --output data/lan-results.json
+python -m scripts.load_test --accounts data/accounts.json --host SERVER_IP --trusted-cert lancollab/client/server-public.pem --clients 20 --messages 5 --file data/sample10m.bin --output data/lan-results.json
 ```
 
 The result includes raw chat ACK and PONG timings, mean/p95/max and verified file size.
@@ -60,3 +60,26 @@ are p95 <=1 s and maximum <5 s; these are project targets, not instructor requir
 
 The implementation report is a draft describing code and measured local evidence. Add
 these manual results and the team's own explanation before submitting it.
+
+## Failure and boundary checklist
+
+Record the outcome and environment for these scenarios. Automated coverage does
+not replace the remaining target-machine demonstrations:
+
+- Verify fragmented/coalesced frames, invalid lengths/JSON, wrong message direction,
+  replayed request IDs and exhausted per-session ID limits.
+- Check failed login limits, authentication deadlines, pending-account approval,
+  remembered login and takeover without stale-session cleanup affecting the new login.
+- Transfer 0-byte files, 1/3/4/8/9 chunks, a partial last chunk and the 50 MiB boundary;
+  reject an oversized offer. Check filename safety, existing destination names and hashes.
+- Check the eight-chunk window, cumulative ACK boundaries, duplicate ACKs, END/RESULT
+  ordering and final verification. A fully acknowledged file is not yet success.
+- Cancel, reject or interrupt transfers; check temp-file cleanup, queue saturation,
+  offer/data/verification timeouts and continued service for healthy users.
+- Test a deliberately slow reader and a client that disconnects/reconnects while
+  other users exchange chat/files. Capture both successful and failed outcomes.
+- Check trusted/untrusted certificates, hostname/expiry failures, and the five-second
+  handshake deadline; record a TLS packet capture without exposing credentials.
+
+Use at least 100 chat ACK and TCP PONG samples for the 20-client baseline. Keep raw
+samples, file size, OS/network details and resource measurements with the report.

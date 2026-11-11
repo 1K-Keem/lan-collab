@@ -49,24 +49,45 @@ def prompt_auth(server, message="", username="", choice="login"):
             write(top + 1, left, "Your LAN workspace", room)
             write(top + 2, left, safe_display("Server: " + server), room)
             write(top + 3, left, "Server identity verified on connection", room)
-            for x, value, label in ((left, "login", "[ Log in ]"), (left + 15, "signup", "[ Sign up ]")):
+            for x, value, label in (
+                (left, "login", "[ Log in ]"),
+                (left + 15, "signup", "[ Sign up ]"),
+            ):
                 write(top + 5, x, label, len(label), "selected" if mode == value else "accent")
                 hits.append((top + 5, x, x + len(label), "mode:" + value))
-            controls = ["username", "password"] + (["confirm"] if mode == "signup" else ["remember"]) + ["submit"]
+            controls = (
+                ["username", "password"]
+                + (["confirm"] if mode == "signup" else ["remember"])
+                + ["submit"]
+            )
             positions = {"username": top + 7, "password": top + 10, "confirm": top + 13}
             cursor = None
             for name in ("username", "password", "confirm"):
                 if name == "confirm" and mode != "signup":
                     continue
                 y, editor = positions[name], fields[name]
-                write(y, left, {"username": "Username", "password": "Password", "confirm": "Confirm password"}[name], room, "accent")
+                write(
+                    y,
+                    left,
+                    {"username": "Username", "password": "Password", "confirm": "Confirm password"}[
+                        name
+                    ],
+                    room,
+                    "accent",
+                )
                 text = editor.text if name == "username" else "*" * len(editor.text)
                 offset = max(0, editor.cursor - (room - 5))
                 visible = fit_cells(text[offset:], room - 4)
-                write(y + 1, left, "[ " + visible.ljust(room - 4) + " ]", room, "selected" if focus == name else "muted")
+                write(
+                    y + 1,
+                    left,
+                    "[ " + visible.ljust(room - 4) + " ]",
+                    room,
+                    "selected" if focus == name else "muted",
+                )
                 hits.append((y + 1, left, left + room, name))
                 if focus == name:
-                    cursor = (y + 1, left + 2 + cell_width(text[offset:editor.cursor]))
+                    cursor = (y + 1, left + 2 + cell_width(text[offset : editor.cursor]))
             if mode == "login":
                 label = ("[x]" if remember else "[ ]") + " Remember me on this device"
                 write(top + 13, left, label, room, "selected" if focus == "remember" else "muted")
@@ -96,7 +117,9 @@ def prompt_auth(server, message="", username="", choice="login"):
                     continue
                 if not state & getattr(curses, "BUTTON1_CLICKED", 0):
                     continue
-                target = next((target for row, a, b, target in hits if row == y and a <= x < b), None)
+                target = next(
+                    (target for row, a, b, target in hits if row == y and a <= x < b), None
+                )
                 if target is None:
                     continue
                 if target.startswith("mode:"):
@@ -124,7 +147,10 @@ def prompt_auth(server, message="", username="", choice="login"):
                 if _USERNAME.fullmatch(user) is None:
                     error, focus = "Username: 1-32 letters, digits, _, . or -.", "username"
                 elif not password or (mode == "signup" and len(password) < 8):
-                    error, focus = "Enter a password" if mode == "login" else "Use at least 8 characters.", "password"
+                    error, focus = (
+                        "Enter a password" if mode == "login" else "Use at least 8 characters.",
+                        "password",
+                    )
                 elif mode == "signup" and password != fields["confirm"].text:
                     error, focus = "Passwords do not match; correct either field.", "confirm"
                 else:
@@ -133,10 +159,10 @@ def prompt_auth(server, message="", username="", choice="login"):
             if focus in fields:
                 editor = fields[focus]
                 if key in (curses.KEY_BACKSPACE, "\b", "\x7f") and editor.cursor:
-                    editor.text = editor.text[:editor.cursor - 1] + editor.text[editor.cursor:]
+                    editor.text = editor.text[: editor.cursor - 1] + editor.text[editor.cursor :]
                     editor.cursor -= 1
                 elif key == curses.KEY_DC:
-                    editor.text = editor.text[:editor.cursor] + editor.text[editor.cursor + 1:]
+                    editor.text = editor.text[: editor.cursor] + editor.text[editor.cursor + 1 :]
                 elif key == curses.KEY_LEFT:
                     editor.cursor = max(0, editor.cursor - 1)
                 elif key == curses.KEY_RIGHT:
@@ -149,4 +175,5 @@ def prompt_auth(server, message="", username="", choice="login"):
                     editor.replace("")
                 elif isinstance(key, str) and key.isprintable():
                     editor.insert(key)
+
     return curses.wrapper(screen)

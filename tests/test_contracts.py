@@ -1,4 +1,4 @@
-"""Fixture/interface checks only; no production protocol validator or networking."""
+"""Protocol fixture, session identity and in-memory transport contracts."""
 
 import json
 import unittest
@@ -11,7 +11,7 @@ from lancollab.common.contracts import (
     PROTOCOL_VERSION,
     SessionIdentity,
 )
-from lancollab.common.examples import example_cases, example_messages
+from tests.examples import example_cases
 from tests.fake_transport import FakeTransport
 from lancollab.common.message_schema import FIELD_LIMITS, MESSAGE_FIELDS
 
@@ -25,10 +25,9 @@ def matches_fields(direction: str, message: Envelope) -> bool:
     return set(spec["required"]) <= keys <= set(spec["required"]) | set(spec["optional"])
 
 
-class ContractScaffoldTests(unittest.TestCase):
+class ContractTests(unittest.TestCase):
     def test_fixture_envelopes_match_exact_direction_schema(self) -> None:
         cases = example_cases()
-        self.assertEqual(set(example_messages()) - set(cases), set())
         for name, case in cases.items():
             with self.subTest(name=name):
                 message = case.message
@@ -79,7 +78,7 @@ class ContractScaffoldTests(unittest.TestCase):
 
     def test_json_fixtures_have_direction_outside_wire_envelope(self) -> None:
         fixture_path = Path(__file__).parent / "fixtures" / "sample-messages.json"
-        for case in json.loads(fixture_path.read_text(encoding="utf-8")):
+        for case in json.loads(fixture_path.read_text(encoding="utf-8")).values():
             self.assertEqual(set(case), {"direction", "message"})
             item = case["message"]
             self.assertEqual(item["version"], PROTOCOL_VERSION)
@@ -89,7 +88,7 @@ class ContractScaffoldTests(unittest.TestCase):
     def test_events_preserve_concrete_session_target_on_takeover(self) -> None:
         old = SessionIdentity("192.0.2.1", 50001, "session-old", "alice")
         replacement = SessionIdentity("192.0.2.1", 50002, "session-new", "alice")
-        event = OutboundEvent(old, example_messages()["auth_ok"])
+        event = OutboundEvent(old, example_cases()["auth_ok"].message)
         self.assertEqual(event.recipient, old)
         self.assertNotEqual(event.recipient, replacement)
 
@@ -103,7 +102,7 @@ class ContractScaffoldTests(unittest.TestCase):
     def test_fake_peer_contract(self) -> None:
         client, server = FakeTransport.pair()
         self.assertIsInstance(client, MessageTransport)
-        auth = example_messages()["auth"]
+        auth = example_cases()["auth"].message
         client.send(auth)
         self.assertEqual(server.receive(), auth)
         with self.assertRaises(TimeoutError):

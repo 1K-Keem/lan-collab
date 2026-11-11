@@ -1,5 +1,9 @@
-# Contract fixture directory (not integration tests)
+# Protocol fixtures
 
-`sample-messages.json` contains synthetic v1.2 cases shaped as `{direction, message}`. The direction is test metadata; only `message` is the wire envelope. `example_cases()` uses the same convention and `example_messages()` keeps the earlier smoke API. Fixtures never carry real credentials. They intentionally do **not** exercise TCP, TLS, authentication, cryptographic security or file integrity. Those require production code and real socket tests.
+`sample-messages.json` is the single source of synthetic message cases. Each named
+case has `direction` (`C` or `S`) and `message`; only `message` is the wire envelope.
+`tests/examples.py` loads these into `Envelope` objects for codec and contract tests.
 
-The declarative field catalog is `lancollab/common/message_schema.py`. Implementers must add runtime validation of field **types**, ranges, nested values, conditional presence fields, extra keys, directions and session/state authorization.
+Fixtures contain no real credentials. Round-trip codec tests exercise the production
+validator; real sockets, TLS and file integrity are covered separately by integration
+tests. Runtime field definitions live in `lancollab/common/message_schema.json`.

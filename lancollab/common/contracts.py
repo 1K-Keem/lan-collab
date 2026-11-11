@@ -45,7 +45,7 @@ class OutboundEvent:
 
 @runtime_checkable
 class MessageTransport(Protocol):
-    """Exchange complete messages; TV2 provides real TLS/TCP implementation."""
+    """Exchange complete messages; SocketTransport provides the TLS/TCP implementation."""
 
     def send(self, message: Envelope) -> None: ...
 
@@ -55,7 +55,7 @@ class MessageTransport(Protocol):
 
 
 class ProtocolCodec(Protocol):
-    """Encode/decode one complete framed TCP message (TV2 TODO)."""
+    """Encode/decode one complete framed TCP message using the production codec."""
 
     def encode(self, message: Envelope) -> bytes: ...
 

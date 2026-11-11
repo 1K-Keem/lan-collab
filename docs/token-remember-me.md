@@ -16,10 +16,10 @@ again.
 
 ### First login (password)
 
-1. Client finds the server (UDP discovery or `--host`) and opens a
-   verified TLS connection.
-2. User picks **Login**, enters username/password, and answers
-   `Remember me on this machine? [y/N]`.
+1. Client finds the server (UDP discovery or `--host`).
+2. User picks **Login**, enters username/password, and selects Remember Me.
+   The client then opens verified TLS before sending credentials; typing time
+   does not consume the server authentication deadline.
 3. The client sends `AUTH_REQUEST {username, password, remember_me}`.
 4. On success the server replies `AUTH_RESULT {ok, username, role, token?}`.
    The `token` field is present only when `remember_me` was true.
@@ -96,7 +96,7 @@ only `token_store.py`.
 | Revoke on password change / account rejection | `lancollab/server/accounts.py` (`_revoke_tokens`) |
 | Client login with token, `issued_token` on `AUTH_RESULT` | `lancollab/client/application.py` (`login_with_token`, `login(..., remember_me=)`) |
 | Token storage (keyring, else 0600 file) | `lancollab/client/token_store.py` (`TokenStore`) |
-| Auto-login on launch, save on login, delete on `/quit` | `lancollab/client/cli.py`, `lancollab/client/__main__.py` |
+| Auto-login on launch, save on login, delete on `/logout` | `lancollab/client/cli.py`, `lancollab/client/__main__.py` |
 | Wire schema | `lancollab/common/message_schema.json`, `lancollab/common/codec.py` |
 
 ## Tests
@@ -105,7 +105,7 @@ only `token_store.py`.
   token ≠ password hash, password change and account rejection revoke tokens.
 - `tests/test_auth_integration.py` — real server over TLS: password login
   with `remember_me` issues a token, token-only login on a new connection
-  succeeds, `/quit`-style LOGOUT revokes it, and login without
+  succeeds, `/logout` revokes it, and login without
   `remember_me` issues no token.
 - `tests/test_codec.py` — `AUTH_RESULT` with an optional token, and the
   `TOKEN_EXPIRED` / `TOKEN_REVOKED` failure codes.
@@ -119,4 +119,5 @@ only `token_store.py`.
   only the current session's token; the server CLI can change the password
   to revoke everything.
 - Tokens are not bound to an IP address (DHCP changes the client IP),
-  only to the verified server identity and the account.
+  the server verifies token ownership against the account in its database.
+  The client stores tokens by server host and verifies TLS before sending them.

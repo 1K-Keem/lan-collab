@@ -14,7 +14,7 @@ from lancollab.common.codec import (
     check_frame_length,
 )
 from lancollab.common.contracts import Envelope
-from lancollab.common.examples import example_cases
+from tests.examples import example_cases
 from lancollab.common.message_schema import MESSAGE_FIELDS
 
 SERVER = JsonFrameCodec("server")  # decodes C:, encodes S:

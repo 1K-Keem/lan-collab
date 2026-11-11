@@ -1,1 +1,1 @@
-"""Client application skeleton owned by TV3."""
+"""Terminal client, discovery, local history and file transfers."""

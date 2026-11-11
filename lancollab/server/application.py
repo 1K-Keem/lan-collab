@@ -1,4 +1,4 @@
-"""TV1 server handler: auth, sessions, presence, chat routing.
+"""Server handler: auth, sessions, presence, chat routing.
 
 No networking here. handle_message() returns OutboundEvents; the
 connection layer in connections.py delivers them to the right transports.

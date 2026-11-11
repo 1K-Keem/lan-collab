@@ -1,36 +1,29 @@
-# Contributing to LAN Collab
+# Contributing
 
-## One-week assignment workflow
+1. Work on a short-lived branch and describe the concrete change in a pull request.
+2. Keep shared protocol changes consistent across client, server, schema and tests.
+3. Update the user guide when commands or visible behavior change.
+4. Run the checks below and document any manual verification or limitations.
+5. Ask another team member to review changes, particularly authentication, file
+   lifecycle and concurrency behavior.
 
-- Open or claim an Issue. The `TV1`, `TV2`, and `TV3` identifiers are roles, not GitHub accounts.
-- Work on a short-lived branch from `main`, for example `feature/server-auth` or `feature/file-transfer`.
-- Submit a Pull Request with the issue link (`Closes #N`), test evidence, and an updated README/doc entry for new behavior.
-- One other team member reviews schema changes and any work crossing a module boundary.
-- Treat CP-A/B/C as integrated acceptance gates; review and merge small compatible PRs between gates.
-- Prefer small, frequent integrations over long-lived divergent branches.
-- Never commit passwords, private keys, real credentials, or downloaded user files.
+```bash
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
+python -m ruff format --check .
+python -m unittest discover -s tests -p "test_*.py"
+```
 
-## Ownership guide
+Tests use synthetic accounts and temporary certificates. `tests/fake_transport.py`
+provides deterministic in-memory messages for client logic; socket tests verify
+framing, TLS and real connection behavior. Shared synthetic messages live in
+`tests/fixtures/sample-messages.json`. Keep test helpers out of the runtime package.
 
-| Area | Primary reviewer |
-| --- | --- |
-| `lancollab/server/` | TV1 |
-| `lancollab/common/`, protocol and transfer core | TV2 |
-| `lancollab/client/`, client file I/O, discovery and test harness | TV3 |
-| `docs/`, cross-module changes | Entire team |
+For multi-client/file checks and manual LAN evidence, follow
+[acceptance.md](docs/acceptance.md). Do not commit private keys, passwords, account
+databases, tokens or downloaded files. The public server certificate is the
+intentional exception: coordinate its distribution with the group server's identity.
 
-## Definition of Done for an Issue
-
-1. Acceptance criteria checked against running behavior or reviewed design.
-2. Source follows the shared protocol contract.
-3. Test cases and failure paths are documented and run.
-4. No secrets committed and no unhandled crashes on invalid input.
-5. PR describes what changed and exactly how to reproduce it.
-
-## Commit style
-
-Examples: `feat(server): route global messages`, `test(protocol): cover partial TCP reads`, `docs: add sequence diagrams`.
-
-## Instructor requirements and academic integrity
-
-The assignment document says AI can assist with syntax reference/debugging, and all members must be able to explain their code during the defense. Use this repository to plan and collaborate; implement graded functions yourselves. Instructor clarification is needed on conflicting public/private repo instructions.
+Use concise commit messages such as `Fix file cancellation cleanup` or
+`Document client certificate setup`. Follow the course's academic integrity rules;
+each contributor should understand and be able to explain the code they submit.

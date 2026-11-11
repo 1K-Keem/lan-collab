@@ -3,7 +3,7 @@
 Nothing here performs network I/O or blocks. The pieces:
 
 * :class:`AckLedger` -- shared W=8 credit/ACK-boundary accounting used on both ends.
-* :class:`TransferRegistry` -- the *server's* authorization and state machine. TV1 feeds it
+* :class:`TransferRegistry` -- the *server's* authorization and state machine. The server feeds it
   authenticated messages and enqueues the returned :class:`Forward` actions after releasing
   its own locks.
 * :class:`OutgoingTransfer` -- the sender's state (credit window, receiver-confirmed progress).
@@ -118,7 +118,7 @@ class AckLedger:
 
 @dataclass(frozen=True)
 class Forward:
-    """An event TV1 must enqueue for ``recipient`` (a concrete session, never a username)."""
+    """An event the server must enqueue for ``recipient`` (a concrete session, never a username)."""
 
     recipient: SessionIdentity
     message: Envelope
@@ -245,7 +245,7 @@ class TransferRegistry:
     def offer(
         self, sender: SessionIdentity, receiver: SessionIdentity, message: Envelope
     ) -> Outcome:
-        """Admit a ``C:FILE_OFFER``. TV1 resolves ``payload['to']`` to ``receiver`` first."""
+        """Admit a ``C:FILE_OFFER``. The server resolves ``payload['to']`` to ``receiver`` first."""
         payload = message.payload
         with self._lock:
             sender_rec = self._sessions.get(sender.session_id)
@@ -419,7 +419,7 @@ class TransferRegistry:
 
     # ------------------------------------------------------------- timers / failures
     def mark_written(self, transfer_id: str, message_type: str) -> None:
-        """TV1's writer reports a completed socket write; this starts the matching deadline.
+        """The server writer reports a completed socket write; this starts the matching deadline.
 
         ``FILE_OFFER`` (to receiver) starts the 60 s decision timer, ``FILE_ACCEPT`` (to
         sender) the 10 s first-data timer, ``FILE_END`` (to receiver) the 30 s verification

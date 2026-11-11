@@ -1,28 +1,107 @@
 # Using the application
 
-## First setup
+Use this guide for the full-screen TUI and plain CLI. One computer runs the group
+server; every participant, including the administrator, opens a client. TLS protects
+each client-server connection. The server can read relayed content; this is not E2EE.
 
-Use the group's agreed repository and matching public certificate. The server operator
-keeps `server-secret.pem` private. On a new server installation only:
+## Install the application
+
+Use Python 3.11 or newer. Download the group's agreed repository and run commands
+from its root (the folder containing `run`, `lan-collab` and `lancollab/`). See
+[README installation](../README.md#install) for cloning and virtual-environment setup.
+Install dependencies with `python -m pip install -r requirements-dev.txt` using the
+same Python that will launch the app. Native Windows TUI users also need
+`python -m pip install windows-curses`; the plain CLI does not require curses.
+
+Do not run the server or certificate generator on a client just to connect. Obtain
+the **current** `server-public.pem` from the admin or agreed trusted repository.
+
+## Server setup
+
+On the administrator's machine, create an admin once and start the server:
 
 ```bash
-python -m lancollab.common.devcerts --out certs/direct-trust --bundle-cert
 ./run --add-admin admin
 ./run
 ```
 
-`./run` is a launcher for the server (`python -m lancollab.server`); every server
-flag passes through (`--port`, `--db`, `--add-admin`, `--change-password`). On
-Windows use `run.bat` the same way. Press `Ctrl+C` to stop the server cleanly.
+The first command securely prompts for a password and confirmation, then exits.
+The second keeps serving until Ctrl+C. `./run` launches `python -m lancollab.server`;
+all server flags pass through. Native Windows uses `.\run.bat`.
 
-The server never creates an admin or approves an account on its own: the first
-admin is created by hand with `./run --add-admin`, and every self-registered
-account stays pending until an admin approves it with `/approve USER`. There is
-no auto-approve mode.
+First startup automatically creates the default certificate/key pair if both files
+are missing, using cryptography or the system OpenSSL command. It copies the public
+certificate into this checkout's `lancollab/client/server-public.pem`. Existing
+pairs are preserved; partial or mismatched pairs fail. Keep the existing identity
+when restarting. See [TLS setup](tls-setup.md) for deliberate certificate renewal.
 
-If certificates already exist, keep them and use the existing setup. Regenerating the
-identity requires redistributing the public certificate; see [TLS setup](tls-setup.md).
-Do not distribute the private key or the account database.
+### Give clients the matching public certificate
+
+Only distribute `certs/direct-trust/server-public.pem`. Each client can place that
+public file at `lancollab/client/server-public.pem`, or select it explicitly:
+
+```bash
+./lan-collab --host SERVER_IP --trusted-cert "/path/to/server-public.pem"
+```
+
+Trust-file selection is `--trusted-cert`, then `LANCOLLAB_TRUSTED_CERT`, then the
+bundled public certificate. The expected TLS name stays `lan-collab.local` when
+connecting by LAN or VPN IP. The app does not fetch a new certificate from GitHub
+at login; it uses the local copy.
+
+When distributing through GitHub, the admin must publish the updated **public**
+bundle and members must download it. A changed file in the server's working tree
+is not yet a change in someone else's clone. Keep `server-secret.pem`, the account
+database and saved login tokens private. Compare fingerprints using the
+[troubleshooting steps](#troubleshooting) if a client rejects the server.
+
+### Server options
+
+| Option | Meaning |
+| --- | --- |
+| `--port 40000` | TCP/TLS service port |
+| `--udp-port 40001` | Discovery and UDP probe port |
+| `--max-clients 32` | Maximum simultaneous connections, including handshakes |
+| `--db accounts.db` | SQLite accounts, server tokens and offline private-message queue |
+| `--add-admin USER` | Create an active admin account and exit |
+| `--change-password USER` | Prompt for a new account password and exit |
+| `--cert PATH --key PATH` | Use an existing certificate and matching private key |
+| `--auto-approve` | Optional onboarding mode described [below](#optional-automatic-onboarding) |
+
+Relative paths are based on the working directory. Use the same database path for
+admin provisioning and server startup. For example:
+
+```bash
+./run --db data/group.db --add-admin admin
+./run --db data/group.db --port 41000 --udp-port 41001
+```
+
+Clients must use matching port options. The default requires manual approval:
+new accounts stay pending until an admin approves them from their client.
+
+## Choose the server address
+
+| Where the server runs | Client command |
+| --- | --- |
+| Same environment as the client | `./lan-collab --host 127.0.0.1` |
+| Same reachable LAN | `./lan-collab` to discover, or `./lan-collab --host SERVER_LAN_IP` |
+| Reachable over an existing Tailscale network | `./lan-collab --host SERVER_TAILSCALE_IP` |
+| Custom ports | `./lan-collab --host SERVER_IP --port 41000 --udp-port 41001` |
+
+Replace uppercase placeholders with actual addresses. `--host` skips discovery.
+`127.0.0.1` refers to the client's own environment, not another computer. With WSL,
+use an address that reaches the environment running the server; do not assume the
+Windows host and WSL have interchangeable addresses. Check host firewall/routing
+for TCP 40000 and UDP 40001 (or your configured ports).
+
+For an existing Tailscale setup, run `tailscale status` to map peer addresses to
+device names, and `tailscale ip -4` on the server to find its address. Use an
+explicit `--host` for this connection. A device name identifies a node, not the
+person or process making a connection. Tailscale access policy and host firewall
+rules must allow the service, and the client still needs the correct public TLS
+certificate. See Tailscale's [connection guide](https://tailscale.com/docs/how-to/connect-to-devices)
+and [connectivity troubleshooting](https://tailscale.com/docs/reference/troubleshooting/connectivity/connect-device-failure).
+Tailscale is optional; the offline LAN workflow does not require it.
 
 ## Connect and join
 
@@ -56,6 +135,20 @@ again. EOF or Ctrl+C exits the prompt. New accounts require admin approval via
 The password is sent inside verified TLS and stored as a salted scrypt hash. Admin review
 shows account names and creation times, not passwords.
 
+The administrator also opens a client and logs in using the provisioned admin
+account. The server terminal does not have to pause for approvals. In the admin's
+client, use:
+
+```text
+/pending
+/approve alice
+/reject-user bob
+```
+
+Replace the example names with pending usernames. Ordinary members cannot approve
+accounts. Background pending-list refresh is quiet; an existing user's login or
+Remember Me does not create a new signup request.
+
 The TUI starts with a full-screen login/signup form. Click the tabs or press **F2**
 to switch modes. **Tab / Shift+Tab / Up / Down** moves focus; Enter advances to the
 next field and submits from the button. Passwords are masked. Click the Remember me
@@ -76,9 +169,9 @@ happen before connecting, so user typing does not consume the authentication dea
 | --- | --- |
 | `/users`, `/status` | Online users and connection state |
 | `/all TEXT` | Global message |
-| `/msg USER TEXT` | Private message to an online user |
+| `/msg USER TEXT` | Private message; queued for an existing active account if offline |
 | `/send USER PATH` | Offer a file; quote paths containing spaces |
-| `/accept ID`, `/reject ID`, `/cancel ID` | Consent, decline or cancel a transfer |
+| `/accept [ID] [PATH]`, `/reject ID`, `/cancel ID` | Consent, decline or cancel a transfer |
 | `/history` | Browse your saved login sessions; select one to read its full conversation |
 | `/history show ID` | Display every saved message from the selected session (plain console or TUI) |
 | `/history USER`, `/history all` | Last 50 messages for a peer in this login, or across your sessions |
@@ -142,14 +235,44 @@ session's private messages are available. Slash commands remain usable; switchin
 from Direct restores the normal global composer. Offline private messages are queued
 by the server for delivery when the recipient next logs in.
 
+## Send and receive files
+
+Alice offers a file to Bob:
+
+```text
+/send bob "notes/chapter 3.pdf"
+```
+
+Bob sees the incoming offer and chooses **Accept** to open the folder picker, or
+uses the offer's ID (a unique short prefix is enough):
+
+```text
+/accept 4b44b161 "~/Downloads/Study notes"
+/transfers
+```
+
+The ID is an example, not a fixed value. `/accept` alone accepts the only pending
+offer into the default directory. `/reject [ID]` declines an offer; `/cancel [ID]`
+stops a transfer. Files may be at most 50 MiB. A picker requires tkinter and a
+working desktop display; slash commands work when the picker is unavailable.
 
 Files accepted via `/accept` or F6 are saved in `downloads/` (change with
-`--downloads-dir`); the Accept button uses the folder chosen in its dialog. `/files`
+`--downloads-dir`). To choose a folder for just this file, use
+`/accept 123e4567 "~/Documents/Study notes"`, or
+`/accept --dir "~/Downloads"` when only one offer is pending. The explicit `--dir PATH` form
+also works after an ID. Paths may contain spaces; Windows backslashes are preserved. Under WSL use Linux paths such as
+`/mnt/c/Users/YOUR_NAME/Downloads`. On native Windows, use a path such as
+`C:\Users\YOUR_NAME\Downloads`. The folder is created if necessary, and the
+completion notice shows the saved path. This does not change the default folder;
+the Accept button uses the folder chosen in its dialog. `/files`
 lists the default downloads directory, not arbitrary chosen folders. The receiver validates
 size, order and SHA-256 before committing a unique destination name. The sender reports
 success only after the receiver's final success result. Offline recipients cannot receive
 files (both sides must be online for a transfer); private messages to an offline user are
-stored on the server and delivered on their next login.
+stored on the server for their next login. The offline private-message queue holds
+up to 100 messages per recipient for up to 24 hours; older messages are dropped
+when full. It is not a permanent chat archive, and delivery is not guaranteed if
+the server fails while handing off queued messages. Global chat is live only.
 
 ## Local history
 
@@ -190,6 +313,9 @@ The TUI header shows your account/role, verified TLS connection, online count, T
 round-trip times, and last DM reply target. RTT probes run only when you use `/ping`, `/net`, or F4; the header shows the last
 measurement. A dash means no measurement yet. Server liveness keepalives remain silent. At 76 columns or wider, the right panel
 shows online users, active transfers and (for admins) pending accounts. F2 toggles it.
+Progress updates replace the existing bar instead of adding ACK notices to chat.
+The plain interactive CLI also updates a single line; redirected output contains
+only lifecycle notices (use `/transfers` for an explicit progress snapshot).
 The file dock shows incoming offers and receiver-confirmed outgoing progress; 100% is
 not success until receiver verification completes.
 
@@ -197,7 +323,7 @@ not success until receiver verification completes.
 | --- | --- |
 | `@bob Hello` | Private-message shorthand for `/msg bob Hello` |
 | `/reply Thanks` | Reply to the last peer who DMed you or whom you last sent a DM |
-| `/accept [ID]`, `/reject [ID]`, `/cancel [ID]` | Use a full UUID, unique short prefix, or omit it when exactly one eligible transfer exists |
+| `/accept [ID] [PATH]`, `/reject [ID]`, `/cancel [ID]` | Use a full UUID, unique short prefix, or omit it when exactly one eligible transfer exists |
 | `/transfers` | Active transfers with IDs, progress bars, byte counts and status |
 | `/files` | Saved files and sizes; temporary downloads are excluded |
 | `/search chapter 3` | Literal text/peer search across your local history sessions; last 50 matches |
@@ -212,7 +338,13 @@ Category tabs can be clicked or selected with Alt+1/2/3/4, so ordinary numeric c
 still works. F3 cycles filters. F1 opens help; F4 probes TCP and UDP; F5 lists transfers;
 F6 accepts the sole pending offer (asks for an ID through an error if there are several).
 Ctrl+W deletes the previous word, Ctrl+K deletes to the end, and Ctrl+L clears the display.
-Global chat is green, DMs bold magenta, file events yellow, admin events blue and errors red.
+Chat colors distinguish senders; file, admin and error notices also have distinct styles.
+
+`/reply TEXT` uses the last DM peer shown in the header; `/msg USER TEXT` explicitly
+chooses a recipient. `/help` includes a display-filter
+guide: All includes every notice, Global shows group chat, Direct opens private
+conversations, and Files shows transfer notices. A selected Direct conversation changes
+the plain-text recipient; the other tabs use global chat.
 
 ## Optional automatic onboarding
 
@@ -228,15 +360,48 @@ members. Existing pending users activate only after a correct password login. In
 passwords and rejected accounts are never auto-approved. On a fresh server, the intended
 administrator should be the first person to sign up or log in.
 
-Default server startup now generates a certificate/key pair if neither default file exists,
-and copies the public certificate into this checkout's client bundle. It uses cryptography
-when installed, otherwise the system `openssl` command. Existing pairs are preserved;
-partial/mismatched pairs fail instead of silently changing identity. Custom `--cert`/`--key`
-paths must already exist. Other machines still need the public certificate from the agreed
-trusted repository; automatic generation does not distribute trust across the network.
+## Troubleshooting
 
-`/reply TEXT` uses the last DM peer shown in the header; `/msg USER TEXT` explicitly
-chooses a recipient. The `/r` alias has been removed. `/help` includes a display-filter
-guide: All includes every notice, Global shows group chat, Direct opens private
-conversations, and Files shows transfer notices. A selected Direct conversation changes
-the plain-text recipient; the other tabs use global chat.
+### TLS rejects the server (`TLSV1_ALERT_UNKNOWN_CA`)
+
+This server log means the connecting peer rejected the server's certificate. It
+does not mean you need to buy a CA certificate. Read the failing client's error;
+it prints its trusted certificate path and expected server name.
+
+Compare the fingerprints on the two machines:
+
+```bash
+# On the server (substitute the --cert path if customized)
+openssl x509 -in certs/direct-trust/server-public.pem -noout -fingerprint -sha256
+
+# On the client (substitute its selected --trusted-cert/environment path if set)
+openssl x509 -in lancollab/client/server-public.pem -noout -fingerprint -sha256
+```
+
+If they differ, obtain the intended server's current public certificate from the
+agreed trusted source and replace the client's copy, or pass `--trusted-cert PATH`.
+Restart the client. A server certificate edited on disk requires a server restart
+to take effect. Never share `server-secret.pem` or disable verification.
+
+If fingerprints match, check the client's full error, certificate dates, system
+clock and expected name (`lan-collab.local`). See [TLS troubleshooting](tls-setup.md#diagnosing-rejected-connections).
+Repeated failures from different source ports are separate connection attempts.
+If the source is a Tailscale peer, `tailscale status` helps identify the device;
+check that device for a client or test script repeatedly connecting.
+
+### Other common problems
+
+| Symptom | What to do |
+| --- | --- |
+| `No UDP discovery reply` | Start the server; try `--host SERVER_IP`; check UDP port, firewall and LAN routing |
+| Connection refused or timeout | Check address, TCP port, server process and route; use the server's reachable address, not another machine's localhost |
+| `ACCOUNT_PENDING` | Ask an admin to `/approve USER`, then log in again |
+| `No matching transfer` or ambiguous ID | Run `/transfers`; use a current ID or a longer unique prefix |
+| Cannot save into a folder | Check the path and write permissions; under WSL use `/mnt/c/...`; retry the pending offer with another folder |
+| Picker unavailable | Use `/send USER PATH` or `/accept ID PATH`; native dialogs need tkinter and a desktop display |
+| No curses support | Use `python -m lancollab.client --host SERVER_IP`; native Windows TUI needs `windows-curses` |
+| Package installed but Python cannot import it | Use `python -m pip install -r requirements-dev.txt` from the active environment |
+| `No module named lancollab` | Run from the project root using `python -m lancollab.client`; run tests with `python -m unittest discover -s tests -p "test_*.py"` |
+
+`/ping` checks TCP/TLS latency; `/net` checks UDP; F4 runs both. These are manual
+checks. A failed UDP probe does not by itself mean the TCP chat connection is broken.

@@ -1,6 +1,7 @@
 """TokenService unit tests: issue/verify/expiry/revocation."""
 
 import sqlite3
+from contextlib import closing
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,7 @@ class TokenServiceTests(unittest.TestCase):
     def test_expired_token(self):
         raw = self.tokens.issue("alice")
         past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        with sqlite3.connect(self.db) as conn:
+        with closing(sqlite3.connect(self.db)) as conn, conn:
             conn.execute("UPDATE tokens SET expires_at = ?", (past,))
         self.assertEqual(self.tokens.verify(raw), (None, "TOKEN_EXPIRED"))
 

@@ -24,8 +24,5 @@ jobs:
         run: ruff format --check .
       - name: Compile Python sources
         run: python -m compileall -q lancollab tests scripts
-      - name: Run scaffold unit tests
+      - name: Run unit and integration tests
         run: python -m unittest discover -s tests -p "test_*.py"
-      - name: Run mock-only contract smoke
-        run: python -m scripts.mock_contract_demo
-# Green scaffold tests do not imply real TCP/TLS/chat/file milestones are done.

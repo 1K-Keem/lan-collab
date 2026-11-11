@@ -1,4 +1,4 @@
-"""TV2 transfer primitives exercised through the production authenticated TLS relay."""
+"""Transfer primitives exercised through the production authenticated TLS relay."""
 
 from typing import Any
 import hashlib

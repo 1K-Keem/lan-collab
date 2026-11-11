@@ -27,6 +27,37 @@ TRUST_ENV_VAR = "LANCOLLAB_TRUSTED_CERT"
 _PRIVATE_KEY_MARKER = "PRIVATE KEY-----"
 
 
+def tls_failure_detail(error: ssl.SSLError) -> str:
+    """Explain OpenSSL's reason without guessing from a generic SSLError name."""
+    detail = str(error)
+    if isinstance(error, ssl.SSLCertVerificationError):
+        hint = (
+            "Check the trusted server-public.pem, the expected server name, "
+            "certificate validity dates and the client clock."
+        )
+    elif getattr(error, "reason", "") in {
+        "TLSV1_ALERT_UNKNOWN_CA",
+        "SSLV3_ALERT_BAD_CERTIFICATE",
+        "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+        "SSLV3_ALERT_CERTIFICATE_EXPIRED",
+    }:
+        hint = (
+            "The peer rejected the certificate. Check its client-side verification error; "
+            "clients need the server's public certificate from the agreed trusted source."
+        )
+    elif getattr(error, "reason", "") in {
+        "WRONG_VERSION_NUMBER",
+        "HTTP_REQUEST",
+        "HTTPS_PROXY_REQUEST",
+    }:
+        hint = "The peer may be using plaintext or the wrong service port; this port requires TLS."
+    elif isinstance(error, ssl.SSLEOFError):
+        hint = "The peer closed the connection without completing TLS shutdown."
+    else:
+        hint = "Check the peer's TLS error and that both sides use the LAN Collab TLS endpoint."
+    return f"{detail}. {hint}"
+
+
 def validate_trusted_cert(path: str | Path) -> str:
     """Return ``path`` as a string after checking it is a loadable, *public* certificate file."""
     path = Path(path)

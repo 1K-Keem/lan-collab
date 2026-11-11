@@ -1,7 +1,7 @@
-"""Declarative field catalog for the v1.2 design (not a runtime validator).
+"""Declarative field catalog for wire protocol version 1.
 
-Schema is data, shared by codec implementations and mock tests. Full state,
-type/range validation and authorization remain student implementation TODOs.
+The codec consumes this data for type/range validation; handlers enforce
+authorization and state transitions. Tests use the same catalog to detect drift.
 """
 
 import json

@@ -30,7 +30,8 @@ concurrent connections, including connections still completing TLS. Options incl
    cannot remove the replacement username mapping.
 7. Chat is routed to exact authenticated sessions. File requests use `TransferRegistry`
    for consent, role checks, offsets, window credit, deadlines and cancellation. The
-   server relays bounded frames; it does not save files or chat history.
+   server relays bounded file frames without saving files. Offline private messages
+   are held in a bounded SQLite queue; long-term chat history is client-local.
 8. Each connection tracks up to 65,536 request IDs without eviction. Duplicates are
    rejected without repeating operations. Matching PONG replies are exempt. Semantic
    validation errors produce a correlated ERROR; framing failures close the connection.
@@ -53,18 +54,19 @@ own receiver, notice and file-sender workers; those are separate processes.
 | `server/outbound.py` | Bounded mailboxes, fair scheduling, purge and drain |
 | `server/application.py` | Login/approval, session registry, presence, chat and transfer dispatch |
 | `server/accounts.py`, `server/tokens.py` | SQLite password hashes and revocable token hashes |
+| `server/queue.py` | Bounded, expiring offline private-message storage |
 | `server/discovery.py` | UDP discovery and heartbeat responses |
 | `common/transfer_core.py` | Transfer state, role authorization, credit and timers |
 
 ## Verification
 
 ```bash
-python -m unittest tests.test_server_connections tests.test_auth_integration tests.test_production_server tests.test_tv2_integration -v
+python -m unittest tests.test_server_connections tests.test_auth_integration tests.test_production_server tests.test_transfer_integration -v
 python -m scripts.simulate_clients --clients 20 --host 127.0.0.1 --send-auth
 ```
 
 The simulation checks discovery/TLS and rejection of synthetic credentials, not successful
-login. `test_production_server` and `test_tv2_integration` use the actual authenticated
+login. `test_production_server` and `test_transfer_integration` use the actual authenticated
 server for chat, files, takeover and failures. The old unauthenticated MiniRelay has been
 removed. [Local benchmark](local-benchmark.json) records a separate loopback workload;
 [acceptance instructions](acceptance.md) describe the remaining two-host evidence.

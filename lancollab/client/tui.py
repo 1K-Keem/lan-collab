@@ -39,7 +39,7 @@ COMMANDS = (
     Suggestion("/send", "USER PATH", "Offer a file to someone"),
     Suggestion("/users", "", "See who is online"),
     Suggestion("/history", "[USER|all|show ID]", "Browse your saved login sessions"),
-    Suggestion("/accept", "ID", "Accept an incoming file"),
+    Suggestion("/accept", "[ID] [PATH]", "Accept a file into an optional folder"),
     Suggestion("/reject", "ID", "Decline a file offer"),
     Suggestion("/cancel", "ID", "Cancel a file transfer"),
     Suggestion("/status", "", "Connection and network status"),
@@ -172,6 +172,7 @@ def chat_sender(message):
 
 _USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
 
+
 def valid_username(name):
     """Only names the command parser can address unambiguously become clickable."""
     return isinstance(name, str) and _USERNAME.fullmatch(name) is not None
@@ -183,20 +184,27 @@ def choose_file(*, folder=False):
         import tkinter as tk
         from tkinter import filedialog
     except ImportError as error:
-        raise RuntimeError("Picker needs tkinter; use /accept ID or /send USER PATH instead.") from error
+        raise RuntimeError(
+            "Picker needs tkinter; use /accept ID or /send USER PATH instead."
+        ) from error
     root = None
     try:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
         if folder:
-            return filedialog.askdirectory(parent=root, title="Choose where to save the file", mustexist=True)
+            return filedialog.askdirectory(
+                parent=root, title="Choose where to save the file", mustexist=True
+            )
         return filedialog.askopenfilename(parent=root, title="Choose a file to send")
     except tk.TclError as error:
-        raise RuntimeError("Cannot open picker; use /accept ID or /send USER PATH instead.") from error
+        raise RuntimeError(
+            "Cannot open picker; use /accept ID or /send USER PATH instead."
+        ) from error
     finally:
         if root is not None:
             root.destroy()
+
 
 def composer_guidance(text):
     """Hint for a bare /msg or /send template, including path guidance."""
@@ -208,6 +216,7 @@ def composer_guidance(text):
         if head == "/msg":
             return "Message: type your private message, then Enter"
     return None
+
 
 SENDER_STYLES = ("sender_a", "sender_b", "sender_c", "sender_d", "sender_e")
 
@@ -544,9 +553,7 @@ def run_tui(session):
                 or (revision is not None and revision != direct_conversations_revision)
             ):
                 try:
-                    direct_conversations = [
-                        tuple(row) for row in session.direct_conversations()
-                    ]
+                    direct_conversations = [tuple(row) for row in session.direct_conversations()]
                 except (ValueError, RuntimeError, OSError, sqlite3.Error):
                     direct_conversations = direct_conversations or []
                     direct_flash = (
@@ -896,7 +903,9 @@ def run_tui(session):
                     write(4, 2, "Direct conversations · newest first", width - 4, "accent")
                     body_start = 5
                     if not direct_conversations:
-                        write(5, 2, "No private conversations yet. Open one from ONLINE.", width - 4)
+                        write(
+                            5, 2, "No private conversations yet. Open one from ONLINE.", width - 4
+                        )
                     else:
                         visible = max(1, capacity)
                         start = max(
@@ -947,9 +956,7 @@ def run_tui(session):
                             sender = "you" if direction == "sent" else safe_display(peer)
                             prefix = f"{local_time(timestamp)}  {sender}: "
                             style = "accent" if direction == "sent" else "dm"
-                            for pre, line in wrap_prefixed(
-                                prefix, safe_display(text), chat_width
-                            ):
+                            for pre, line in wrap_prefixed(prefix, safe_display(text), chat_width):
                                 rows.append((pre, line, style))
                         if not rows:
                             rows = [("", "No private messages in this conversation yet.", "muted")]
@@ -983,9 +990,7 @@ def run_tui(session):
                 if scroll == 0:
                     unseen = 0
                 end = len(rows) - scroll
-                for y, (pre, line, style) in enumerate(
-                    rows[max(0, end - capacity) : end], 4
-                ):
+                for y, (pre, line, style) in enumerate(rows[max(0, end - capacity) : end], 4):
                     if pre:
                         write(y, 2, pre, chat_width, "muted")
                     write(
@@ -1011,9 +1016,13 @@ def run_tui(session):
                 for row in dock_rows[:2]:
                     sidebar_rows.append((f"{row['peer']}: {row['name']}", "file", None, None))
                     if row["status"] == "offer":
-                        sidebar_rows.append(("[Accept] [Reject]", "file", "file_buttons", row["id"]))
+                        sidebar_rows.append(
+                            ("[Accept] [Reject]", "file", "file_buttons", row["id"])
+                        )
                     else:
-                        sidebar_rows.append((f"{row['status']} {progress_bar(row, 6)}", "file", None, None))
+                        sidebar_rows.append(
+                            (f"{row['status']} {progress_bar(row, 6)}", "file", None, None)
+                        )
                 if not dock_rows:
                     sidebar_rows.append(("No active transfers", "muted", None, None))
                 if role == "admin":
@@ -1130,9 +1139,7 @@ def run_tui(session):
                 kind, target = menu[0], menu[1]
                 if kind == "people":
                     entries = [
-                        (f"● {name}", ("open_user", name))
-                        for name in users
-                        if valid_username(name)
+                        (f"● {name}", ("open_user", name)) for name in users if valid_username(name)
                     ]
                     if role == "admin":
                         entries += [
@@ -1175,10 +1182,7 @@ def run_tui(session):
                     title = f"{title} {menu[2] + 1}/{len(entries)}"
                 menu_width = min(
                     width - 4,
-                    max(
-                        [cell_width(title)]
-                        + [cell_width("  " + label) for label, _ in entries]
-                    )
+                    max([cell_width(title)] + [cell_width("  " + label) for label, _ in entries])
                     + 4,
                 )
                 menu_height = menu_visible + 1
@@ -1211,9 +1215,7 @@ def run_tui(session):
                             menu_width - 4,
                             "selected" if index == menu[2] else "muted",
                         )
-                        hits.append(
-                            (row, menu_x, menu_x + menu_width, ("menu_item", index))
-                        )
+                        hits.append((row, menu_x, menu_x + menu_width, ("menu_item", index)))
                 else:
                     menu = None
             hint_style = "muted"
@@ -1257,11 +1259,7 @@ def run_tui(session):
                     else:
                         if bstate & getattr(curses, "BUTTON1_CLICKED", 0):
                             hit = hit_at(mouse_x, mouse_y)
-                            if (
-                                hit
-                                and hit[0] == "menu_item"
-                                and 0 <= hit[1] < len(entries)
-                            ):
+                            if hit and hit[0] == "menu_item" and 0 <= hit[1] < len(entries):
                                 if not perform(entries[hit[1]][1]):
                                     return
                             else:
@@ -1452,11 +1450,7 @@ def run_tui(session):
                     elif bstate & getattr(curses, "BUTTON1_CLICKED", 0):
                         hit = hit_at(mouse_x, mouse_y)
                         if menu is not None:
-                            if (
-                                hit
-                                and hit[0] == "menu_item"
-                                and 0 <= hit[1] < len(entries)
-                            ):
+                            if hit and hit[0] == "menu_item" and 0 <= hit[1] < len(entries):
                                 if not perform(entries[hit[1]][1]):
                                     return
                             else:

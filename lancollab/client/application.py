@@ -1,4 +1,4 @@
-"""TV3 Issue #7: transport-independent client message/state logic.
+"""Client: transport-independent client message/state logic.
 
 Requires a MessageTransport implementation. This module does not establish
 TCP/TLS, and the auth_allowed opt-in does not verify TLS. Never set it True
@@ -107,7 +107,7 @@ class CollabClient:
         self._request_prefix = uuid4().hex  # random per-client/session prefix
         self._notices: list[Notice] = []
         self._lock = RLock()
-        self._send_lock = RLock()  # TV2's writer/transport must serialize frame bytes
+        self._send_lock = RLock()  # The writer/transport must serialize frame bytes
         # Current-session private DMs, kept even when history saving is off.
         # The TUI polls direct_revision instead of rescanning history.
         self._direct_lock = Lock()
@@ -318,7 +318,7 @@ class CollabClient:
     def handle_event(self, event: Envelope) -> None:
         """Handle exactly one validated server event; no blocking I/O under state lock.
 
-        The production codec (TV2) must validate message schema before this method.
+        The production codec must validate message schema before this method.
         Tests with FakeTransport exercise state transitions, not codec validation.
         """
         reply: Envelope | None = None
@@ -329,7 +329,7 @@ class CollabClient:
             with self._lock:
                 if self.state is ClientState.CLOSED:
                     return
-                # Defense in depth for test doubles; TV2's production codec is
+                # Defense in depth for test doubles; the production codec is
                 # responsible for complete wire-schema and frame validation.
                 if not isinstance(event, Envelope):
                     raise ProtocolViolation("Expected Envelope")

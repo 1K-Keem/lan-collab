@@ -1,58 +1,63 @@
-# Architecture and parallel development — revision 1.2
+# Architecture
 
-**Status:** Production server/client integration updated 10 Nov 2026. See [server flow](server-connections.md), [client guide](client-guide.md) and [acceptance evidence](acceptance.md). Team acknowledgments remain a separate review.
+LAN Collab uses one central server and one persistent TLS connection per client.
+The TUI and plain CLI share client state, commands and file handling. See the
+[transport diagram](diagrams/transport-overview.md) and [user guide](client-guide.md).
 
-## Components and transport
+## Components
 
-```text
-Client Alice ---- TCP/TLS ----+
-Client Bob ------ TCP/TLS ----+--- Central server
-Client Charlie -- TCP/TLS ----+     session/auth and presence registry
-             UDP discovery -->     chat routing + bounded file streaming relay
-           UDP HEARTBEAT -->       (no server-side file persistence)
-```
+| Component | Responsibility |
+| --- | --- |
+| `client/__main__.py`, `auth_tui.py`, `cli.py`, `tui.py` | Connection setup, authentication forms and terminal interfaces |
+| `client/application.py` | Authenticated state, requests/responses, presence, chat and file-event dispatch |
+| `client/transfers.py` | File consent, sender worker, receiver writes, cumulative ACKs and verified save |
+| `client/history.py`, `token_store.py` | Local conversation history and remembered login |
+| `client/discovery.py`, `server/discovery.py` | UDP discovery and explicit network-quality probes |
+| `common/codec.py`, `message_schema.py`, `message_schema.json` | Length-prefixed JSON and strict field/type/direction validation |
+| `common/socket_transport.py`, `tls.py` | Serialized frame writes, bounded reads and verified TLS |
+| `common/transfer_core.py` | Session-bound transfer authorization, window credit and deadlines; independently tested transfer primitives |
+| `server/connections.py`, `outbound.py` | Concurrent connection lifecycle, liveness and bounded writer queues |
+| `server/application.py` | Account approval, session registry, takeover, presence and routing |
+| `server/accounts.py`, `tokens.py`, `queue.py` | Password/token hashes and bounded offline private-message storage |
 
-- TCP/TLS: 4-byte unsigned big-endian length, UTF-8 JSON v1 envelope; control messages and file chunks use one serialized writer per connection.
-- UDP: `DISCOVER/DISCOVER_REPLY` and `HEARTBEAT/HEARTBEAT_ACK` (client UDP ephemeral source port). UDP measures discovery and network quality; TCP PING/PONG determines online status.
-- Single server; client-local chat history, no server history. No HTTP/WebSocket, direct P2P, file resume, multiple data sockets or E2EE.
-- Main CLI package entry points: `python -m lancollab.server` and `python -m lancollab.client`.
+## Data paths
 
-## Package owners and independent starts
+TCP/TLS carries login, presence, chat, file chunks and transfer control. Frames have
+a four-byte big-endian length followed by UTF-8 JSON. Each connection has one writer;
+file END stays behind its chunks, while control traffic has bounded priority.
 
-| TV | Owned implementation | Independent starting surface |
-| --- | --- | --- |
-| TV1 | TCP accept/thread lifecycle, login CLI account provisioning, sessions, chat routing, per-connection bounded queues | `lancollab/server/application.py` and `FakeTransport` |
-| TV2 | Shared codec/validation, TLS/cert helper, socket-independent transfer state/credits/authorization core | `lancollab/common/socket_transport.py`, schema catalog and fixtures |
-| TV3 | Client CLI, file consent/disk I/O and streaming worker, UDP, contract and integration tests | `lancollab/client/application.py`, synthetic `example_messages()` |
+UDP discovery finds a candidate endpoint. The client verifies that server through
+TLS before sending credentials. UDP heartbeat reports network quality; TCP
+PING/PONG determines session liveness. See [UDP flow](diagrams/client-udp-probes.md).
 
-**Hard integration dependencies:** TV1+TV3 need reviewed envelope schema before real message handlers; TV2's socket codec is needed at Checkpoint A. File transfer end-to-end depends on authenticated routing/receiver client, but chunking and protocol tests can begin immediately.
+The server relays files without persisting their contents. The receiver writes to
+a temporary file, checks size/order/SHA-256 and commits a non-overwriting filename.
+ACK progress confirms received bytes; only the final success result confirms a
+verified file. See [file lifecycle](diagrams/file-transfer.md).
 
-## Decisions to implement consistently
+Each login has a distinct session ID. Takeover cancels the old session's transfers;
+old events and cleanup cannot target a replacement login. The server uses bounded
+queues and transfer windows to limit memory. Full state/limit rules live in the
+[protocol specification](protocol-spec.md), with the thread lifecycle in
+[server connections](server-connections.md).
 
-- New valid login atomically supersedes stale authenticated session; attach generation token so stale cleanup cannot log off new session.
-- AUTH 10s after TLS; three invalid attempts per connection; salted scrypt password hashes in SQLite. Network registration creates pending accounts; an admin approves them. The first admin is provisioned locally.
-- Enforce username charset; sanitize ANSI/control sequences for terminal display.
-- `USER_LIST` atomic snapshot plus ordered `PRESENCE_UPDATE`; online presence includes IP+ephemeral TCP source port, offline omits those fields.
-- Application sender window W=8 16-KiB chunks; receiver cumulative `FILE_ACK(next_offset)` every four chunks and final partial; window bounded at both client and server.
-- Per-recipient nonblocking queues: 128 controls and 32 file frames; one fair writer, 4 control frames per 1 file frame. `FILE_END` shares FIFO with chunks. Control queue saturation => close slow client; file queue saturation => cancel transfer.
-- Active UUIDs are globally unique; terminal IDs cannot be reused within either participant session (1024 admitted offers/session cap). Transfers and outbound events target exact session IDs; takeover cancels displaced-session transfers.
-- END does not wait for ACK drain; final ACK is valid in VERIFYING, must land on a chunk boundary and precedes success RESULT.
-- Basic verified TLS is required before CP-B authentication; CP-C adds certificate failures, packet capture and load tests.
-- At most one active incoming file/receiver, no server-side storage, temp-file SHA-256 checked by receiver.
-- Cancel active transfers consistently using FILE_CANCEL; never rely on `ERROR` alone for an already-active transfer.
-- Timeouts in [protocol spec](protocol-spec.md); peer verification and cross-platform TLS certificate instructions are part of acceptance.
+## Storage and trust
 
-## Visual references
+- Server SQLite: accounts, salted password hashes, token hashes and pending offline
+  private messages (up to 100 per recipient, expiring after 24 hours).
+- Client SQLite: saved chat history, scoped by server identity and user account.
+- Client token store: remembered login, separate from chat history.
+- Receiver disk: verified downloads and temporary files during an active transfer.
+- Server key: private; clients receive only its public certificate through the
+  agreed trusted distribution channel. See [TLS setup](tls-setup.md).
 
-- [Transport overview](diagrams/transport-overview.md)
-- [TCP framing](diagrams/tcp-framing.md)
-- [Connection, login, global/private chat](diagrams/connection-and-chat.md)
-- [File offer/ACK/window, state machine](diagrams/file-transfer.md)
-- [Bounded queue scheduling](diagrams/outbound-queues.md)
-- [Parallel work/CP-A/CP-B/CP-C](diagrams/parallel-work-dependencies.md)
+TLS encrypts each client-server connection. The server can read messages and relay
+file contents; this is not E2EE or direct peer-to-peer networking. Transfers do not
+resume after disconnect. Offline private-message delivery is at most once and is
+not a substitute for client history.
 
-## Remaining decisions external to code
+## Verification
 
-- Lecturer clarification whether TLS-only qualifies for encryption milestone.
-- Confirm inconsistent assignment submission deadline and public/private repository policy.
-- Record actual team reviews; do not mark networking done based on mocks or green scaffold CI.
+[Acceptance instructions](acceptance.md) separate automated unit/loopback evidence
+from the two-host, packet-capture and terminal checks needed for submission.
+The [assignment checklist](assignment-checklist.md) maps those checks to the rubric.

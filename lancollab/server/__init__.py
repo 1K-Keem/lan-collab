@@ -1,1 +1,1 @@
-"""Server application skeleton owned by TV1."""
+"""Server connections, accounts, routing and file relay."""

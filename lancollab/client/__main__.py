@@ -5,6 +5,7 @@ from hashlib import sha256
 from pathlib import Path
 import sys
 import sqlite3
+import ssl
 
 from lancollab.client.cli import (
     AuthenticationError,
@@ -16,7 +17,7 @@ from lancollab.client.history import HistoryStore
 from lancollab.client.branding import print_welcome
 from lancollab.client.discovery import DiscoveryClient, select_server
 from lancollab.client.token_store import TokenStore, _config_dir
-from lancollab.common.tls import resolve_trusted_cert
+from lancollab.common.tls import resolve_trusted_cert, tls_failure_detail
 from lancollab.common.socket_transport import SocketTransport
 
 
@@ -40,7 +41,7 @@ def _ask_remember_me() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="LAN Collab portable client (TV3)")
+    parser = argparse.ArgumentParser(description="LAN Collab terminal client")
     parser.add_argument("--host", help="Explicit server IP/hostname (skips discovery)")
     parser.add_argument("--port", type=int, default=40000)
     parser.add_argument(
@@ -122,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
                     auth_message = "Saved login expired; please log in again."
                     if not args.tui:
                         print(auth_message, file=sys.stderr)
+
             # 2) No (usable) token: ask for credentials BEFORE connecting, to
             # honor the server's auth deadline. A failed attempt returns to
             # this menu; every attempt opens a fresh TLS connection.
@@ -147,7 +149,9 @@ def main(argv: list[str] | None = None) -> int:
 
                     credentials = prompt_auth(
                         f"{endpoint.host}:{endpoint.tcp_port}",
-                        auth_message, auth_username, auth_choice,
+                        auth_message,
+                        auth_username,
+                        auth_choice,
                     )
                     if credentials is None:
                         return 0
@@ -193,6 +197,13 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
+    except ssl.SSLError as error:
+        print(
+            f"TLS connection failed: {tls_failure_detail(error)}\n"
+            f"Trusted certificate: {trusted_cert}\nExpected server name: {args.server_name}",
+            file=sys.stderr,
+        )
+        return 1
     except (ConnectionError, OSError, RuntimeError, TimeoutError, sqlite3.Error) as error:
         print(f"Client stopped: {error}", file=sys.stderr)
         return 1

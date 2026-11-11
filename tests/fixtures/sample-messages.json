@@ -1,5 +1,265 @@
-[
-  {
+{
+  "auth": {
+    "direction": "C",
+    "message": {
+      "type": "AUTH_REQUEST",
+      "request_id": "req-auth",
+      "payload": {
+        "username": "alice",
+        "password": "mock-only-never-use"
+      },
+      "version": 1
+    }
+  },
+  "auth_ok": {
+    "direction": "S",
+    "message": {
+      "type": "AUTH_RESULT",
+      "request_id": "req-auth",
+      "payload": {
+        "ok": true,
+        "username": "alice",
+        "role": "member"
+      },
+      "version": 1
+    }
+  },
+  "user_list": {
+    "direction": "S",
+    "message": {
+      "type": "USER_LIST",
+      "request_id": "event-1",
+      "payload": {
+        "users": [
+          {
+            "username": "bob",
+            "ip": "192.0.2.2",
+            "port": 50123
+          }
+        ]
+      },
+      "version": 1
+    }
+  },
+  "presence_online": {
+    "direction": "S",
+    "message": {
+      "type": "PRESENCE_UPDATE",
+      "request_id": "event-2",
+      "payload": {
+        "username": "bob",
+        "status": "online",
+        "ip": "192.0.2.2",
+        "port": 50123
+      },
+      "version": 1
+    }
+  },
+  "presence_offline": {
+    "direction": "S",
+    "message": {
+      "type": "PRESENCE_UPDATE",
+      "request_id": "event-3",
+      "payload": {
+        "username": "bob",
+        "status": "offline"
+      },
+      "version": 1
+    }
+  },
+  "global_chat": {
+    "direction": "C",
+    "message": {
+      "type": "CHAT_GLOBAL",
+      "request_id": "req-global",
+      "payload": {
+        "text": "Hello all"
+      },
+      "version": 1
+    }
+  },
+  "private_chat": {
+    "direction": "C",
+    "message": {
+      "type": "CHAT_PRIVATE",
+      "request_id": "req-private",
+      "payload": {
+        "to": "bob",
+        "text": "Hello Bob"
+      },
+      "version": 1
+    }
+  },
+  "chat_ack": {
+    "direction": "S",
+    "message": {
+      "type": "CHAT_ACK",
+      "request_id": "req-private",
+      "payload": {
+        "status": "queued"
+      },
+      "version": 1
+    }
+  },
+  "file_offer": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_OFFER",
+      "request_id": "req-offer",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "to": "bob",
+        "name": "example.txt",
+        "size": 5,
+        "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      },
+      "version": 1
+    }
+  },
+  "file_accept": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_ACCEPT",
+      "request_id": "req-accept",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666"
+      },
+      "version": 1
+    }
+  },
+  "file_chunk": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_CHUNK",
+      "request_id": "req-chunk-0",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "seq": 0,
+        "offset": 0,
+        "data_b64": "aGVsbG8="
+      },
+      "version": 1
+    }
+  },
+  "file_ack": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_ACK",
+      "request_id": "req-ack-0",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "next_offset": 5
+      },
+      "version": 1
+    }
+  },
+  "file_end": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_END",
+      "request_id": "req-end",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "total_chunks": 1
+      },
+      "version": 1
+    }
+  },
+  "file_result": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_RESULT",
+      "request_id": "req-result",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "ok": true
+      },
+      "version": 1
+    }
+  },
+  "file_cancel": {
+    "direction": "C",
+    "message": {
+      "type": "FILE_CANCEL",
+      "request_id": "req-cancel",
+      "payload": {
+        "transfer_id": "b1b2b3b4-1111-4222-8333-444455556666",
+        "reason": "TIMEOUT"
+      },
+      "version": 1
+    }
+  },
+  "ping": {
+    "direction": "S",
+    "message": {
+      "type": "PING",
+      "request_id": "req-ping",
+      "payload": {
+        "nonce": "dummy-nonce"
+      },
+      "version": 1
+    }
+  },
+  "pong": {
+    "direction": "C",
+    "message": {
+      "type": "PONG",
+      "request_id": "req-ping",
+      "payload": {
+        "nonce": "dummy-nonce"
+      },
+      "version": 1
+    }
+  },
+  "error": {
+    "direction": "S",
+    "message": {
+      "type": "ERROR",
+      "request_id": "req-private",
+      "payload": {
+        "code": "USER_OFFLINE",
+        "message": "Recipient unavailable"
+      },
+      "version": 1
+    }
+  },
+  "auth_failed": {
+    "direction": "S",
+    "message": {
+      "type": "AUTH_RESULT",
+      "request_id": "req-auth-bad",
+      "payload": {
+        "ok": false,
+        "error_code": "AUTH_FAILED"
+      },
+      "version": 1
+    }
+  },
+  "routed_global": {
+    "direction": "S",
+    "message": {
+      "type": "CHAT_GLOBAL",
+      "request_id": "event-global",
+      "payload": {
+        "from": "alice",
+        "text": "Hi"
+      },
+      "version": 1
+    }
+  },
+  "routed_private": {
+    "direction": "S",
+    "message": {
+      "type": "CHAT_PRIVATE",
+      "request_id": "event-private",
+      "payload": {
+        "from": "alice",
+        "text": "Hi"
+      },
+      "version": 1
+    }
+  },
+  "wire_sample_0": {
     "direction": "C",
     "message": {
       "version": 1,
@@ -11,7 +271,7 @@
       }
     }
   },
-  {
+  "wire_sample_1": {
     "direction": "S",
     "message": {
       "version": 1,
@@ -22,7 +282,7 @@
       }
     }
   },
-  {
+  "wire_sample_2": {
     "direction": "S",
     "message": {
       "version": 1,
@@ -34,7 +294,7 @@
       }
     }
   },
-  {
+  "wire_sample_3": {
     "direction": "S",
     "message": {
       "version": 1,
@@ -48,4 +308,4 @@
       }
     }
   }
-]
+}

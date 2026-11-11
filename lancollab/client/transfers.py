@@ -1,6 +1,6 @@
-"""TV3 client-side file I/O, consent and receiver-confirmed progress.
+"""Client-side file I/O, consent and receiver-confirmed progress.
 
-TV2 owns shared transfer-core validation; TV1 owns server relay/queues.
+Shared transfer validation and server relay/queues are separate from client disk I/O.
 This module uses Envelope payloads through an injected sender, never sockets.
 """
 
@@ -110,7 +110,7 @@ class Incoming:
 
 
 class TransferManager:
-    """One session's client transfer data; server and TV2 remain external.
+    """One session's client transfer data; server relay and protocol validation remain external.
 
     External callbacks are called with no manager lock held. All transfer IDs
     are terminal-tombstoned until a new session/manager is constructed.
@@ -258,6 +258,7 @@ class TransferManager:
             if entry is None or entry.handle is not None:
                 raise TransferError("No pending file offer")
             destination = Path(directory) if directory is not None else self.downloads_dir
+            destination = destination.expanduser().resolve()
             destination.mkdir(parents=True, exist_ok=True)
             # Reserve a unique filename by choosing candidates, then link atomically on success.
             base = Path(entry.name)
@@ -266,9 +267,7 @@ class TransferManager:
             while candidate.exists():
                 candidate = destination / f"{base.stem} ({number}){base.suffix}"
                 number += 1
-            fd, temp_name = tempfile.mkstemp(
-                prefix=".lancollab-", suffix=".part", dir=destination
-            )
+            fd, temp_name = tempfile.mkstemp(prefix=".lancollab-", suffix=".part", dir=destination)
             entry.handle = os.fdopen(fd, "wb")
             entry.temp_path = Path(temp_name)
             entry.final_path = candidate
@@ -408,11 +407,9 @@ class TransferManager:
             while entry.outstanding and entry.outstanding[0] <= offset:
                 entry.outstanding.popleft()
             entry.ack_bytes = offset
-            size = entry.size
             self._cv.notify_all()
-        filled = 20 if size == 0 else min(20, offset * 20 // size)
-        bar = "#" * filled + "-" * (20 - filled)
-        self._announce(f"File receiver-confirmed [{bar}]: {offset}/{size} bytes (not yet verified)")
+        # Render progress from snapshot(), in place. ACKs are flow-control events,
+        # not chat notices: a large transfer must not flood the transcript.
 
     def on_chunk(self, payload: dict[str, Any]) -> None:
         if set(payload) != {"transfer_id", "seq", "offset", "data_b64"}:
@@ -493,7 +490,9 @@ class TransferManager:
                 result["reason"] = "SIZE_HASH_OR_SAVE_FAILED"
             self._send("FILE_RESULT", result)
         finally:
-            self._announce(f"File {'saved' if ok else 'verification failed'}: {entry.name}")
+            self._announce(
+                f"File saved: {path}" if ok else f"File verification failed: {entry.name}"
+            )
             self._finish(transfer_id)
 
     def on_terminal(self, kind: str, payload: dict[str, Any]) -> None:

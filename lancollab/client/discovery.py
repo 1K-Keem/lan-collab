@@ -1,7 +1,7 @@
-"""TV3 UDP discovery and network-quality probes (not an authentication channel).
+"""UDP discovery and network-quality probes (not an authentication channel).
 
 Datagrams are bare JSON, <= 1200 bytes. Each client binds an ephemeral port.
-The server implementation and verified TCP/TLS connection belong to TV1/TV2.
+The server responder and verified TCP/TLS connection live in separate modules.
 """
 
 from dataclasses import dataclass

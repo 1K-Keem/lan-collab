@@ -2,7 +2,9 @@
 
 **Connection-flow update (9 November 2026):** Application greetings have been removed. Standard TCP and verified TLS handshakes remain; authentication is the first application exchange. Deploy client and server together: the previous greeting-based flow is incompatible. Wire version remains 1 for this pre-release project. The 10-second authentication deadline begins at TLS completion.
 
-**Status:** REVISED IMPLEMENTATION BASELINE — **TEAM REVIEW PENDING** (9 November 2026). Direct authentication replaces the previous greeting exchange. This supersedes the v1.2 connection flow; TV1, TV2 and TV3 must confirm the changed contract in [Issue #2](https://github.com/1K-Keem/lan-collab/issues/2) before merging incompatible networking handlers. The **wire envelope version remains integer `1`** because production has not shipped; “1.3” names this documentation revision, not a different on-wire version.
+The **wire envelope version is integer `1`**; “1.3” names this documentation
+revision, not a different on-wire version. Review protocol changes across client,
+server and shared validation together.
 
 **Scope:** Python 3.11+, raw TCP and UDP sockets, one server, no HTTP/WebSocket/P2P, no persistent server-side file storage, no resuming interrupted transfers.
 
@@ -45,7 +47,7 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 | `LOGOUT` | C→S | `reason?:str` | Client requests session closure **and revokes the session token**; sent only by `/logout`, never by `/quit`, Ctrl+C or a disconnect |
 | `ERROR` | S→C | `code:str, message:str` | Direct reply, same `request_id` as rejected request |
 
-**Strict schema:** no unknown payload keys; username, filename, size, nonnegative sequence/offset, hash and valid JSON types must be checked by TV2's real codec/server handlers. A schema-valid message can still be rejected for unauthorized sender, invalid state or capacity. `FILE_ACK` and `FILE_RESULT` forwarded by server get new event `request_id` and are correlated with `transfer_id`.
+**Strict schema:** no unknown payload keys; username, filename, size, nonnegative sequence/offset, hash and valid JSON types must be checked by the codec/server handlers. A schema-valid message can still be rejected for unauthorized sender, invalid state or capacity. `FILE_ACK` and `FILE_RESULT` forwarded by server get new event `request_id` and are correlated with `transfer_id`.
 
 ## 3. Authentication and sessions
 
@@ -201,25 +203,15 @@ Never expose passwords/password hashes, stack traces or keys in errors. The form
 - Provide cross-platform cert-generation/trust instructions without committing private keys.
 - **Pending:** ask lecturer to confirm TLS-only satisfies the “encrypt/decrypt payload” milestone. Do not add a second AES-GCM layer unless explicitly required.
 
-## 9. Three-person implementation boundaries
+## 9. Verification and diagrams
 
-- **TV1:** accept/read/write lifecycle, account/session registry, chat routing, bounded queues, relay integration and invalidation/cleanup by exact session ID.
-- **TV2:** codec and strict validation, TLS/certificate setup, transfer state/authorization/credit core independent of sockets. TV2 provides reviewed interfaces and test cases for TV1/TV3.
-- **TV3:** client receive loop and CLI, file consent and disk I/O, sender streaming worker, receiver ACK/hash/rename, progress, UDP and integration harness. Coordinate the file API with TV2 before implementing handlers.
+The [acceptance runbook](acceptance.md) lists automated tests, load commands and
+remaining manual evidence. Synthetic fixtures are test inputs, not proof of real
+TCP/TLS operation. Production codec, connection and file tests exercise those paths.
 
-Keep dummy-driven work parallel; small reviewed PRs may merge between checkpoints. CP-A/B/C accept complete real-socket paths. Basic verified TLS is a prerequisite for CP-B authentication; CP-C extends TLS failure/capture/load coverage. Network quality polish follows the working chat/file vertical slices. Synthetic examples carry direction metadata outside the wire envelope; schema checks must select the exact direction/type pair.
-
-## 10. Protocol review and diagrams
-
-- [x] Owner requested v1.2 corrections for flow control, ordering, states, auth, UDP, IDs and schemas.
-- [ ] TV1 reviews server routing, session takeover, queue and auth constraints in Issue #2.
-- [ ] TV2 reviews codec, schema catalog, FILE_ACK window, ordering and TLS in Issue #2.
-- [ ] TV3 reviews client IDs, UDP quality probes, CLI sanitization and progress in Issue #2.
-- [ ] Team confirms actual integration behavior at CP-A/CP-B/CP-C.
-
-Reference diagrams: [architecture](diagrams/transport-overview.md), [framing](diagrams/tcp-framing.md), [connection/chat](diagrams/connection-and-chat.md), [file transfer](diagrams/file-transfer.md), [queues](diagrams/outbound-queues.md), [parallel integration](diagrams/parallel-work-dependencies.md).
-
-**Important:** This document is a design contract. Existing `FakeTransport` and fixture checks are not production TCP/TLS/file implementations; no grading milestone is complete until demonstrated with real sockets and validated results.
+Reference diagrams: [architecture](diagrams/transport-overview.md),
+[framing](diagrams/tcp-framing.md), [connection/chat](diagrams/connection-and-chat.md),
+[file transfer](diagrams/file-transfer.md), [queues](diagrams/outbound-queues.md).
 
 ### Optional auto-approval mode
 

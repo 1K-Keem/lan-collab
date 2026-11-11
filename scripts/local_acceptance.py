@@ -15,7 +15,7 @@ from lancollab.common.tls import create_server_context
 from lancollab.server.accounts import AccountService
 from lancollab.server.application import CollabServer
 from lancollab.server.connections import ConnectionServer
-from scripts.tv3_real_smoke import run
+from scripts.load_test import run
 
 
 def main():

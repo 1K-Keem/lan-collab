@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import socket
+import ssl
 import tempfile
 from threading import Thread
 from time import monotonic, sleep
@@ -114,3 +115,34 @@ class ConnectionServerTests(unittest.TestCase):
         with self.assertRaises(ConnectionError):
             client.receive(timeout=2)
         self.wait_count(server, 0)
+
+    def test_rejected_cert_reports_reason_releases_slots_and_good_client_still_connects(self):
+        server, _ = self.start(max_clients=1)
+        with tempfile.TemporaryDirectory() as directory:
+            wrong = generate_dev_certs(directory)
+            with self.assertLogs("lancollab.server.connections", level="WARNING") as logs:
+                for _ in range(3):
+                    with self.assertRaises(ssl.SSLCertVerificationError):
+                        SocketTransport.connect_verified(
+                            "127.0.0.1", server.port, trusted_cert=str(wrong.server_cert)
+                        )
+                    self.wait_count(server, 0)
+            self.assertEqual(len(logs.output), 3)
+            self.assertTrue(all("TLS handshake failed" in line for line in logs.output))
+            self.assertTrue(all("UNKNOWN_CA" in line for line in logs.output))
+        self.connect(server)
+        self.wait_count(server, 1)
+
+    def test_plaintext_connection_logs_tls_reason(self):
+        server, _ = self.start()
+        with self.assertLogs("lancollab.server.connections", level="WARNING") as logs:
+            with socket.create_connection(("127.0.0.1", server.port), timeout=2) as raw:
+                raw.sendall(b"GET / HTTP/1.0\r\n\r\n")
+                raw.settimeout(2)
+                try:
+                    self.assertEqual(raw.recv(1), b"")
+                except ConnectionResetError:
+                    pass
+            self.wait_count(server, 0)
+        self.assertIn("TLS handshake failed", logs.output[0])
+        self.assertIn("HTTP_REQUEST", logs.output[0])

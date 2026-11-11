@@ -19,6 +19,7 @@ from lancollab.client.tui import run_tui
 
 OFFER_ID = "12345678-aaaa-bbbb-cccc-1234567890ab"
 
+
 class FakeFiles:
     def __init__(self, rows=()):
         self.rows = [dict(row) for row in rows]
@@ -29,6 +30,7 @@ class FakeFiles:
 
     def accept(self, transfer_id, *, directory=None):
         self.accepted.append((transfer_id, directory))
+
 
 class FakeClient:
     def __init__(self, *, role="member", users=(), pending=(), transfers=()):
@@ -42,6 +44,7 @@ class FakeClient:
         self.last_tcp_rtt = None
         self.direct_revision = 0
         self.files = FakeFiles(transfers)
+
 
 class FakeSession:
     def __init__(self, *, conversations=(), transcripts=None, **client):
@@ -73,6 +76,7 @@ class FakeSession:
 
     def close(self):
         self.closed = True
+
 
 class FakeWindow:
     """Minimal curses window that renders into rows and returns scripted input."""
@@ -148,6 +152,7 @@ class FakeWindow:
         self.mouse.append((0, x, y, 0, bstate))
         return self.module.KEY_MOUSE
 
+
 def fake_curses(window):
     module = ModuleType("curses")
     module.window = window
@@ -180,14 +185,18 @@ def fake_curses(window):
     module.mouse_mask = 0
     module.program_mode = True
     module.def_prog_mode = lambda: None
+
     def endwin():
         module.program_mode = False
         module.mouse_mask = 0
+
     def reset_prog_mode():
         module.program_mode = True
+
     def mousemask(mask):
         module.mouse_mask = mask
         return 0
+
     module.endwin = endwin
     module.reset_prog_mode = reset_prog_mode
     module.mousemask = mousemask
@@ -207,6 +216,7 @@ def fake_curses(window):
     module.wrapper = wrapper
     return module
 
+
 def click(label, *, right=False, occurrence=0):
     def event(window):
         y, x = window.find(label, occurrence)
@@ -214,6 +224,7 @@ def click(label, *, right=False, occurrence=0):
         return window.click_mouse(x, y, state)
 
     return event
+
 
 def expect(condition, then):
     """Assert the frame just drawn, then supply the next event."""
@@ -224,9 +235,11 @@ def expect(condition, then):
 
     return event
 
+
 def timeout(window):
     """Simulate curses reporting no follow-up byte after a lone Esc."""
     raise window.module.error("timeout")
+
 
 def run(session, events, rows=24, columns=100):
     window = FakeWindow(rows, columns, events)
@@ -236,6 +249,7 @@ def run(session, events, rows=24, columns=100):
         run_tui(session)
     return window
 
+
 class ContextMenuEventLoopTests(unittest.TestCase):
     def test_send_file_picker_preserves_spaces_and_cancel_sends_nothing(self):
         for path in (r"C:\My files\notes.txt", ""):
@@ -243,7 +257,8 @@ class ContextMenuEventLoopTests(unittest.TestCase):
                 session = FakeSession(users=("alice", "bob"))
                 events = [
                     expect(lambda w: "● alice" not in w.all_text(), click("bob", right=True)),
-                    click("Send file"), "\x03",
+                    click("Send file"),
+                    "\x03",
                 ]
                 with patch("lancollab.client.tui.choose_file", return_value=path):
                     run(session, events)
@@ -255,9 +270,17 @@ class ContextMenuEventLoopTests(unittest.TestCase):
 
     def test_picker_error_keeps_chat_usable(self):
         session = FakeSession(users=("bob",))
-        with patch("lancollab.client.tui.choose_file", side_effect=RuntimeError("Picker unavailable")):
-            run(session, [click("bob"), click("Send file"),
-                          expect(lambda w: "Picker unavailable" in w.all_text(), "\x03")])
+        with patch(
+            "lancollab.client.tui.choose_file", side_effect=RuntimeError("Picker unavailable")
+        ):
+            run(
+                session,
+                [
+                    click("bob"),
+                    click("Send file"),
+                    expect(lambda w: "Picker unavailable" in w.all_text(), "\x03"),
+                ],
+            )
         self.assertEqual(session.executed, [])
 
     def test_left_click_is_the_menu_fallback(self):
@@ -284,10 +307,12 @@ class ContextMenuEventLoopTests(unittest.TestCase):
         )
         for folder in (r"C:\Saved files", ""):
             session = FakeSession(users=("bob",), transfers=(offer,))
+
             def sidebar_accept(window):
                 y, x = window.find("[Accept]")
                 self.assertGreaterEqual(x, window.columns - 24)
                 return window.click_mouse(x, y, window.module.BUTTON1_CLICKED)
+
             with patch("lancollab.client.tui.choose_file", return_value=folder):
                 run(session, [sidebar_accept, "\x03"])
             self.assertEqual(session.client.files.accepted, [(OFFER_ID, folder)] if folder else [])
@@ -297,24 +322,40 @@ class ContextMenuEventLoopTests(unittest.TestCase):
         self.assertEqual(session.executed[-1].args, (OFFER_ID,))
 
     def test_online_menu_remains_clickable_after_send_and_accept_dialogs(self):
-        offer = dict(id=OFFER_ID, direction="in", name="notes.txt", peer="bob",
-                     done=0, size=10, status="offer")
+        offer = dict(
+            id=OFFER_ID,
+            direction="in",
+            name="notes.txt",
+            peer="bob",
+            done=0,
+            size=10,
+            status="offer",
+        )
         for result in ("", r"C:\Saved files", RuntimeError("Picker failed")):
             session = FakeSession(users=("bob",), transfers=(offer,))
-            window = FakeWindow(24, 100, [
-                click("bob"), click("Send file"),
-                click("bob", right=True),
-                expect(lambda w: "Direct message" in w.all_text(), "\x1b"),
-                click("[Accept]"), click("bob"),
-                expect(lambda w: "Direct message" in w.all_text(), click("Direct message")),
-                expect(
-                    lambda w: "[Back] ← bob" in w.all_text()
-                    and "Message bob privately" in w.input_text(),
-                    "\x03",
-                ),
-            ])
+            window = FakeWindow(
+                24,
+                100,
+                [
+                    click("bob"),
+                    click("Send file"),
+                    click("bob", right=True),
+                    expect(lambda w: "Direct message" in w.all_text(), "\x1b"),
+                    click("[Accept]"),
+                    click("bob"),
+                    expect(lambda w: "Direct message" in w.all_text(), click("Direct message")),
+                    expect(
+                        lambda w: (
+                            "[Back] ← bob" in w.all_text()
+                            and "Message bob privately" in w.input_text()
+                        ),
+                        "\x03",
+                    ),
+                ],
+            )
             module = fake_curses(window)
             window.module = module
+
             def picker(**kwargs):
                 # A desktop popup takes focus away from the terminal.
                 module.program_mode = False
@@ -322,8 +363,10 @@ class ContextMenuEventLoopTests(unittest.TestCase):
                 if isinstance(result, Exception):
                     raise result
                 return result
-            with patch.dict(sys.modules, {"curses": module}), patch(
-                "lancollab.client.tui.choose_file", side_effect=picker
+
+            with (
+                patch.dict(sys.modules, {"curses": module}),
+                patch("lancollab.client.tui.choose_file", side_effect=picker),
             ):
                 run_tui(session)
 
@@ -386,13 +429,13 @@ class ContextMenuEventLoopTests(unittest.TestCase):
                 shrink,
             ),
             expect(
-                lambda w: "Direct message" not in w.all_text()
-                and "ONLINE" not in w.all_text(),
+                lambda w: "Direct message" not in w.all_text() and "ONLINE" not in w.all_text(),
                 "\x03",
             ),
         ]
         run(session, events)
         self.assertEqual(session.executed, [])
+
 
 class DirectTabEventLoopTests(unittest.TestCase):
     STAMP = "2026-11-11T03:24:00+00:00"
@@ -431,9 +474,11 @@ class DirectTabEventLoopTests(unittest.TestCase):
                 "\r",
             ),
             expect(
-                lambda w: session.executed
-                and session.executed[-1].name == "/msg"
-                and session.executed[-1].args == ("bob", "hello bob"),
+                lambda w: (
+                    session.executed
+                    and session.executed[-1].name == "/msg"
+                    and session.executed[-1].args == ("bob", "hello bob")
+                ),
                 "\x03",
             ),
         ]
@@ -441,9 +486,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
         self.assertNotIn("/all", [command.name for command in session.executed])
 
     def test_esc_and_back_button_return_to_inbox(self):
-        session = FakeSession(
-            conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []}
-        )
+        session = FakeSession(conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []})
         events = [
             click("3:Direct"),
             click("bob"),
@@ -481,19 +524,16 @@ class DirectTabEventLoopTests(unittest.TestCase):
             expect(lambda w: "secret" in w.input_text(), "\x1b"),
             timeout,
             expect(
-                lambda w: "Direct conversations" in w.all_text()
-                and "secret" not in w.input_text(),
+                lambda w: "Direct conversations" in w.all_text() and "secret" not in w.input_text(),
                 click("carol"),
             ),
             expect(
-                lambda w: "[Back] ← carol" in w.all_text()
-                and "secret" not in w.input_text(),
+                lambda w: "[Back] ← carol" in w.all_text() and "secret" not in w.input_text(),
                 click("1:All"),
             ),
             expect(lambda w: "secret" not in w.input_text(), click("3:Direct")),
             expect(
-                lambda w: "Direct conversations" in w.all_text()
-                and "secret" not in w.input_text(),
+                lambda w: "Direct conversations" in w.all_text() and "secret" not in w.input_text(),
                 click("bob"),
             ),
             expect(
@@ -505,9 +545,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
         self.assertEqual(session.executed, [])
 
     def test_incoming_conversation_appears_live(self):
-        session = FakeSession(
-            conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []}
-        )
+        session = FakeSession(conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []})
 
         def arrives(window):
             session.conversations.insert(0, ("carol", self.STAMP, "brand new"))
@@ -537,9 +575,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
         run(session, events)
 
     def test_slash_commands_still_dispatch_inside_peer_page(self):
-        session = FakeSession(
-            conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []}
-        )
+        session = FakeSession(conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []})
         events = [
             click("3:Direct"),
             click("bob"),
@@ -555,8 +591,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
 
     def test_transcript_scrolls_with_keyboard(self):
         rows = [
-            (self.STAMP, "received", "CHAT_PRIVATE", "bob", f"msg{index}")
-            for index in range(8)
+            (self.STAMP, "received", "CHAT_PRIVATE", "bob", f"msg{index}") for index in range(8)
         ]
         session = FakeSession(
             conversations=[("bob", self.STAMP, "msg7")], transcripts={"bob": rows}
@@ -571,6 +606,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             ),
         ]
         run(session, events, rows=12, columns=80)
+
 
 if __name__ == "__main__":
     unittest.main()

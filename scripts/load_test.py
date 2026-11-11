@@ -110,7 +110,7 @@ def run(args: argparse.Namespace) -> Metrics:
         if args.file:
             file_path = Path(args.file)
             if file_path.stat().st_size < 10 * 1024 * 1024:
-                raise ValueError("CP-C workload requires >= 10 MiB file")
+                raise ValueError("File workload requires >= 10 MiB file")
             sender, receiver = active[0][0], active[1][0]
             file_id = sender.offer_file(file_path, receiver.username)
             _wait(
@@ -129,7 +129,7 @@ def run(args: argparse.Namespace) -> Metrics:
                 pongs = []
                 for i in range(args.messages):
                     started = monotonic()
-                    rid = client.send_global(f"TV3 smoke {i}")
+                    rid = client.send_global(f"Load test {i}")
                     ping_id = client.ping()
                     _wait(
                         lambda: rid not in client._pending or client.state is ClientState.CLOSED,
@@ -197,12 +197,13 @@ def main() -> None:
     parser.add_argument("--clients", type=int, default=20)
     parser.add_argument("--messages", type=int, default=5)
     parser.add_argument("--timeout", type=float, default=10)
-    parser.add_argument("--file", help="Binary file >= 10 MiB for CP-C scenario")
-    parser.add_argument("--output", default="tv3_smoke_result.json")
+    parser.add_argument("--file", help="Binary file >= 10 MiB for the file workload")
+    parser.add_argument("--output", default="data/load-results.json")
     args = parser.parse_args()
     if args.clients < 2 or args.messages <= 0 or args.timeout <= 0:
         parser.error("Use >=2 clients, positive messages and timeout")
     result = run(args)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(asdict(result), indent=2), encoding="utf-8")
     print(json.dumps(asdict(result), indent=2))
 

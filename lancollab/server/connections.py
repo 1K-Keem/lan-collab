@@ -10,7 +10,7 @@ from time import monotonic
 from lancollab.common.codec import MessageError, ProtocolError, RequestIdTracker
 from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
 from lancollab.common.socket_transport import SocketTransport
-from lancollab.common.tls import HANDSHAKE_TIMEOUT
+from lancollab.common.tls import HANDSHAKE_TIMEOUT, tls_failure_detail
 from lancollab.server.outbound import OutboundQueue
 from lancollab.server.accounts import AccountService
 from lancollab.server.application import CollabServer
@@ -281,6 +281,9 @@ class ConnectionServer:
                             victim = self._queues.get(sid)
                         if victim is not None:
                             victim.close()  # Writer drains final response, then closes.
+        except ssl.SSLError as error:
+            phase = "TLS handshake" if transport is None else "TLS session"
+            LOG.warning("%s failed for %s: %s", phase, address, tls_failure_detail(error))
         except (OSError, ValueError, ProtocolError) as error:
             LOG.info("Connection %s ended: %s", address, type(error).__name__)
         except Exception:

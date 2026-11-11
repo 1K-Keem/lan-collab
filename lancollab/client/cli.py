@@ -1,11 +1,13 @@
-"""TV3 portable CLI: command grammar, console interaction and receive worker.
+"""Portable CLI: command grammar, console interaction and receive worker.
 
-Construct a ConsoleSession with an already verified MessageTransport from TV2.
+Construct a ConsoleSession with an already verified TLS MessageTransport.
 CLI never performs TLS itself and never sends credentials over unverified TCP.
 """
 
 from dataclasses import dataclass
 import sqlite3
+import shutil
+import sys
 
 from lancollab.client.history import HistoryStore, local_time
 from getpass import getpass
@@ -24,7 +26,7 @@ _MIN_PASSWORD_LEN = 8  # Must match the server's account policy.
 
 _HELP = (
     "/help, /users, /status, /history [USER|all|show ID], /all TEXT, /msg USER TEXT, "
-    "/send USER PATH, /accept ID, /reject ID, /cancel ID, "
+    "/send USER PATH, /accept [ID] [PATH], /reject ID, /cancel ID, "
     "/pending, /approve USER, /reject-user USER, /net, /quit, /logout, "
     "/reply TEXT, /transfers, /files, /search TEXT, /ping, /whoami, /clear, /filter CATEGORY"
 )
@@ -49,8 +51,9 @@ _DETAILED_HELP = (
     "FILES",
     "/send USER PATH — Offer a local file up to 50 MiB; the recipient must accept.",
     '  Example: /send bob "notes/chapter 3.pdf"',
-    "/accept ID — Accept an incoming file and save it to your downloads directory.",
-    "  Example: /accept 123e4567-e89b-42d3-a456-426614174000",
+    "/accept [ID] [PATH] — Accept a file; optionally choose its destination folder.",
+    '  Example: /accept 123e4567 "~/Documents/Study notes". --dir PATH also works.',
+    '  One pending offer: /accept --dir "~/Downloads". Without a folder, use the default.',
     "/reject ID — Decline a pending incoming file offer.",
     "  Example: /reject 123e4567-e89b-42d3-a456-426614174000",
     "/cancel ID — Cancel a pending or active transfer; remove partial downloads.",
@@ -185,7 +188,32 @@ def parse_command(line: str) -> Command:
             if message.startswith('"') and message.endswith('"') and len(message) >= 2:
                 message = message[1:-1]
         return Command(action, (to, message))
-    if action in {"/accept", "/reject", "/cancel"}:
+    if action == "/accept":
+        # Only parse the ID/flag; preserve spaces and Windows backslashes in PATH.
+        arguments = rest.strip()
+        prefix = ""
+        if arguments and not arguments.startswith("--"):
+            parts = arguments.split(maxsplit=1)
+            prefix, arguments = parts[0], parts[1] if len(parts) == 2 else ""
+        if not arguments:
+            return Command(action, (prefix,))
+        parts = arguments.split(maxsplit=1)
+        if parts[0] == "--dir":
+            if len(parts) != 2:
+                raise ValueError("Usage: /accept [TRANSFER_ID] --dir PATH")
+            directory = parts[1].strip()
+        elif arguments.startswith("--"):
+            raise ValueError("Usage: /accept [TRANSFER_ID] [PATH] (or --dir PATH)")
+        else:
+            directory = arguments
+        if directory.startswith(('"', "'")):
+            if len(directory) < 2 or directory[-1] != directory[0]:
+                raise ValueError("Unclosed quote in destination folder")
+            directory = directory[1:-1]
+        if not directory.strip():
+            raise ValueError("Destination folder cannot be empty")
+        return Command(action, (prefix, directory))
+    if action in {"/reject", "/cancel"}:
         if len(rest.split()) > 1:
             raise ValueError(f"Usage: {action} [TRANSFER_ID]")
         return Command(action, (rest.strip(),))
@@ -229,6 +257,9 @@ class ConsoleSession:
         self.display_filter = "all"
         self.clear_generation = 0
         self.output = output
+        self._drain_lock = Lock()
+        self._progress_line = ""
+        self._command_prompt = False
         self.input_line = input_line
         self.udp = udp
         self.server_host = server_host
@@ -313,9 +344,7 @@ class ConsoleSession:
             return []
         if self.client.history is not None:
             return list(
-                self.client.history.direct_transcript(
-                    self.client.history_server, username, peer
-                )
+                self.client.history.direct_transcript(self.client.history_server, username, peer)
             )
         return [
             row
@@ -324,8 +353,67 @@ class ConsoleSession:
         ]
 
     def _drain(self) -> None:
-        for notice in self.client.drain_notices():
-            self.output(f"[{notice.kind}] {notice.text}")
+        with self._drain_lock:
+            notices = self.client.drain_notices()
+            if notices:
+                self._clear_progress()
+            for notice in notices:
+                self.output(f"[{notice.kind}] {notice.text}")
+            self._render_progress()
+            if notices and self._command_prompt and not self._progress_line:
+                if self.output is print and sys.stdout.isatty():
+                    sys.stdout.write(self._input_prompt())
+                    sys.stdout.flush()
+
+    def _input_prompt(self) -> str:
+        if not self._command_prompt:
+            return ""
+        try:
+            import readline
+
+            typed = readline.get_line_buffer()
+        except ImportError:
+            typed = ""
+        return "lan-collab> " + typed
+
+    def _clear_progress(self) -> None:
+        if self._progress_line:
+            sys.stdout.write("\r" + " " * len(self._progress_line) + "\r")
+            sys.stdout.flush()
+            self._progress_line = ""
+
+    def _render_progress(self) -> None:
+        # The curses UI renders its own dock. Redirected output and custom output
+        # consumers get lifecycle notices only, without terminal control bytes.
+        if self.output is not print or not sys.stdout.isatty():
+            return
+        rows = [r for r in self.client.files.snapshot() if r["status"] not in {"offer", "waiting"}]
+        pieces = []
+        for row in rows:
+            filled = min(16, row["done"] * 16 // row["size"]) if row["size"] else 16
+            pieces.append(
+                f"{row['id'][:8]} [{'#' * filled}{'-' * (16 - filled)}] "
+                f"{row['done']}/{row['size']} B ({row['status']}; unverified)"
+            )
+        prompt = self._input_prompt()
+        width = max(1, shutil.get_terminal_size().columns - 1)
+        progress = " | ".join(pieces)
+        if progress and prompt:
+            progress = progress[: max(0, width - len(prompt) - 3)]
+            line = (progress + " | " if progress else "") + prompt
+        else:
+            line = progress
+        line = line[:width]
+        if line == self._progress_line:
+            return
+        had_progress = bool(self._progress_line)
+        self._clear_progress()
+        if line:
+            sys.stdout.write("\r" + line)
+        elif had_progress and prompt:
+            sys.stdout.write(prompt)
+        sys.stdout.flush()
+        self._progress_line = line
 
     def start_reader(self) -> None:
         if self.reader is not None:
@@ -546,7 +634,8 @@ class ConsoleSession:
                 self.output(f"File offered: {transfer_id} (waiting for consent)")
             elif command.name == "/accept":
                 self.client.files.accept(
-                    self.client.files.resolve_id(command.args[0] if command.args else "", "accept")
+                    self.client.files.resolve_id(command.args[0] if command.args else "", "accept"),
+                    directory=command.args[1] if len(command.args) > 1 else None,
                 )
             elif command.name == "/reject":
                 self.client.files.reject(
@@ -597,7 +686,14 @@ class ConsoleSession:
         try:
             while self.client.state is not ClientState.CLOSED:
                 try:
-                    command = parse_command(self.input_line("lan-collab> "))
+                    self._command_prompt = True
+                    try:
+                        line = self.input_line("lan-collab> ")
+                    finally:
+                        self._command_prompt = False
+                        with self._drain_lock:
+                            self._clear_progress()
+                    command = parse_command(line)
                 except (EOFError, KeyboardInterrupt):
                     # Closing the app (Ctrl+C, terminal closed, stdin EOF)
                     # is not logging out: the token is kept, like /quit.

@@ -47,7 +47,7 @@ python -m lancollab.client --discover
 python -m lancollab.client --host SERVER_IP --trusted-cert path/to/server-public.pem
 ```
 
-The full CLI still requires the TV1 production server. The hostname verified is
+The client requires a running LAN Collab server. The hostname verified is
 `--server-name` (default `lan-collab.local`), independently of the IP or UDP discovery reply.
 Username/password may be collected before connecting, but are sent only after verified TLS.
 
@@ -80,22 +80,24 @@ The connector returns a message transport only after success. It does not perfor
 public-key comparison or silently accept a certificate received over the network.
 See the [Python ssl documentation](https://docs.python.org/3/library/ssl.html).
 
-## Handshake-only demonstration
+## Verify a running server
 
-After provisioning, run in two terminals from the project root:
-
-```bash
-python -m scripts.handshake_server
-```
+Start `python -m lancollab.server` in one terminal. In another, use the same
+connection simulator used for concurrency checks:
 
 ```bash
-python -m scripts.handshake_client
+python -m scripts.simulate_clients --host 127.0.0.1 --clients 1
 ```
 
-The server accepts one connection and exits. No AUTH or chat messages are exchanged. To test
-rejection, restart the server and run the client with `--server-name wrong.example`.
-Use `--cert`/`--key` on the demo server and `--trusted-cert` on the demo client to choose
-other files. For two machines use server `--host 0.0.0.0` and client `--host SERVER_IP`.
+The simulator prints discovery/TCP/TLS details, including the verified certificate
+fingerprint. It does not log in unless asked to send synthetic credentials with
+`--send-auth`; that option tests rejection, not a successful account login. For a
+remote server replace `127.0.0.1` with its address, and use `--trusted-cert PATH`
+when its public certificate is not the bundled one. To test hostname rejection:
+
+```bash
+python -m scripts.simulate_clients --host 127.0.0.1 --server-name wrong.example
+```
 
 ## Migration from the old CA model
 
@@ -162,3 +164,29 @@ checkout. Only the public PEM is copied. Existing pairs are not rotated; missing
 or mismatched keys fail closed. A provisioning lock prevents simultaneous startup generation.
 Custom certificate paths still require manual provisioning. Share the new public bundle via
 the group's trusted repository before clients on other machines connect.
+
+## Diagnosing rejected connections
+
+The server logs the TLS phase and OpenSSL reason, not just `SSLError`. Each new
+source port is a separate connection attempt; it is not a file-transfer progress
+update. A peer certificate-rejection alert means the client refused the server
+certificate. Read that client's error for the precise verification failure.
+The client also prints the trust-file path and expected server name.
+
+Compare the certificate fingerprints on the server and the failing client:
+
+```bash
+# Server
+openssl x509 -in certs/direct-trust/server-public.pem -noout -fingerprint -sha256
+# Client (or substitute the file passed with --trusted-cert)
+openssl x509 -in lancollab/client/server-public.pem -noout -fingerprint -sha256
+```
+
+If they differ, obtain the intended server's **public** certificate through the
+agreed trusted repository/admin channel and use `--trusted-cert PATH`. Do not
+copy the secret key or disable verification. Also check certificate expiry, system
+clock, and `--server-name` (normally `lan-collab.local`). Restart the server after
+changing its certificate files: an already running process retains its loaded
+identity. `WRONG_VERSION_NUMBER` or `HTTP_REQUEST` may indicate plaintext traffic
+or the wrong destination port; use the LAN Collab TLS client on the TCP service
+port. Failed handshakes are closed and their worker slots are released.

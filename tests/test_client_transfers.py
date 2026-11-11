@@ -99,6 +99,20 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((target.parent / "hello (1).txt").read_bytes(), b"abc")
         self.assertEqual(list(target.parent.glob("*.part")), [])
 
+    def test_each_offer_can_choose_its_own_directory(self):
+        for number in range(2):
+            payload = self.offer_payload(b"", name="empty.txt")
+            tid = payload["transfer_id"]
+            self.transfer.on_offer(payload)
+            destination = self.root / f"choice{number}"
+            self.transfer.accept(tid, directory=destination)
+            self.assertEqual(self.sent[-1], ("FILE_ACCEPT", {"transfer_id": tid}))
+            self.transfer.on_end({"transfer_id": tid, "total_chunks": 0})
+            self.assertEqual((destination / "empty.txt").read_bytes(), b"")
+            self.assertFalse(list(destination.glob("*.part")))
+        self.assertEqual(self.transfer.downloads_dir, self.root / "downloads")
+        self.assertFalse((self.root / "downloads").exists())
+
     def test_empty_file_ack_zero_then_result(self):
         payload = self.offer_payload(b"", name="empty.bin")
         self.transfer.on_offer(payload)

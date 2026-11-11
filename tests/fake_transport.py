@@ -1,7 +1,7 @@
 """Deterministic in-memory TEST DOUBLE.
 
 This adapter does NOT use sockets, TCP framing, UDP, TLS, or concurrency.
-It exists solely so TV1 and TV3 can test their APIs independently of TV2.
+It isolates message/state tests from socket timing; real transports have separate tests.
 """
 
 from collections import deque
