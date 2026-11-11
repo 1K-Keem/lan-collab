@@ -126,12 +126,33 @@ class TransferManager:
         self._send = send
         self._notify = notify or (lambda _text: None)
         self.downloads_dir = Path(downloads_dir)
+        # Receiving account; set by the client on login. Files land in
+        # downloads/<owner>/ so accounts sharing one working directory do
+        # not see each other's downloads. None = the shared downloads dir.
+        self.owner: str | None = None
         self._cv = Condition(RLock())
         self.outgoing: dict[str, Outgoing] = {}
         self.incoming: dict[str, Incoming] = {}
         self.terminal: set[str] = set()
         self._accepted_offers = 0
         self._closed = False
+
+    def user_downloads_dir(self) -> Path:
+        """Folder this account's received files go to (and /files lists).
+
+        One subfolder per receiving account. Falls back to the shared
+        downloads dir when no account is logged in, or if the name could
+        escape the folder (usernames are validated, but `.` / `..` are not
+        a folder).
+        """
+        if (
+            self.owner
+            and self.owner not in (".", "..")
+            and "/" not in self.owner
+            and "\\" not in self.owner
+        ):
+            return self.downloads_dir / self.owner
+        return self.downloads_dir
 
     def snapshot(self):
         """Copy presentation data under the transfer lock, without file handles."""
@@ -257,17 +278,16 @@ class TransferManager:
             entry = self.incoming.get(transfer_id)
             if entry is None or entry.handle is not None:
                 raise TransferError("No pending file offer")
-            self.downloads_dir.mkdir(parents=True, exist_ok=True)
+            dest = self.user_downloads_dir()
+            dest.mkdir(parents=True, exist_ok=True)
             # Reserve a unique filename by choosing candidates, then link atomically on success.
             base = Path(entry.name)
-            candidate = self.downloads_dir / base.name
+            candidate = dest / base.name
             number = 1
             while candidate.exists():
-                candidate = self.downloads_dir / f"{base.stem} ({number}){base.suffix}"
+                candidate = dest / f"{base.stem} ({number}){base.suffix}"
                 number += 1
-            fd, temp_name = tempfile.mkstemp(
-                prefix=".lancollab-", suffix=".part", dir=self.downloads_dir
-            )
+            fd, temp_name = tempfile.mkstemp(prefix=".lancollab-", suffix=".part", dir=dest)
             entry.handle = os.fdopen(fd, "wb")
             entry.temp_path = Path(temp_name)
             entry.final_path = candidate

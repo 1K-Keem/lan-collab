@@ -87,7 +87,9 @@ or ANSI color sequences.
 The layout adapts when resized; very small terminals show a resize hint. The normal CLI
 remains available without `--tui`.
 
-Files are saved in `downloads/` (change with `--downloads-dir`). The receiver validates
+Files are saved in `downloads/<your username>/` (change the base with
+`--downloads-dir`), so accounts sharing one working directory do not see each
+other's downloads; `/files` lists only your own folder. The receiver validates
 size, order and SHA-256 before committing a unique destination name. The sender reports
 success only after the receiver's final success result. Offline recipients cannot receive
 files (both sides must be online for a transfer); private messages to an offline user are

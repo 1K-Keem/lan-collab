@@ -343,6 +343,7 @@ class CollabClient:
                             event, "TOKEN_AUTH_REQUEST" if self._token_login else "AUTH_REQUEST"
                         )
                         self.username = payload["username"]
+                        self.files.owner = self.username
                         self.role = payload["role"]
                         self.session_id = uuid4().hex[:12]
                         if self.history is not None:
@@ -652,6 +653,7 @@ class CollabClient:
                     self._notices.append(Notice("error", "Could not save session end time"))
             self.state = ClientState.CLOSED
             self.username = None
+            self.files.owner = None
             self.role = None
             self.reply_target = None
             self.session_id = None

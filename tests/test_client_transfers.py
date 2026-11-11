@@ -99,6 +99,34 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((target.parent / "hello (1).txt").read_bytes(), b"abc")
         self.assertEqual(list(target.parent.glob("*.part")), [])
 
+    def _receive(self, payload, content=b"abc"):
+        self.transfer.on_offer(payload)
+        self.transfer.accept(payload["transfer_id"])
+        self.transfer.on_chunk(
+            {
+                "transfer_id": payload["transfer_id"],
+                "seq": 0,
+                "offset": 0,
+                "data_b64": base64.b64encode(content).decode(),
+            }
+        )
+        self.transfer.on_end({"transfer_id": payload["transfer_id"], "total_chunks": 1})
+        self.assertTrue(self.sent[-1][1]["ok"])
+
+    def test_accept_writes_into_owner_folder(self):
+        # Accounts sharing one working directory get one downloads folder
+        # each, so /files never shows another account's files.
+        self.transfer.owner = "bob"
+        self._receive(self.offer_payload(b"abc"))
+        self.assertEqual((self.root / "downloads" / "bob" / "hello.txt").read_bytes(), b"abc")
+        self.assertEqual([p.name for p in (self.root / "downloads").iterdir()], ["bob"])
+
+    def test_dotdot_owner_falls_back_to_shared_dir(self):
+        self.transfer.owner = ".."
+        self._receive(self.offer_payload(b"abc"))
+        self.assertEqual((self.root / "downloads" / "hello.txt").read_bytes(), b"abc")
+        self.assertFalse((self.root / "hello.txt").exists())
+
     def test_empty_file_ack_zero_then_result(self):
         payload = self.offer_payload(b"", name="empty.bin")
         self.transfer.on_offer(payload)

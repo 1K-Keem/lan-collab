@@ -190,6 +190,28 @@ class CLITests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             b.receive()  # /quit closes without LOGOUT: the token is kept
 
+    def test_files_lists_only_current_account_folder(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as tmp:
+            downloads = Path(tmp) / "downloads"
+            (downloads / "bob").mkdir(parents=True)
+            (downloads / "bob" / "mine.txt").write_bytes(b"x")
+            (downloads / "alice").mkdir(parents=True)
+            (downloads / "alice" / "theirs.txt").write_bytes(b"y")
+            a, _b = FakeTransport.pair()
+            messages = []
+            session = ConsoleSession(a, output=messages.append, downloads_dir=downloads)
+            session.client.state = ClientState.AUTHENTICATED
+            session.client.username = "bob"
+            session.client.files.owner = "bob"
+            self.assertTrue(session.execute(parse_command("/files")))
+            joined = " ".join(messages)
+            self.assertIn("mine.txt", joined)
+            self.assertNotIn("theirs.txt", joined)
+            session.close()
+
 
 if __name__ == "__main__":
     unittest.main()

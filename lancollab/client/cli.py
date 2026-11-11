@@ -385,7 +385,9 @@ class ConsoleSession:
                 if not rows:
                     self.output("No active transfers.")
             elif command.name == "/files":
-                directory = self.client.files.downloads_dir
+                # Only this account's folder: accounts sharing one working
+                # directory must not see each other's downloads.
+                directory = self.client.files.user_downloads_dir()
                 paths = sorted(directory.iterdir()) if directory.exists() else []
                 files = [
                     path

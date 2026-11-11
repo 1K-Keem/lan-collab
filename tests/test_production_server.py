@@ -121,7 +121,11 @@ class ProductionTests(unittest.TestCase):
 
         self.wait(chats_arrived)
         self.wait(lambda: tid in clients[0].files.terminal, timeout=30)
-        self.assertEqual((Path(self.tmp.name) / "user1" / source.name).read_bytes(), contents)
+        # Downloads are partitioned per receiving account: tmp/user1/user1/.
+        self.assertEqual(
+            (Path(self.tmp.name) / "user1" / "user1" / source.name).read_bytes(),
+            contents,
+        )
         notices.extend(clients[0].drain_notices())
         self.assertTrue(any("verified" in n.text.lower() for n in notices))
 
@@ -133,7 +137,7 @@ class ProductionTests(unittest.TestCase):
         self.wait(lambda: tid in bob.files.incoming)
         bob.files.accept(tid)
         self.wait(lambda: tid in alice.files.terminal)
-        self.assertEqual((Path(self.tmp.name) / "bob" / "empty.txt").read_bytes(), b"")
+        self.assertEqual((Path(self.tmp.name) / "bob" / "bob" / "empty.txt").read_bytes(), b"")
         tid = alice.offer_file(source, "bob")
         self.wait(lambda: tid in bob.files.incoming)
         replacement = self.client("alice", create=False)
@@ -292,7 +296,10 @@ class ProductionTests(unittest.TestCase):
         self.wait(lambda: tid in alice.files.terminal)
         release.set()
         self.wait(lambda: tid in bob.files.terminal)
-        self.assertFalse(list((Path(self.tmp.name) / "bob").iterdir()))
+        # No partial file left after the cancel; the (empty) per-account
+        # downloads folder itself may remain.
+        leftovers = [path for path in (Path(self.tmp.name) / "bob").rglob("*") if path.is_file()]
+        self.assertFalse(leftovers)
         self.assertIs(alice.state, ClientState.AUTHENTICATED)
         self.assertIs(bob.state, ClientState.AUTHENTICATED)
 
