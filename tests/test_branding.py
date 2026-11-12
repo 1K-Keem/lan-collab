@@ -1,8 +1,4 @@
-"""Welcome banner: the LAN logo only, no mascot.
-
-The penguin that used to sit next to the name read as a padlock at
-terminal size, so it was removed (2026-11-11).
-"""
+"""Full wordmark and compact terminal branding."""
 
 import unittest
 
@@ -14,14 +10,16 @@ class BrandingTests(unittest.TestCase):
         lines = banner_lines(80)
         self.assertEqual(lines, BANNER)
         self.assertTrue(all(line.isascii() for line in lines))
-        self.assertIn("C O L L A B", "\n".join(lines))
+        self.assertIn("/___//_n_//_/|_/", lines[3])
 
     def test_medium_terminal_shows_logo_only(self):
-        self.assertEqual(banner_lines(40), BANNER)
+        self.assertIn("L A N - C O L L A B", "\n".join(banner_lines(40)))
 
     def test_narrow_terminal_shows_plain_fallback(self):
         lines = banner_lines(30)
-        self.assertIn("LAN COLLAB", lines[0])
+        self.assertIn("L A N - C O L L A B", "\n".join(lines))
+        for width in (10, 30, 40, 59, 80):
+            self.assertTrue(all(len(line) <= width for line in banner_lines(width)))
 
 
 if __name__ == "__main__":

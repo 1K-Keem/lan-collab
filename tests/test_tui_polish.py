@@ -75,10 +75,11 @@ class ComposerWordTests(unittest.TestCase):
 
 
 class SuggestionAllTests(unittest.TestCase):
-    def test_history_suggests_all_sessions(self):
+    def test_history_suggests_sessions_without_redundant_all(self):
         found = [s.value for s in suggestions("/history ", users=("bob",), role="member")]
-        self.assertIn("/history all", found)
-        self.assertIn("/history bob", found)
+        self.assertNotIn("/history all", found)
+        self.assertIn("/history sessions", found)
+        self.assertEqual(found, ["/history people", "/history sessions"])
 
 
 if __name__ == "__main__":

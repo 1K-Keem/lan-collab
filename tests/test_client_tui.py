@@ -88,7 +88,7 @@ class InteractionTests(unittest.TestCase):
         stream.isatty = lambda: True
         with patch.dict("os.environ", {"NO_COLOR": "1"}):
             print_welcome(stream)
-        self.assertIn("C O L L A B", stream.getvalue())
+        self.assertIn("\n".join(BANNER), stream.getvalue())
         self.assertNotIn("\x1b", stream.getvalue())
 
     @unittest.skipIf(curses is None, "curses is not installed")

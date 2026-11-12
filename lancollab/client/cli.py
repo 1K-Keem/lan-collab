@@ -25,7 +25,7 @@ from lancollab.common.contracts import MessageTransport
 _MIN_PASSWORD_LEN = 8  # Must match the server's account policy.
 
 _HELP = (
-    "/help, /users, /status, /history [USER|all|show ID], /all TEXT, /msg USER TEXT, "
+    "/help, /users, /status, /history [USER|people|sessions|show ID [USER]], /all TEXT, /msg USER TEXT, "
     "/send USER PATH, /accept [ID] [PATH], /reject ID, /cancel ID, "
     "/pending, /approve USER, /reject-user USER, /net, /quit, /logout, "
     "/reply TEXT, /transfers, /files, /search TEXT, /ping, /whoami, /clear, /filter CATEGORY"
@@ -35,17 +35,20 @@ _HELP = (
 _DETAILED_HELP = (
     "COMMAND HELP",
     "USER = case-sensitive username; TEXT = message; PATH = local file path.",
-    "ID = transfer UUID from the file offer; [USER] = optional username.",
+    "ID = file offer or saved session ID; [USER] = optional username.",
     "",
     "CHAT AND PEOPLE",
     "/all TEXT — Send a global message to everyone else online.",
     "  Example: /all Study group starts at 7 pm",
     "/msg USER TEXT — Send a private message; delivered now if the user is online, stored for their next login if not.",
     "  Example: /msg bob Can you review chapter 3?",
-    "/users — List online usernames, IP addresses and connection ports.",
+    "/users — List people online.",
     "  Example: /users",
-    "/history [USER|all|show ID] — Browse your saved login sessions (read only); /history show ID opens a session.",
-    "  /history USER shows this session for a peer; /history all shows the last 50 messages across sessions.",
+    "/history [USER|people|sessions|show ID [USER]] — Browse saved people and your login sessions.",
+    "  TUI: choose a login and press Enter to read it. Tab switches between sessions and people.",
+    "  /history people lists people; /history USER opens their complete history across your logins.",
+    "  /history show ID [USER] reads a specific login. Readers open at the newest messages.",
+    "  Delete or [Delete] removes selected local history after Y confirmation; Esc cancels.",
     "  History must be enabled. Outgoing entries mean server-queued, not read.",
     "",
     "FILES",
@@ -61,9 +64,9 @@ _DETAILED_HELP = (
     "  Replace example IDs with the actual offer ID. Success requires receiver verification.",
     "",
     "CONNECTION",
-    "/status — Show the TCP/TLS state and most recent UDP probe statistics.",
+    "/status — Show connection details and network measurements.",
     "  Example: /status",
-    "/net — Send a new UDP heartbeat and display round-trip time and probe loss.",
+    "/net — Check network quality (latency and packet loss).",
     "  Example: /net",
     "",
     "ADMIN ONLY — regular members cannot use these commands",
@@ -77,9 +80,9 @@ _DETAILED_HELP = (
     "HELP AND EXIT",
     "/help — Show this command reference.",
     "  Example: /help",
-    "/quit — Close the connection and app; keep any saved Remember Me token.",
+    "/quit — Close the app; keep your remembered login.",
     "  Example: /quit",
-    "/logout — Revoke the token when connected and forget the local saved login.",
+    "/logout — Sign out and forget this device.",
     "  Example: /logout",
     "  Neither exit command deletes local chat history or downloaded files.",
     "",
@@ -99,13 +102,13 @@ _DETAILED_HELP += (
     "DASHBOARD COMMANDS",
     "@USER TEXT — Private message shorthand. Example: @bob Hello",
     "/reply TEXT — Send privately to your last DM peer. Example: /reply Thanks!",
-    "  /msg USER TEXT chooses a recipient; /reply TEXT uses the reply target shown in the header.",
+    "  /msg USER TEXT chooses a recipient; /reply TEXT uses the last person you messaged.",
     "  If no DM peer is known yet, use /msg USER TEXT first.",
     "/transfers — List active transfers, short IDs, progress and state.",
     "/accept [ID], /reject [ID], /cancel [ID] — Full UUID or unique prefix; omit if only one eligible transfer exists.",
     "/files — List saved files and sizes in your downloads directory.",
     "/search TEXT — Search local history across sessions by message text or peer (last 50 matches).",
-    "/ping — Measure TCP/TLS round-trip latency. /net measures UDP latency.",
+    "/ping — Check connection latency. Use /net for network quality.",
     "/whoami — Show your account, role, server and downloads directory.",
     "/clear — Clear the TUI display without deleting history.",
     "/filter [all|global|dm|files] — Select visible TUI message categories.",
@@ -120,9 +123,22 @@ _DETAILED_HELP += (
     "  In a Direct conversation, plain text sends privately to the selected peer; Back or Esc returns to the inbox.",
     "  Outside Direct, plain text still sends to everyone. Filters never delete history or stop incoming messages.",
     "NETWORK CHECKS — manual only: /ping for TCP, /net for UDP, or F4 for both.",
-    "  The header shows the last measurement; background server keepalives remain silent.",
+    "  Results appear only when requested; use /status to review connection details.",
+    "F8 or /history opens saved sessions; Tab switches to people; Enter opens; Esc goes back. Home/End jump in history.",
     "Ctrl+W deletes a word; Ctrl+K deletes to end; Ctrl+L clears display.",
 )
+
+
+def help_reference(role="member"):
+    """Only show account approval commands to people who can use them."""
+    admin_section = False
+    for line in _DETAILED_HELP:
+        if line.startswith("ADMIN ONLY"):
+            admin_section = True
+        elif line == "HELP AND EXIT":
+            admin_section = False
+        if role == "admin" or not admin_section:
+            yield line
 
 
 def progress_bar(row, width=14):
@@ -164,8 +180,8 @@ def parse_command(line: str) -> Command:
         return Command(action)
     if action == "/history":
         args = tuple(rest.split())
-        if len(args) > 1 and (len(args) != 2 or args[0] != "show"):
-            raise ValueError("Usage: /history [USER|all|show ID]")
+        if len(args) > 1 and (len(args) not in (2, 3) or args[0] != "show"):
+            raise ValueError("Usage: /history [USER|people|sessions|show ID [USER]]")
         return Command(action, args)
     if action == "/filter":
         if rest.strip() not in {"", "all", "global", "dm", "files"}:
@@ -276,38 +292,67 @@ class ConsoleSession:
         self.reader: Thread | None = None
         self.notifier: Thread | None = None
 
-    def history_sessions(self):
+    def history_people(self):
         if self.client.history is None or self.client.username is None:
             raise ValueError("Local history is unavailable")
-        return self.client.history.session_records(self.client.history_server, self.client.username)
+        return self.client.history.people(self.client.history_server, self.client.username)
+
+    def history_sessions(self, peer=None):
+        if self.client.history is None or self.client.username is None:
+            raise ValueError("Local history is unavailable")
+        return self.client.history.session_records(
+            self.client.history_server, self.client.username, peer
+        )
+
+    def history_archive(self, peer=None):
+        if self.client.history is None or self.client.username is None:
+            raise ValueError("Local history is unavailable")
+        return self.client.history.archive(self.client.history_server, self.client.username, peer)
+
+    def delete_history(self, *, session_id=None, peer=None):
+        client = self.client
+        with client._lock:
+            if client.history is None or client.username is None:
+                raise ValueError("Local history is unavailable")
+            count = client.history.delete(
+                client.history_server,
+                client.username,
+                session=session_id,
+                peer=peer,
+                keep_session=session_id == client.session_id,
+            )
+            with client._direct_lock:
+                if session_id is None or session_id == client.session_id:
+                    client._direct_messages = [
+                        row
+                        for row in client._direct_messages
+                        if peer is not None and row[3] != peer
+                    ]
+                client.direct_revision += 1
+            return count
 
     def history_label(self, record):
-        end = (
-            "current"
-            if record.id == self.client.session_id
-            else f"ended {local_time(record.ended)}"
-            if record.ended
-            else "end not recorded"
-        )
+        current = " · current" if record.id == self.client.session_id else ""
         return (
-            f"{local_time(record.started)} | {record.count} message(s)"
-            f" | {record.id or 'legacy'} | {end}"
+            f"{local_time(record.started)} · {record.count} msgs · {record.id or 'legacy'}{current}"
         )
 
-    def history_transcript(self, session_id):
+    def history_transcript(self, session_id, peer=None):
         session_id = "" if session_id == "legacy" else session_id
-        record = next((r for r in self.history_sessions() if r.id == session_id), None)
+        record = next((r for r in self.history_sessions(peer) if r.id == session_id), None)
         if record is None:
             raise ValueError("Saved session not found for this account and server")
         rows = self.client.history.transcript(
-            self.client.history_server, self.client.username, session_id
+            self.client.history_server, self.client.username, session_id, peer
         )
         return record, rows
 
     @staticmethod
     def history_message(row):
         timestamp, direction, kind, peer, text = row
-        return safe_display(f"{local_time(timestamp)} [{kind}] {direction} {peer}: {text}")
+        channel = "DM" if kind == "CHAT_PRIVATE" else "All"
+        sender = (f"you → {peer}" if channel == "DM" else "you") if direction == "sent" else peer
+        return safe_display(f"{local_time(timestamp)} [{channel}] {sender}: {text}")
 
     def direct_conversations(self):
         """Private conversations, newest last message first: (peer, timestamp, text).
@@ -358,7 +403,13 @@ class ConsoleSession:
             if notices:
                 self._clear_progress()
             for notice in notices:
-                self.output(f"[{notice.kind}] {notice.text}")
+                if notice.kind == "chat":
+                    tag, separator, body = notice.text.partition(" ")
+                    tag = {"[CHAT_PRIVATE]": "[DM]", "[CHAT_GLOBAL]": "[All]"}.get(tag, tag)
+                    text = tag + separator + body
+                    self.output(text)
+                else:
+                    self.output(f"[{notice.kind}] {notice.text}")
             self._render_progress()
             if notices and self._command_prompt and not self._progress_line:
                 if self.output is print and sys.stdout.isatty():
@@ -493,7 +544,7 @@ class ConsoleSession:
         """Return False for /quit, True otherwise; errors become visible notices."""
         try:
             if command.name == "/help":
-                for line in _DETAILED_HELP:
+                for line in help_reference(self.client.role):
                     self.output(line)
             elif command.name == "/reply":
                 target = self.client.reply_target
@@ -545,8 +596,8 @@ class ConsoleSession:
                 rows = self.client.history.search(
                     self.client.history_server, self.client.username, command.args[0]
                 )
-                for timestamp, direction, kind, peer, text in rows:
-                    self.output(safe_display(f"{timestamp} [{kind}] {direction} {peer}: {text}"))
+                for row in rows:
+                    self.output(self.history_message(row))
                 if not rows:
                     self.output("No matching messages.")
             elif command.name == "/history":
@@ -556,7 +607,21 @@ class ConsoleSession:
                     store = self.client.history
                     server = self.client.history_server
                     account = self.client.username
-                    if not command.args:
+                    if command.args == ("people",):
+                        people = self.history_people()
+                        self.output("Saved people — your account on this server · read only")
+                        for peer, timestamp, _text, count in people:
+                            self.output(
+                                safe_display(
+                                    f"  {peer} | {count} messages | {local_time(timestamp)}"
+                                )
+                            )
+                        if not people:
+                            self.output("No saved people yet.")
+                        self.output(
+                            "Use /history sessions, then /history show ID USER to read a conversation."
+                        )
+                    elif not command.args or command.args == ("sessions",):
                         records = self.history_sessions()
                         self.output("Saved login sessions — read only (newest first)")
                         for record in records:
@@ -566,15 +631,16 @@ class ConsoleSession:
                         )
                         if not records:
                             self.output("No saved sessions.")
-                    elif len(command.args) == 2 and command.args[0] == "show":
-                        record, rows = self.history_transcript(command.args[1])
+                    elif len(command.args) in (2, 3) and command.args[0] == "show":
+                        peer = command.args[2] if len(command.args) == 3 else None
+                        record, rows = self.history_transcript(command.args[1], peer)
                         self.output(safe_display(self.history_label(record)))
                         for row in rows:
                             self.output(self.history_message(row))
                         if not rows:
                             self.output("No saved messages in this session.")
                     elif command.args[0] == "all":
-                        rows = store.recent(server, account, with_session=True)
+                        rows = store.archive(server, account)
                         records = {record.id: record for record in self.history_sessions()}
                         current = None
                         for session, timestamp, direction, kind, peer, text in rows:
@@ -593,22 +659,17 @@ class ConsoleSession:
                             self.output("No saved messages.")
                     else:
                         peer = command.args[0] if command.args else None
-                        session = self.client.session_id
-                        rows = store.recent(server, account, peer, session=session)
-                        for timestamp, direction, kind, peer_name, text in rows:
-                            self.output(
-                                safe_display(
-                                    f"{timestamp} [{kind}] {direction} {peer_name}: {text}"
-                                )
-                            )
+                        rows = self.history_archive(peer)
+                        for row in rows:
+                            self.output(self.history_message(row[1:]))
                         if not rows:
-                            self.output("No saved messages in this session.")
+                            self.output("No saved messages for this person.")
             elif command.name == "/users":
                 users = sorted(self.client.online_users.items())
                 if not users:
                     self.output("Online users: none (or snapshot not yet received)")
-                for name, (ip, port) in users:
-                    self.output(f"{safe_display(name)}  {safe_display(ip)}:{port}")
+                for name, _address in users:
+                    self.output(safe_display(name))
             elif command.name == "/status":
                 self.output(f"TCP/TLS: {self.client.state.value}")
                 if self.udp is not None:

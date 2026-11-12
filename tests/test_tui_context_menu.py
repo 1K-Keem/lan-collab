@@ -492,9 +492,9 @@ class DirectTabEventLoopTests(unittest.TestCase):
             click("bob"),
             expect(lambda w: "[Back] ← bob" in w.all_text(), "\x1b"),
             timeout,
-            expect(lambda w: "Direct conversations" in w.all_text(), click("bob")),
+            expect(lambda w: "Conversations" in w.all_text(), click("bob")),
             expect(lambda w: "[Back] ← bob" in w.all_text(), click("[Back]")),
-            expect(lambda w: "Direct conversations" in w.all_text(), "\x03"),
+            expect(lambda w: "Conversations" in w.all_text(), "\x03"),
         ]
         run(session, events)
 
@@ -524,7 +524,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             expect(lambda w: "secret" in w.input_text(), "\x1b"),
             timeout,
             expect(
-                lambda w: "Direct conversations" in w.all_text() and "secret" not in w.input_text(),
+                lambda w: "Conversations" in w.all_text() and "secret" not in w.input_text(),
                 click("carol"),
             ),
             expect(
@@ -533,7 +533,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             ),
             expect(lambda w: "secret" not in w.input_text(), click("3:Direct")),
             expect(
-                lambda w: "Direct conversations" in w.all_text() and "secret" not in w.input_text(),
+                lambda w: "Conversations" in w.all_text() and "secret" not in w.input_text(),
                 click("bob"),
             ),
             expect(
@@ -601,7 +601,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             click("bob"),
             expect(lambda w: "msg7" in w.all_text(), lambda w: w.module.KEY_PPAGE),
             expect(
-                lambda w: "msg2" in w.all_text() and "msg7" not in w.all_text(),
+                lambda w: "msg6" in w.all_text() and "msg7" not in w.all_text(),
                 "\x03",
             ),
         ]

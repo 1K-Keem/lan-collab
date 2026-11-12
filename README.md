@@ -48,18 +48,69 @@ Run the commands below from the project root. `python -m pip` installs into the
 Python environment you are actually using. The network runtime uses Python's
 standard library; the requirements file provides certificate-generation and test tools.
 
+## Install the `lancollab` command
+
+With Python 3.11 or newer installed, run this once from the repository folder:
+
+```bash
+# Linux, macOS, or WSL
+./setup
+```
+
+```powershell
+# Windows PowerShell or Command Prompt
+.\setup.bat
+```
+
+Setup installs the app in a private environment and adds its command directory
+to your user PATH. It uses pipx, preparing its own setup tools if pipx is missing.
+No administrator access or virtual-environment activation is needed. The first
+installation needs internet access to download the packaging tools and dependencies.
+On Debian/Ubuntu, install `python3-venv` first if Python cannot create virtual environments.
+
+Open a new terminal, then run from any folder:
+
+```text
+lancollab
+```
+
+This opens the full-screen client at **206.189.94.234:40000**, equivalent to
+`python -m lancollab.client --host 206.189.94.234 --port 40000 --tui`.
+Windows curses support and the bundled public server certificate are included.
+Install in the environment where you will run it: Windows and WSL are separate.
+
+Optional overrides:
+
+```text
+lancollab --host 127.0.0.1 --port 40000
+lancollab --discover
+lancollab --help
+```
+
+After updating this repository, run `./setup` again (`.\setup.bat` on Windows).
+Remove the installed command with `./setup --uninstall` or `.\setup.bat --uninstall`.
+Use `--no-path` if you manage PATH yourself. Uninstall preserves saved login,
+history, and downloads. Setup tools and PATH entries may remain for future reinstalls.
+An installed copy includes the certificate present at installation time; if the
+server certificate changes, reinstall with the updated public certificate or pass
+`--trusted-cert PATH`. Downloads still go to `downloads/` in your current folder
+unless you pass `--downloads-dir PATH`. Saved login and history use your normal
+per-user configuration folder.
+
+For development inside an already active virtual environment, `python -m pip install -e .`
+also adds `lancollab`, available while that environment is active.
+
 ## Start the group server — administrator
 
 Create the first admin once, then leave the server running:
 
 ```bash
-./run --add-admin admin
-./run
+python -m lancollab.server --add-admin admin
+python -m lancollab.server
 ```
 
 Both commands prompt or run in the terminal; the admin password is not a command
-argument. On native Windows use `.\run.bat` instead of `./run`. You can also use
-`python -m lancollab.server` with the same arguments.
+argument. These server commands work on Windows, Linux, macOS, and WSL.
 
 On first startup, the server creates `certs/direct-trust/server-public.pem` and
 `server-secret.pem` if both are missing, and copies the public certificate to
@@ -77,16 +128,17 @@ and optional automatic account approval.
 
 ## Open the client — everyone, including admins
 
-In another terminal, from the project root:
+After setup, open a new terminal:
 
 ```bash
-./lan-collab                         # Discover a server on the LAN; open the TUI
-./lan-collab --host SERVER_IP        # Explicit server address
-./lan-collab --host 127.0.0.1         # Client and server in the same environment
+lancollab                           # Open the configured server and TUI
+lancollab --discover                # Discover a server on the LAN
+lancollab --host SERVER_IP           # Explicit server address
+lancollab --host 127.0.0.1            # Client and server in the same environment
 ```
 
 Replace `SERVER_IP` with the address supplied by your administrator. On native
-Windows use `.\lan-collab.bat`. If curses is unavailable, use the plain CLI:
+Windows use the same installed command. From the source folder, you can also use the plain CLI:
 
 ```bash
 python -m lancollab.client --host SERVER_IP

@@ -108,7 +108,7 @@ class SessionCommandTests(unittest.TestCase):
             output = []
             shell = ConsoleSession(a, history=store, history_server="server", output=output.append)
             shell.client = client
-            shell.execute(parse_command("/history"))
+            shell.execute(parse_command("/history sessions"))
             self.assertTrue(any("oldsess" in line for line in output))
             self.assertTrue(any("current" in line for line in output))
             self.assertTrue(any("/history show ID" in line for line in output))
@@ -258,7 +258,7 @@ class SessionCommandTests(unittest.TestCase):
             with patch("curses.wrapper", side_effect=lambda fn: fn(window)):
                 run_tui(shell)
             drawn = " ".join(call.args[2] for call in window.addstr.call_args_list)
-            self.assertIn("Session history · read only", drawn)
+            self.assertIn("History", drawn)
             self.assertIn("old private message", drawn)
             self.assertIn("old global message", drawn)
             with self.assertRaises(TimeoutError):
@@ -291,7 +291,7 @@ class SessionCommandTests(unittest.TestCase):
                 next(i for i, line in enumerate(output) if "new msg" in line),
             )
 
-    def test_history_peer_filter_stays_in_current_session(self):
+    def test_history_peer_filter_includes_all_own_sessions(self):
         with tempfile.TemporaryDirectory() as directory:
             store = HistoryStore(Path(directory) / "history.sqlite3")
             self.addCleanup(store.close)
@@ -312,7 +312,7 @@ class SessionCommandTests(unittest.TestCase):
             shell.client = client
             shell.execute(parse_command("/history bob"))
             self.assertTrue(any("new bob" in line for line in output))
-            self.assertFalse(any("old bob" in line for line in output))
+            self.assertTrue(any("old bob" in line for line in output))
             self.assertFalse(any("new carol" in line for line in output))
 
 

@@ -10,10 +10,18 @@ class HelpLinesTests(unittest.TestCase):
     def test_lists_every_reference_line(self):
         # Wrapping only breaks lines; removing spaces re-joins them exactly,
         # so every reference line must survive verbatim.
-        squashed = "".join(text for text, _ in help_lines(76)).replace(" ", "")
+        squashed = "".join(text for text, _ in help_lines(76, role="admin")).replace(" ", "")
         for line in _DETAILED_HELP:
             if line.strip():
                 self.assertIn(line.replace(" ", ""), squashed)
+
+    def test_members_only_see_commands_they_can_use(self):
+        member = " ".join(text for text, _ in help_lines(76))
+        admin = " ".join(text for text, _ in help_lines(76, role="admin"))
+        self.assertNotIn("/approve", member)
+        self.assertNotIn("/reject-user", member)
+        self.assertIn("/approve", admin)
+        self.assertIn("/status", member)
 
     def test_no_row_is_wider_than_the_screen(self):
         for width in (76, 50, 38):

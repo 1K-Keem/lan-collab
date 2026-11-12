@@ -83,7 +83,44 @@ class HistoryStore:
             )
             self._db.commit()
 
-    def session_records(self, server, account):
+    def delete(self, server, account, *, session=None, peer=None, keep_session=False):
+        """Delete a selected scope, never an implicit whole-database operation."""
+        if session is None and peer is None:
+            raise ValueError("Choose a session or person to delete")
+        with self._lock, self._db:
+            result = self._db.execute(
+                "DELETE FROM messages WHERE server=? AND account=? "
+                "AND (? IS NULL OR session=?) AND (? IS NULL OR peer=?)",
+                (server, account, session, session, peer, peer),
+            )
+            if session is not None and peer is None and not keep_session:
+                self._db.execute(
+                    "DELETE FROM history_sessions WHERE server=? AND account=? AND session=?",
+                    (server, account, session),
+                )
+            return result.rowcount
+
+    def archive(self, server, account, peer=None):
+        """Complete viewer-scoped archive, with owning login IDs, oldest first."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT session, timestamp, direction, kind, peer, text FROM messages "
+                "WHERE server=? AND account=? AND (? IS NULL OR peer=?) ORDER BY id",
+                (server, account, peer, peer),
+            ).fetchall()
+
+    def people(self, server, account):
+        """People in this viewer's archive, including received global messages."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT m.peer, m.timestamp, m.text, last.count FROM messages m JOIN ("
+                "SELECT peer, MAX(id) AS id, COUNT(*) AS count FROM messages "
+                "WHERE server=? AND account=? AND peer NOT IN (?, '*') "
+                "GROUP BY peer) last ON m.id=last.id ORDER BY m.id DESC",
+                (server, account, account),
+            ).fetchall()
+
+    def session_records(self, server, account, peer=None):
         """Newest login first, including sessions with no messages."""
         with self._lock:
             return [
@@ -92,19 +129,22 @@ class HistoryStore:
                     "SELECT s.session, s.started, s.ended, COUNT(m.id) "
                     "FROM history_sessions s LEFT JOIN messages m ON "
                     "m.server=s.server AND m.account=s.account AND m.session=s.session "
+                    "AND (? IS NULL OR m.peer=?) "
                     "WHERE s.server=? AND s.account=? GROUP BY s.session "
+                    "HAVING ? IS NULL OR COUNT(m.id)>0 "
                     "ORDER BY s.started DESC, s.rowid DESC",
-                    (server, account),
+                    (peer, peer, server, account, peer),
                 ).fetchall()
             ]
 
-    def transcript(self, server, account, session):
+    def transcript(self, server, account, session, peer=None):
         """All messages from exactly one account/server/session, oldest first."""
         with self._lock:
             return self._db.execute(
                 "SELECT timestamp, direction, kind, peer, text FROM messages "
-                "WHERE server=? AND account=? AND session=? ORDER BY id",
-                (server, account, session),
+                "WHERE server=? AND account=? AND session=? "
+                "AND (? IS NULL OR peer=?) ORDER BY id",
+                (server, account, session, peer, peer),
             ).fetchall()
 
     def direct_conversations(self, server, account):

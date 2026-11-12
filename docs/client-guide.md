@@ -21,13 +21,12 @@ the **current** `server-public.pem` from the admin or agreed trusted repository.
 On the administrator's machine, create an admin once and start the server:
 
 ```bash
-./run --add-admin admin
-./run
+python -m lancollab.server --add-admin admin
+python -m lancollab.server
 ```
 
 The first command securely prompts for a password and confirmation, then exits.
-The second keeps serving until Ctrl+C. `./run` launches `python -m lancollab.server`;
-all server flags pass through. Native Windows uses `.\run.bat`.
+The second keeps serving until Ctrl+C. Use the same commands on Windows.
 
 First startup automatically creates the default certificate/key pair if both files
 are missing, using cryptography or the system OpenSSL command. It copies the public
@@ -41,7 +40,7 @@ Only distribute `certs/direct-trust/server-public.pem`. Each client can place th
 public file at `lancollab/client/server-public.pem`, or select it explicitly:
 
 ```bash
-./lan-collab --host SERVER_IP --trusted-cert "/path/to/server-public.pem"
+lancollab --host SERVER_IP --trusted-cert "/path/to/server-public.pem"
 ```
 
 Trust-file selection is `--trusted-cert`, then `LANCOLLAB_TRUSTED_CERT`, then the
@@ -72,8 +71,8 @@ Relative paths are based on the working directory. Use the same database path fo
 admin provisioning and server startup. For example:
 
 ```bash
-./run --db data/group.db --add-admin admin
-./run --db data/group.db --port 41000 --udp-port 41001
+python -m lancollab.server --db data/group.db --add-admin admin
+python -m lancollab.server --db data/group.db --port 41000 --udp-port 41001
 ```
 
 Clients must use matching port options. The default requires manual approval:
@@ -83,10 +82,10 @@ new accounts stay pending until an admin approves them from their client.
 
 | Where the server runs | Client command |
 | --- | --- |
-| Same environment as the client | `./lan-collab --host 127.0.0.1` |
-| Same reachable LAN | `./lan-collab` to discover, or `./lan-collab --host SERVER_LAN_IP` |
-| Reachable over an existing Tailscale network | `./lan-collab --host SERVER_TAILSCALE_IP` |
-| Custom ports | `./lan-collab --host SERVER_IP --port 41000 --udp-port 41001` |
+| Same environment as the client | `lancollab --host 127.0.0.1` |
+| Same reachable LAN | `lancollab --discover` to discover, or `lancollab --host SERVER_LAN_IP` |
+| Reachable over an existing Tailscale network | `lancollab --host SERVER_TAILSCALE_IP` |
+| Custom ports | `lancollab --host SERVER_IP --port 41000 --udp-port 41001` |
 
 Replace uppercase placeholders with actual addresses. `--host` skips discovery.
 `127.0.0.1` refers to the client's own environment, not another computer. With WSL,
@@ -106,20 +105,22 @@ Tailscale is optional; the offline LAN workflow does not require it.
 ## Connect and join
 
 ```bash
-./lan-collab
-# Or use an explicit IP if UDP broadcast is blocked:
-./lan-collab --host SERVER_IP
+lancollab                         # Configured server: 206.189.94.234:40000
+lancollab --discover              # Discover a server on the local network
+# Or choose another server:
+lancollab --host SERVER_IP
 # Without the TUI (plain line-oriented CLI):
 python -m lancollab.client --discover
 python -m lancollab.client --host SERVER_IP
 ```
 
-On Windows, the full-screen launcher requires curses support:
+Install once with `./setup` on Linux/macOS/WSL, or `.\setup.bat` on Windows.
+Open a new terminal, then use `lancollab` from any folder. Setup installs Windows
+curses support automatically. For example:
 
 ```powershell
-python -m pip install windows-curses
-.\lan-collab.bat --host 127.0.0.1
-# Plain CLI without curses (the launcher always enables the TUI):
+lancollab --host 127.0.0.1
+# From the source folder, plain CLI without curses:
 python -m lancollab.client --host 127.0.0.1
 ```
 
@@ -172,29 +173,31 @@ happen before connecting, so user typing does not consume the authentication dea
 | `/msg USER TEXT` | Private message; queued for an existing active account if offline |
 | `/send USER PATH` | Offer a file; quote paths containing spaces |
 | `/accept [ID] [PATH]`, `/reject ID`, `/cancel ID` | Consent, decline or cancel a transfer |
-| `/history` | Browse your saved login sessions; select one to read its full conversation |
-| `/history show ID` | Display every saved message from the selected session (plain console or TUI) |
-| `/history USER`, `/history all` | Last 50 messages for a peer in this login, or across your sessions |
+| `/history` | Open the full-screen session picker; F8 also opens it |
+| `/history sessions`, `/history show ID [USER]` | List login IDs, or read a session (optionally one person) |
+| `/history USER` | Full-screen complete history for a person across your logins |
+| `/history people` | Open the people picker; Tab also switches between sessions and people |
 | `/pending`, `/approve USER`, `/reject-user USER` | Admin account approval |
 | `/net` | UDP RTT and probe-loss measurement |
 | `/help`, `/quit`, `/logout` | Open the help screen, close app, or forget login |
 
-The TUI opens with an original ASCII welcome logo and uses a colored conversation area,
-connection status, and an online-users sidebar on wide terminals. Color is optional:
+The TUI opens with the slanted LAN-COLLAB ASCII wordmark and uses a colored conversation area,
+your account, online count, and an online-users sidebar on wide terminals. Color is optional:
 set `NO_COLOR=1` to keep a monochrome display. Redirected startup output has no banner
 or ANSI color sequences.
 
 - Type `/` to browse commands with descriptions; admin commands appear for admins.
 - Use Up/Down to choose a suggestion and Tab to complete it. Enter completes a partial
   suggestion; Enter on a complete command executes it. Clicking a suggestion completes it.
-- `/msg`, `/send`, and `/history` also suggest online usernames for their first argument.
+- `/msg` and `/send` suggest online usernames. `/history` suggests only `people`
+  and `sessions`; choose a person inside the full-screen picker.
 - Plain text sends global chat outside Direct. On a Direct conversation page, plain
   text goes only to the selected peer; the Direct inbox never sends to global chat.
 - Left/Right, Home/End, Backspace and Delete edit the input. Ctrl+U clears it, Ctrl+W
   deletes the word before the cursor.
 - Up/Down recall submitted input when the suggestion menu is closed; Esc dismisses the menu.
 - PageUp/PageDown or the mouse wheel scroll the conversation. While scrolled up, the
-  header shows how many new messages arrived (`Scrollback · 3 new ↓`).
+  header shows how many new messages arrived (`↓ 3 new messages`).
 - Right-click (or left-click) another online user to open **Direct message / Send file**.
   Your own account is hidden from the online interaction list and People menu.
   Choose with a click or Up/Down + Enter; Esc closes the menu. Direct message opens
@@ -212,7 +215,9 @@ or ANSI color sequences.
   the bottom dock. `/accept ID` and F6 retain the default download folder.
   Admin pending accounts show **Approve / Reject** controls; they still require admin
   permission. Slash commands remain available on narrow terminals.
-- Chat lines are colored by sender (your own messages are bold); timestamps are dimmed.
+- Chat messages have a sender-colored heading, a body rail, and space between messages.
+  Your messages use a bold accent. Short `DM` / `All` labels identify the channel,
+  and the sender and boundaries remain clear with `NO_COLOR=1`.
 - `F1` or `/help` opens the help screen — a separate full-screen view, not lines in
   the chat. Scroll it with `↑↓` / `PgUp` / `PgDn`; `Ctrl+C` or `Esc` returns to the
   chat. `Ctrl+C` in the chat still exits.
@@ -290,29 +295,59 @@ a new session with its login time. `/quit`, `/logout`, and normal disconnects re
 end time. Messages are saved as they arrive, so an abrupt exit keeps saved messages even
 if the end time cannot be recorded. Sessions with no messages are also listed.
 
-`/history` opens a session picker in the TUI, newest first. Use Up/Down and Enter to
-view a session, then Up/Down or Page Up/Page Down to scroll. Esc or Ctrl+C returns to
-the list, and again to live chat. The viewer is read only: opening a session never
-resumes it or sends messages. It includes **all incoming global and private chat from
-every sender**, plus your acknowledged outgoing messages, in chronological order,
-without a 50-message limit. Other accounts' sessions are excluded.
+`/history` or **F8** opens a full-screen session picker, newest login first.
+Each row shows its local start time, message count, and a current-session
+marker. Session IDs remain available through the plain-console listing. Select a session with Up/Down and Enter, or click it, to read its complete
+transcript. This includes empty sessions and legacy sessions.
 
-In the plain console, `/history` lists session IDs; `/history show ID` displays the
-chosen conversation. Dates use local time, for example `11/11/2026 10:24:00`.
-Existing archives remain readable; older sessions use their first saved message time
-because their login time was not recorded. `/history show legacy` opens messages saved
-before session IDs existed. `/history USER` remains an optional current-session peer
-filter, and `/history all` displays the last 50 messages across sessions.
+Press **Tab** in the picker to switch between **Sessions** and **People**.
+`/history people` opens the people list directly. Selecting a person opens all
+of their saved messages in one full-screen view, across **your login sessions**,
+with session separators. `/history USER` opens that person's view directly.
+People remain listed when offline. Their history includes incoming private and
+global messages and your private replies, without a 50-message limit.
+Use the session picker to read everyone’s messages from a particular login.
+The people picker lists only people; there is no redundant “All messages” entry.
+
+Session and person transcripts open at the bottom, showing the newest messages.
+Up/Down, Page Up/Page Down, and the mouse wheel scroll messages. Home/End jump
+to the beginning/end. Esc or Ctrl+C returns to the picker and then to chat.
+Opening history never resumes a session or sends typed text. Your saved messages remain isolated by your account and trusted server;
+they are organized inside SQLite, not in another user's folders. With
+`--no-history`, this browser is unavailable; Direct still has this login's DMs.
+
+`/history show ID [USER]` opens a particular session in the full-screen reader,
+optionally filtered to one person. `/history show legacy` opens messages from
+before session tracking. Existing archives remain readable; older sessions use
+the first message time when their login time was not recorded.
+
+In the plain console, `/history` (or `/history sessions`) prints login IDs and
+`/history people` prints people. The same transcript commands print the complete
+matching messages. Live chat, history and search use short `DM` / `All` labels.
+
+While browsing, press **Delete** or click **[Delete]** to remove the selected
+session or person's saved messages. Press **Y** to confirm; **Esc** or **N** cancels.
+Enter alone never confirms deletion. In a filtered session view, only that
+person's messages in that session are removed. Clearing the current session
+preserves its login time and allows new messages to be saved normally.
+Deletion affects only your account on this trusted server in the local archive;
+it does not remove other people's copies, live scrollback, files, or saved logins.
+`/clear` still clears only the display. There is no undo for deleted history.
 
 The local database is not encrypted at rest; protect
 the OS account and disk. Files are created with restrictive permissions on POSIX systems.
 
 ## Dashboard and convenience commands
 
-The TUI header shows your account/role, verified TLS connection, online count, TCP and UDP
-round-trip times, and last DM reply target. RTT probes run only when you use `/ping`, `/net`, or F4; the header shows the last
-measurement. A dash means no measurement yet. Server liveness keepalives remain silent. At 76 columns or wider, the right panel
-shows online users, active transfers and (for admins) pending accounts. F2 toggles it.
+The TUI header shows the app name, your username, and how many other people are online.
+A new-message indicator appears only while you are scrolled up. Connection diagnostics
+remain available through `/status`, `/ping`, `/net`, and F4; TLS encryption stays enabled.
+The reply recipient appears when you type `/reply ` rather than in the header.
+At 76 columns or wider, the right panel shows people online, plus file transfers and
+pending account approvals when they need attention. F2 toggles it. Transfer summaries
+show the filename, peer, and progress; `/transfers` provides IDs and byte counts.
+History and Direct use shorter local timestamps. Help shows admin commands only to admins.
+The login screen keeps the server address so you can check where you are signing in.
 Progress updates replace the existing bar instead of adding ACK notices to chat.
 The plain interactive CLI also updates a single line; redirected output contains
 only lifecycle notices (use `/transfers` for an explicit progress snapshot).
@@ -340,7 +375,7 @@ F6 accepts the sole pending offer (asks for an ID through an error if there are 
 Ctrl+W deletes the previous word, Ctrl+K deletes to the end, and Ctrl+L clears the display.
 Chat colors distinguish senders; file, admin and error notices also have distinct styles.
 
-`/reply TEXT` uses the last DM peer shown in the header; `/msg USER TEXT` explicitly
+`/reply TEXT` uses the last person you exchanged direct messages with; `/msg USER TEXT` explicitly
 chooses a recipient. `/help` includes a display-filter
 guide: All includes every notice, Global shows group chat, Direct opens private
 conversations, and Files shows transfer notices. A selected Direct conversation changes
@@ -350,7 +385,6 @@ the plain-text recipient; the other tabs use global chat.
 
 ```bash
 python -m lancollab.server --auto-approve
-# or ./run --auto-approve
 ```
 
 Manual approval remains the default. With this option, registration creates active accounts;

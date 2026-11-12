@@ -1,6 +1,7 @@
 """Keyboard/mouse credentials form; credentials are collected before TLS opens."""
 
 from lancollab.client.application import _USERNAME, safe_display
+from lancollab.client.branding import banner_lines
 from lancollab.client.tui import Composer, _palette, cell_width, fit_cells, wrap_cells
 
 
@@ -45,10 +46,9 @@ def prompt_auth(server, message="", username="", choice="login"):
                 continue
             left, top = max(2, (width - 56) // 2), max(0, (height - 22) // 2)
             room = min(56, width - left - 2)
-            write(top, left, "LAN COLLAB", room, "accent")
-            write(top + 1, left, "Your LAN workspace", room)
-            write(top + 2, left, safe_display("Server: " + server), room)
-            write(top + 3, left, "Server identity verified on connection", room)
+            for row, line in enumerate(banner_lines(room)[:4]):
+                write(top + row, left, line, room, "accent")
+            write(top + 4, left, safe_display("Server: " + server), room)
             for x, value, label in (
                 (left, "login", "[ Log in ]"),
                 (left + 15, "signup", "[ Sign up ]"),

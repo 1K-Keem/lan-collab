@@ -12,8 +12,8 @@ import sqlite3
 from unicodedata import combining, east_asian_width
 
 from lancollab.client.application import ClientState, safe_display
-from lancollab.client.cli import Command, _DETAILED_HELP, parse_command, progress_bar
-from lancollab.client.history import local_time
+from lancollab.client.cli import Command, help_reference, parse_command
+
 from lancollab.client.branding import banner_lines
 
 
@@ -38,7 +38,11 @@ COMMANDS = (
     Suggestion("/msg", "USER TEXT", "Send a private message"),
     Suggestion("/send", "USER PATH", "Offer a file to someone"),
     Suggestion("/users", "", "See who is online"),
-    Suggestion("/history", "[USER|all|show ID]", "Browse your saved login sessions"),
+    Suggestion(
+        "/history",
+        "[options]",
+        "Saved people and sessions",
+    ),
     Suggestion("/accept", "[ID] [PATH]", "Accept a file into an optional folder"),
     Suggestion("/reject", "ID", "Decline a file offer"),
     Suggestion("/cancel", "ID", "Cancel a file transfer"),
@@ -91,9 +95,11 @@ def suggestions(text, users=(), role="member", pending=(), transfers=()):
                 if name.startswith(argument)
             ]
     if command in {"/msg", "/send", "/history"} and " " not in argument:
-        candidates = [(name, "Online user") for name in sorted(users)]
-        if command == "/history":
-            candidates.append(("all", "All sessions"))
+        candidates = (
+            [("people", "Browse saved people"), ("sessions", "Browse saved sessions")]
+            if command == "/history"
+            else [(name, "Online user") for name in sorted(users)]
+        )
         return [
             Suggestion(f"{command} {name}", "", description)
             for name, description in candidates
@@ -106,9 +112,9 @@ FILTERS = ("all", "global", "dm", "files")
 
 
 def notice_category(message):
-    if message.startswith(("[chat] [CHAT_PRIVATE]", "[CHAT_PRIVATE]")):
+    if message.startswith(("[DM]", "[chat] [CHAT_PRIVATE]", "[CHAT_PRIVATE]")):
         return "dm"
-    if message.startswith(("[chat] [CHAT_GLOBAL]", "[CHAT_GLOBAL]")):
+    if message.startswith(("[All]", "[chat] [CHAT_GLOBAL]", "[CHAT_GLOBAL]")):
         return "global"
     if message.startswith("[file]"):
         return "files"
@@ -166,7 +172,7 @@ def chat_sender(message):
 
     Notices carry a ``[chat] `` prefix before the ``[CHAT_*]`` part.
     """
-    match = re.match(r"^(?:\[chat\] )?\[(?:CHAT_GLOBAL|CHAT_PRIVATE)\] ([^:]+):", message)
+    match = re.match(r"^(?:\[chat\] )?\[(?:All|DM|CHAT_GLOBAL|CHAT_PRIVATE)\] ([^:]+):", message)
     return match.group(1) if match else None
 
 
@@ -225,9 +231,251 @@ def sender_style_name(sender, username):
     """Own messages are bold accent; others get a stable color per sender."""
     if sender is None:
         return None
-    if sender == "you" or sender.startswith("you ->"):
+    if sender in {"you", username} or sender.startswith("you ->"):
         return "accent"
     return SENDER_STYLES[sum(sender.encode("utf-8")) % len(SENDER_STYLES)]
+
+
+def display_time(timestamp):
+    """Local date and minute; omit protocol-style seconds and timezone offsets."""
+    return datetime.fromisoformat(timestamp).astimezone().strftime("%d %b %Y · %H:%M")
+
+
+def transfer_summary(row):
+    status = row["status"]
+    if status == "offer":
+        return "Accept or decline"
+    if status == "waiting":
+        return "Waiting for acceptance"
+    if status == "verifying":
+        return "Checking file…"
+    percent = min(100, int(100 * row["done"] / row["size"])) if row["size"] else 0
+    return f"{'Receiving' if status == 'receiving' else 'Sending'} · {percent}%"
+
+
+def message_rows(timestamp, sender, text, channel, width, username):
+    """Readable message cards, with identity and boundaries even without color."""
+    width = max(1, width)
+    sender, text = safe_display(sender), safe_display(text)
+    own = sender in {"you", username} or sender.startswith("you ->")
+    label = "You" + sender[3:] if sender.startswith("you") and own else sender
+    style = sender_style_name(sender, username) or "muted"
+    header = f"{'▸' if own else '●'} {label}"
+    header += (f" · {channel}" if channel else "") + f" · {timestamp}"
+    rows = [("", part, style) for part in wrap_cells(header, width)]
+    for part in wrap_cells(text, max(1, width - 2)):
+        rows.append(("", fit_cells("│ " + part, width), style))
+    rows.append(("", "", "muted"))
+    return rows
+
+
+class HistoryBrowser:
+    """Full-screen sessions and person transcripts with confirmed local deletion."""
+
+    def __init__(self, session, args=()):
+        self.session = session
+        self.people = session.history_people()
+        self.records = session.history_sessions()
+        self.level = "sessions"
+        self.peer = None
+        self.transcript = []
+        self.session_ids = []
+        self.record = None
+        self.selected = self.scroll = 0
+        self.parents = []
+        self.error = None
+        self._rows = []
+        self._width = None
+        self._open_at_end = False
+        self.pending_delete = None
+        self.notice = None
+        if args == ("people",):
+            self.level = "people"
+        elif args and args[0] == "show" and len(args) >= 2:
+            self._open_session(args[1], args[2] if len(args) == 3 else None)
+        elif args and args != ("sessions",):
+            self.level = "people"
+            self._open_person(None if args == ("all",) else args[0])
+
+    @property
+    def breadcrumb(self):
+        account = safe_display(self.session.client.username or "")
+        if self.level == "sessions":
+            return f"{account} / Sessions"
+        if self.level == "people":
+            return f"{account} / People"
+        scope = display_time(self.record.started) if self.record else "All sessions"
+        if self.peer:
+            return f"{account} / {safe_display(self.peer)} / {scope}"
+        return f"{account} / {scope}"
+
+    def items(self):
+        if self.level == "people":
+            return [
+                (
+                    f"{safe_display(peer)} · {count} msgs · {safe_display(text)}",
+                    sender_style_name(peer, self.session.client.username),
+                )
+                for peer, _stamp, text, count in self.people
+            ]
+        return [
+            (
+                f"{'CURRENT · ' if r.id == self.session.client.session_id else ''}"
+                f"{display_time(r.started)} · {r.count} msgs",
+                "accent" if r.id == self.session.client.session_id else "muted",
+            )
+            for r in self.records
+        ]
+
+    def page(self, width, visible):
+        if self.pending_delete is not None:
+            lines = [
+                self.pending_delete[2],
+                "",
+                "Only your saved copy is deleted.",
+                "This cannot be undone.",
+                "",
+                "Y: delete    Esc / N: cancel",
+            ]
+            if self.error:
+                lines.insert(0, self.error)
+            rows = [
+                (part, "error" if index == 0 else "muted")
+                for index, line in enumerate(lines)
+                for part in wrap_cells(line, max(1, width))
+            ]
+            return rows[:visible], 0
+        if self.error:
+            return [(fit_cells(self.error, max(1, width)), "error")], 0
+        if self.level == "messages" and self._width != width:
+            self._rows = []
+            records = {record.id: record for record in self.records}
+            previous = None
+            for index, (timestamp, direction, kind, peer, text) in enumerate(self.transcript):
+                if self.session_ids and self.session_ids[index] != previous:
+                    previous = self.session_ids[index]
+                    record = records[previous]
+                    label = f"── Session · {display_time(record.started)} ──"
+                    self._rows.extend((line, "accent") for line in wrap_cells(label, max(1, width)))
+                sender = f"you -> {peer}" if kind == "CHAT_PRIVATE" and not self.peer else "you"
+                self._rows.extend(
+                    (line, style)
+                    for _, line, style in message_rows(
+                        display_time(timestamp),
+                        sender if direction == "sent" else peer,
+                        text,
+                        "DM" if kind == "CHAT_PRIVATE" else "All",
+                        width,
+                        self.session.client.username,
+                    )
+                )
+            if not self._rows:
+                self._rows = [("No saved messages.", "muted")]
+            self._width = width
+        if self.level == "messages":
+            end = max(0, len(self._rows) - visible)
+            if self._open_at_end:
+                self.scroll = end
+                self._open_at_end = False
+            self.scroll = min(self.scroll, end)
+            return self._rows[self.scroll : self.scroll + visible], self.scroll
+        items = self.items()
+        start = max(0, self.selected - visible + 1)
+        page = [
+            (
+                fit_cells(("› " if i == self.selected else "  ") + label, max(1, width)),
+                "selected" if i == self.selected else style,
+            )
+            for i, (label, style) in enumerate(items)
+            if start <= i < start + visible
+        ]
+        empty = "No saved people yet." if self.level == "people" else "No saved sessions."
+        return page or [(empty, "muted")], start
+
+    def move(self, step):
+        if self.level == "messages":
+            self.scroll = max(0, min(len(self._rows), self.scroll + step))
+        else:
+            self.selected = max(0, min(len(self.items()) - 1, self.selected + step))
+
+    def switch_list(self):
+        if self.level != "messages":
+            self.level = "people" if self.level == "sessions" else "sessions"
+            self.selected = 0
+            self.error = None
+
+    def _open_session(self, session_id, peer=None):
+        record, rows = self.session.history_transcript(session_id, peer)
+        self.parents.append((self.level, self.selected))
+        self.record, self.peer = record, peer
+        self.transcript, self.session_ids = rows, []
+        self.level, self.scroll, self._width = "messages", 0, None
+        self._open_at_end = True
+
+    def _open_person(self, peer):
+        rows = self.session.history_archive(peer)
+        self.parents.append((self.level, self.selected))
+        self.record, self.peer = None, peer
+        self.transcript = [row[1:] for row in rows]
+        self.session_ids = [row[0] for row in rows]
+        self.level, self.scroll, self._width = "messages", 0, None
+        self._open_at_end = True
+
+    def request_delete(self):
+        """Freeze the selected scope; navigation cannot change a pending deletion."""
+        session_id, peer = None, None
+        if self.level == "sessions" and self.records:
+            record = self.records[self.selected]
+            session_id = record.id
+            label = f"Delete session from {display_time(record.started)}?"
+        elif self.level == "people" and self.people:
+            peer = self.people[self.selected][0]
+            label = f"Delete saved history with {safe_display(peer)}?"
+        elif self.level == "messages" and (self.record is not None or self.peer is not None):
+            session_id = self.record.id if self.record else None
+            peer = self.peer
+            label = (
+                f"Delete saved messages with {safe_display(peer)}?"
+                if peer
+                else f"Delete session from {display_time(self.record.started)}?"
+            )
+            if peer and self.record:
+                label += f" Only {display_time(self.record.started)}."
+        else:
+            return
+        if session_id == self.session.client.session_id and peer is None:
+            label = "Clear saved messages from your current session?"
+        self.pending_delete = (session_id, peer, label)
+        self.notice = self.error = None
+
+    def confirm_delete(self):
+        if self.pending_delete is None:
+            return
+        session_id, peer, _label = self.pending_delete
+        count = self.session.delete_history(session_id=session_id, peer=peer)
+        self.pending_delete = None
+        if self.level == "messages":
+            self.back()
+        self.records = self.session.history_sessions()
+        self.people = self.session.history_people()
+        self.selected = min(self.selected, max(0, len(self.items()) - 1))
+        self.transcript, self.session_ids, self._rows = [], [], []
+        self._width = None
+        self.notice = f"Deleted {count} saved message{'s' if count != 1 else ''}."
+
+    def open(self):
+        self.notice = self.error = None
+        if self.level == "people" and self.people:
+            self._open_person(self.people[self.selected][0])
+        elif self.level == "sessions" and self.records:
+            self._open_session(self.records[self.selected].id or "legacy")
+
+    def back(self):
+        self.error = None
+        if not self.parents:
+            return False
+        self.level, self.selected = self.parents.pop()
+        return True
 
 
 class Composer:
@@ -333,7 +581,7 @@ def _palette(curses):
     return styles
 
 
-def help_lines(width):
+def help_lines(width, role="member"):
     """Full-screen help content as (text, style) rows, wrapped to width.
 
     Built from the team's own _DETAILED_HELP reference, so this screen and
@@ -341,7 +589,7 @@ def help_lines(width):
     view; Ctrl+C (or Esc) returns to the chat.
     """
     rows = [("LAN COLLAB — Help", "accent"), ("", "muted")]
-    for line in _DETAILED_HELP:
+    for line in help_reference(role):
         if not line:
             rows.append(("", "muted"))
         elif line.startswith("  "):
@@ -392,7 +640,7 @@ def run_tui(session):
         # Direct tab: None shows the inbox; a peer name shows that transcript.
         # Reads are cached against client.direct_revision, never polled per frame.
         direct_peer = None
-        direct_selected = direct_scroll = 0
+        direct_selected = direct_scroll = direct_unseen = 0
         direct_conversations = None
         direct_conversations_revision = None
         direct_page_rows = None
@@ -404,11 +652,7 @@ def run_tui(session):
         context_key = "dm-inbox" if session.display_filter == "dm" else "main"
         last_filter = session.display_filter
         show_help, help_scroll = False, 0
-        history_records = None
-        history_selected = history_scroll = 0
-        history_lines = None
-        history_wrapped_width = None
-        history_rows = []
+        history_browser = None
         sidebar_enabled = True
         # Transient context menu: kind, target, index, anchor. Rebuilt and
         # validated on every frame so resizes and disappearing people are safe.
@@ -438,7 +682,8 @@ def run_tui(session):
                 (datetime.now().strftime("%H:%M") if stamp else "", safe_display(text), kind)
             )
 
-        for line in banner_lines(window.getmaxyx()[1] - 10):
+        initial_width = window.getmaxyx()[1]
+        for line in banner_lines(initial_width - (24 if initial_width >= 76 else 0) - 4):
             messages.append(("", line, "accent"))
         add("Welcome to your study space.", "accent")
         add("Write a message to everyone, or type / to explore commands.")
@@ -501,16 +746,16 @@ def run_tui(session):
 
         def reset_direct_page():
             nonlocal direct_peer, direct_page_rows, direct_page_revision
-            nonlocal direct_page_error, direct_scroll
+            nonlocal direct_page_error, direct_scroll, direct_unseen
             direct_peer = None
             direct_page_rows = None
             direct_page_revision = None
             direct_page_error = None
-            direct_scroll = 0
+            direct_scroll = direct_unseen = 0
 
         def open_direct(peer):
             nonlocal direct_peer, direct_page_rows, direct_page_revision
-            nonlocal direct_page_error, direct_scroll, last_filter, direct_dirty
+            nonlocal direct_page_error, direct_scroll, direct_unseen, last_filter, direct_dirty
             nonlocal direct_flash
             if not valid_username(peer):
                 return False
@@ -519,7 +764,7 @@ def run_tui(session):
             direct_page_rows = None
             direct_page_revision = None
             direct_page_error = None
-            direct_scroll = 0
+            direct_scroll = direct_unseen = 0
             direct_dirty = True
             direct_flash = None
             session.display_filter = "dm"
@@ -528,7 +773,7 @@ def run_tui(session):
 
         def back_to_inbox():
             nonlocal direct_peer, direct_page_rows, direct_page_revision
-            nonlocal direct_page_error, direct_scroll
+            nonlocal direct_page_error, direct_scroll, direct_unseen
             if direct_peer is None:
                 return
             switch_context("dm-inbox")
@@ -536,7 +781,7 @@ def run_tui(session):
             direct_page_rows = None
             direct_page_revision = None
             direct_page_error = None
-            direct_scroll = 0
+            direct_scroll = direct_unseen = 0
 
         def refresh_direct():
             """Re-read Direct data only when the backend revision or a notice changed it."""
@@ -653,6 +898,10 @@ def run_tui(session):
             while True:
                 try:
                     notice = notices.get_nowait()
+                    if notice == "[presence] Online list refreshed" or notice.startswith(
+                        "[auth] Authenticated as "
+                    ):
+                        continue
                     kind = (
                         "error"
                         if notice.startswith(("[error]", "[auth_error]", "[protocol_error]"))
@@ -669,16 +918,36 @@ def run_tui(session):
                     add(notice, kind, stamp=notice.startswith("["))
                     if kind == "dm":
                         direct_dirty = True
-                    if session.display_filter == "dm" and not notice.startswith("[presence]"):
+                    if (
+                        session.display_filter == "dm"
+                        and notice_category(notice) not in {"dm", "global"}
+                        and not notice.startswith("[presence]")
+                    ):
                         # Errors and send results stay visible even though the
                         # Direct view replaces ordinary scrollback.
                         direct_flash = (
-                            safe_display(notice),
+                            safe_display(re.sub(r"^\[file\] ", "", notice)),
                             "error" if kind == "error" else kind,
                             monotonic() + 10,
                         )
-                    if scroll:
+                    category = notice_category(notice)
+                    incoming = chat_sender(notice) not in (None, "you") and not (
+                        chat_sender(notice) or ""
+                    ).startswith("you ->")
+                    if (
+                        scroll
+                        and incoming
+                        and category in {"global", "dm"}
+                        and session.display_filter in {"all", category}
+                    ):
                         unseen += 1
+                    if (
+                        direct_scroll
+                        and incoming
+                        and category == "dm"
+                        and chat_sender(notice) == direct_peer
+                    ):
+                        direct_unseen += 1
                 except Empty:
                     break
             if session.display_filter != last_filter:
@@ -690,43 +959,36 @@ def run_tui(session):
                 direct_flash = None
                 scroll = 0
                 switch_context("dm-inbox" if last_filter == "dm" else "main")
-            if history_records is not None:
+            if history_browser is not None:
                 height, width = window.getmaxyx()
                 window.erase()
-                visible = max(1, height - 5)
-                write(0, 2, "LAN COLLAB — Session history · read only", width - 4, "accent")
-                if history_lines is None:
-                    write(1, 2, "Your login sessions · newest first", width - 4)
-                    start = max(0, history_selected - visible + 1)
-                    if not history_records:
-                        write(3, 2, "No saved sessions.", width - 4)
-                    for y, index in enumerate(
-                        range(start, min(len(history_records), start + visible)), 3
-                    ):
-                        record = history_records[index]
-                        label = session.history_label(record)
-                        write(
-                            y,
-                            2,
-                            ("› " if index == history_selected else "  ") + label,
-                            width - 4,
-                            "selected" if index == history_selected else "muted",
-                        )
-                    hint = "↑↓ choose · Enter view · Esc / Ctrl+C back to chat"
-                else:
-                    if history_wrapped_width != width:
-                        history_rows = [
-                            part
-                            for line in history_lines
-                            for part in wrap_cells(line, max(1, width - 4))
-                        ]
-                        history_wrapped_width = width
-                    history_scroll = min(history_scroll, max(0, len(history_rows) - visible))
-                    for y, line in enumerate(
-                        history_rows[history_scroll : history_scroll + visible], 2
-                    ):
-                        write(y, 2, line, width - 4)
-                    hint = "↑↓ / PgUp/PgDn scroll · Esc / Ctrl+C back to sessions"
+                visible = max(1, height - 6)
+                write(0, 2, "History", width - 16, "accent")
+                write(0, width - 12, "[Delete]", 8, "error")
+                write(1, 2, history_browser.breadcrumb, width - 4, "accent")
+                write(
+                    2,
+                    2,
+                    history_browser.notice
+                    or (
+                        "Choose a person"
+                        if history_browser.level == "people"
+                        else "Your login sessions"
+                        if history_browser.level == "sessions"
+                        else ""
+                    ),
+                    width - 4,
+                )
+                page, start = history_browser.page(width - 4, visible)
+                for y, (line, style) in enumerate(page, 4):
+                    write(y, 2, line, width - 4, style)
+                hint = (
+                    "↑↓ scroll · Del delete · Esc back · Home/End jump"
+                    if history_browser.level == "messages"
+                    else "↑↓ choose · Enter open · Del delete · Tab lists · Esc back"
+                )
+                if history_browser.pending_delete is not None:
+                    hint = "Y delete · Esc / N cancel"
                 write(height - 1, 2, hint, width - 4)
                 try:
                     curses.curs_set(0)
@@ -739,52 +1001,72 @@ def run_tui(session):
                     key = "\x03"
                 except curses.error:
                     continue
-                if key in ("\x1b", "\x03"):
-                    if history_lines is not None:
-                        history_lines = None
-                        history_scroll = 0
-                    else:
-                        history_records = None
-                        try:
+                try:
+                    if history_browser.pending_delete is not None:
+                        if key in ("y", "Y"):
+                            history_browser.confirm_delete()
+                        elif key in ("\x1b", "\x03", "n", "N"):
+                            history_browser.pending_delete = None
+                            history_browser.error = None
+                        continue
+                    if key == curses.KEY_DC:
+                        history_browser.request_delete()
+                    elif key in ("\x1b", "\x03"):
+                        if not history_browser.back():
+                            history_browser = None
                             curses.curs_set(1)
-                        except curses.error:
-                            pass
-                elif key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_PPAGE, curses.KEY_NPAGE):
-                    step = (
-                        -1
-                        if key == curses.KEY_UP
-                        else 1
-                        if key == curses.KEY_DOWN
-                        else (-visible if key == curses.KEY_PPAGE else visible)
-                    )
-                    if history_lines is not None:
-                        history_scroll = max(0, history_scroll + step)
-                    else:
-                        history_selected = max(
-                            0, min(len(history_records) - 1, history_selected + step)
+                    elif key in (
+                        curses.KEY_UP,
+                        curses.KEY_DOWN,
+                        curses.KEY_PPAGE,
+                        curses.KEY_NPAGE,
+                    ):
+                        step = (
+                            -1
+                            if key == curses.KEY_UP
+                            else 1
+                            if key == curses.KEY_DOWN
+                            else -visible
+                            if key == curses.KEY_PPAGE
+                            else visible
                         )
-                elif (
-                    key in ("\n", "\r", curses.KEY_ENTER)
-                    and history_lines is None
-                    and history_records
-                ):
-                    history_wrapped_width = None
-                    try:
-                        record, transcript = session.history_transcript(
-                            history_records[history_selected].id or "legacy"
-                        )
-                        history_lines = [safe_display(session.history_label(record)), ""]
-                        history_lines += [session.history_message(row) for row in transcript]
-                        if not transcript:
-                            history_lines.append("No saved messages in this session.")
-                    except (ValueError, OSError, sqlite3.Error) as error:
-                        history_lines = [safe_display(str(error))]
-                # There is deliberately no composer or command dispatch in this view.
+                        history_browser.move(step)
+                    elif key == "\t":
+                        history_browser.switch_list()
+                    elif key in (curses.KEY_HOME, curses.KEY_END):
+                        history_browser.move(-(10**9) if key == curses.KEY_HOME else 10**9)
+                    elif key in ("\n", "\r", curses.KEY_ENTER):
+                        history_browser.open()
+                    elif key == curses.KEY_MOUSE:
+                        _, mx, my, _, button = curses.getmouse()
+                        if (
+                            button & getattr(curses, "BUTTON1_CLICKED", 0)
+                            and my == 0
+                            and width - 12 <= mx < width - 4
+                        ):
+                            history_browser.request_delete()
+                        elif button & getattr(curses, "BUTTON4_PRESSED", 0):
+                            history_browser.move(-3)
+                        elif button & getattr(curses, "BUTTON5_PRESSED", 0):
+                            history_browser.move(3)
+                        elif (
+                            button & getattr(curses, "BUTTON1_CLICKED", 0)
+                            and 2 <= mx < width - 2
+                            and 4 <= my < 4 + len(page)
+                            and history_browser.level != "messages"
+                        ):
+                            history_browser.selected = start + my - 4
+                            history_browser.open()
+                except (ValueError, OSError, sqlite3.Error) as error:
+                    history_browser.error = safe_display(str(error))
+                except curses.error:
+                    pass
+                # Read-only: typing here never reaches the live composer.
                 continue
             if show_help:
                 height, width = window.getmaxyx()
                 window.erase()
-                rows = help_lines(max(10, width - 4))
+                rows = help_lines(max(10, width - 4), session.client.role)
                 visible = max(1, height - 4)
                 help_scroll = min(help_scroll, max(0, len(rows) - visible))
                 for y, (line, style) in enumerate(rows[help_scroll : help_scroll + visible], 1):
@@ -831,7 +1113,6 @@ def run_tui(session):
                 users = sorted(name for name in client.online_users if name != username)
                 pending = [item["username"] for item in client.pending_users]
                 reply_target = client.reply_target
-                tcp_rtt = client.last_tcp_rtt
             transfers = client.files.snapshot()
             options = (
                 suggestions(composer.text, users, role, pending, transfers) if not dismissed else []
@@ -856,24 +1137,18 @@ def run_tui(session):
             dock_height = min(3, len(transfers), max(0, height - popup_height - 10))
             dock_y = popup_y - dock_height
             capacity = max(1, dock_y - 5)
-            write(0, 2, "LAN COLLAB", 12, "accent")
-            write(0, 16, f"{username} / {role} | reply: {reply_target or '—'}", width - 18)
-            if scroll:
-                status = f"Scrollback · {unseen} new ↓" if unseen else "Scrollback"
-            else:
-                status = "Live conversation"
-            udp_rtt = session.udp.quality.last_rtt_ms if session.udp is not None else None
-
-            def latency(value):
-                return "—" if value is None else f"{value:.0f}ms"
-
-            write(
-                1,
-                2,
-                f"TLS ✓ | {len(users)} online | TCP {latency(tcp_rtt)} UDP {latency(udp_rtt)} | {status}",
-                width - 4,
-                "success",
-            )
+            write(0, 2, f"LAN-COLLAB · {username} · {len(users)} online", width - 4, "accent")
+            if direct_scroll == 0:
+                direct_unseen = 0
+            new_count = direct_unseen if direct_peer is not None else unseen if scroll else 0
+            if new_count:
+                write(
+                    1,
+                    2,
+                    f"↓ {new_count} new message{'s' if new_count != 1 else ''}",
+                    width - 4,
+                    "accent",
+                )
             divider = "─" * (width - 4)
             if sidebar:
                 split = width - sidebar - 3
@@ -900,7 +1175,7 @@ def run_tui(session):
             if session.display_filter == "dm":
                 refresh_direct()
                 if direct_peer is None:
-                    write(4, 2, "Direct conversations · newest first", width - 4, "accent")
+                    write(4, 2, "Conversations", width - 4, "accent")
                     body_start = 5
                     if not direct_conversations:
                         write(
@@ -924,7 +1199,7 @@ def run_tui(session):
                                 ("› " if index == direct_selected else "  ")
                                 + safe_display(peer)
                                 + "  "
-                                + local_time(timestamp)
+                                + display_time(timestamp)
                                 + "  "
                                 + safe_display(text)
                             )
@@ -953,11 +1228,17 @@ def run_tui(session):
                     else:
                         rows = []
                         for timestamp, direction, _kind, peer, text in direct_page_rows or []:
-                            sender = "you" if direction == "sent" else safe_display(peer)
-                            prefix = f"{local_time(timestamp)}  {sender}: "
-                            style = "accent" if direction == "sent" else "dm"
-                            for pre, line in wrap_prefixed(prefix, safe_display(text), chat_width):
-                                rows.append((pre, line, style))
+                            sender = "you" if direction == "sent" else peer
+                            rows.extend(
+                                message_rows(
+                                    display_time(timestamp),
+                                    sender,
+                                    text,
+                                    None,
+                                    chat_width,
+                                    session.client.username,
+                                )
+                            )
                         if not rows:
                             rows = [("", "No private messages in this conversation yet.", "muted")]
                         direct_scroll = min(direct_scroll, max(0, len(rows) - capacity))
@@ -982,10 +1263,27 @@ def run_tui(session):
                         and notice_category(message) != session.display_filter
                     ):
                         continue
-                    prefix = f"{stamp}  " if stamp else ""
-                    style = kind
-                    for pre, line in wrap_prefixed(prefix, message, chat_width):
-                        rows.append((pre, line, style))
+                    sender = chat_sender(message)
+                    if sender is not None:
+                        text = message.split(":", 1)[1].lstrip()
+                        channel = "DM" if notice_category(message) == "dm" else "All"
+                        rows.extend(
+                            message_rows(
+                                stamp,
+                                sender,
+                                text,
+                                channel,
+                                chat_width,
+                                session.client.username,
+                            )
+                        )
+                    else:
+                        prefix = f"{stamp}  " if stamp else ""
+                        display = re.sub(r"^\[(?:file|presence|admin|display)\] ", "", message)
+                        for pre, line in wrap_prefixed(prefix, display, chat_width):
+                            rows.append((pre, line, kind))
+                if not rows and session.display_filter == "files":
+                    rows = [("", "No files shared yet. Choose a person to send a file.", "muted")]
                 scroll = min(scroll, max(0, len(rows) - capacity))
                 if scroll == 0:
                     unseen = 0
@@ -1012,7 +1310,8 @@ def run_tui(session):
                     ("● " + name, "success", "user", name)
                     for name in users[: max(1, (dock_y - 12) // 2)]
                 ]
-                sidebar_rows += [("ACTIVE TRANSFERS", "accent", None, None)]
+                if dock_rows:
+                    sidebar_rows += [("FILES", "accent", None, None)]
                 for row in dock_rows[:2]:
                     sidebar_rows.append((f"{row['peer']}: {row['name']}", "file", None, None))
                     if row["status"] == "offer":
@@ -1020,12 +1319,8 @@ def run_tui(session):
                             ("[Accept] [Reject]", "file", "file_buttons", row["id"])
                         )
                     else:
-                        sidebar_rows.append(
-                            (f"{row['status']} {progress_bar(row, 6)}", "file", None, None)
-                        )
-                if not dock_rows:
-                    sidebar_rows.append(("No active transfers", "muted", None, None))
-                if role == "admin":
+                        sidebar_rows.append((transfer_summary(row), "file", None, None))
+                if role == "admin" and pending:
                     sidebar_rows += [(f"PENDING ({len(pending)})", "admin", None, None)]
                     for name in pending:
                         sidebar_rows.append((name, "admin", "pending", name))
@@ -1073,7 +1368,9 @@ def run_tui(session):
                     hits.append((y, accept_x, accept_x + 8, ("accept_file", row["id"])))
                     hits.append((y, reject_x, reject_x + 8, ("command", f"/reject {row['id']}")))
                 else:
-                    label = f"{row['direction']} {row['id'][:8]} {fit_cells(row['name'], 12)} {progress_bar(row, 10)}"
+                    label = (
+                        f"{fit_cells(row['name'], 20)} · {row['peer']} · {transfer_summary(row)}"
+                    )
                     write(y, 2, safe_display(label), width - 4, "file")
             if popup_height:
                 start = max(0, selection - popup_height + 1)
@@ -1119,11 +1416,17 @@ def run_tui(session):
                 "accent" if visible else "muted",
             )
             guidance = composer_guidance(composer.text)
+            if composer.text.startswith("/reply "):
+                guidance = (
+                    f"Reply to {reply_target}"
+                    if reply_target
+                    else "Choose a recipient with /msg USER TEXT"
+                )
             ghost = (
                 "path/to/file"
                 if guidance and guidance.startswith("File:")
                 else "message text"
-                if guidance
+                if guidance and guidance.startswith("Message:")
                 else ""
             )
             if ghost and composer.cursor == len(composer.text):
@@ -1233,9 +1536,7 @@ def run_tui(session):
                     if session.display_filter == "dm"
                     else guidance
                     if guidance
-                    else "Enter send · / cmds · ↑↓ history · wheel scroll · right-click user · F7 people · F1 Help · Ctrl+C exit"
-                    if sidebar
-                    else "Enter send · / cmds · ↑↓ history · PgUp/wheel scroll · F7 people · F1 Help · Ctrl+C exit"
+                    else "Enter send · F1 help · F8 history · F7 people · PgUp scroll · Ctrl+C exit"
                 )
             write(height - 1, 2, hint, width - 4, hint_style)
             try:
@@ -1293,6 +1594,11 @@ def run_tui(session):
             elif key == getattr(curses, "KEY_F1", -1):
                 show_help = True
                 help_scroll = 0
+            elif key == getattr(curses, "KEY_F8", -8):
+                try:
+                    history_browser = HistoryBrowser(session)
+                except (ValueError, OSError, sqlite3.Error) as error:
+                    add(str(error), "error")
             elif key == getattr(curses, "KEY_F2", -2):
                 sidebar_enabled = not sidebar_enabled
             elif key == getattr(curses, "KEY_F3", -3):
@@ -1345,11 +1651,10 @@ def run_tui(session):
                         if line.strip().lower() == "/help":
                             show_help = True
                             help_scroll = 0
-                        elif line.strip().lower() == "/history":
+                        elif line.split(maxsplit=1)[0].lower() == "/history":
                             try:
-                                history_records = session.history_sessions()
-                                history_selected = history_scroll = 0
-                                history_lines = None
+                                command = parse_command(line)
+                                history_browser = HistoryBrowser(session, command.args)
                             except (ValueError, OSError, sqlite3.Error) as error:
                                 add(str(error), "error")
                         else:

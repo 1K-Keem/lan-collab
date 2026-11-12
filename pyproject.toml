@@ -1,3 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lancollab"
+version = "0.1.0"
+description = "LAN Collab terminal chat and file sharing client"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["windows-curses; sys_platform == 'win32'"]
+
+[project.scripts]
+lancollab = "lancollab.client.launcher:main"
+
+[tool.setuptools.packages.find]
+include = ["lancollab*"]
+
+[tool.setuptools.package-data]
+"lancollab.client" = ["server-public.pem"]
+"lancollab.common" = ["message_schema.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
