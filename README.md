@@ -4,20 +4,15 @@ A terminal application for students and study groups to chat and share files thr
 one group server. It works on a reachable local network without internet access
 once the application and trusted server certificate are installed.
 
-The server relays messages and files between clients. Connections use verified TLS;
-this is client-server encryption, not end-to-end encryption between users.
-
+The server relays messages and files between clients, and the connection use TLS to keep the datas secure.
 ## What you can do
 
-- Chat with the group or open private conversation pages.
+- Chat with all the online users or open private conversation pages.
 - Sign up and have an admin approve your account; optionally remember your login.
-- Send files up to 50 MiB, choose where to save each incoming file, and follow a
-  live progress bar. Both users must be online for a file transfer.
+- Send files up to 50 MiB and choose where to save each incoming file. Both users must be online for a file transfer.
 - Browse and search chat history saved on your own computer.
-- Use a colored full-screen terminal interface with command suggestions, mouse
-  menus and a file picker, or use the plain command-line interface.
-- Connect by LAN discovery or an explicit server IP. The server allows up to
-  32 simultaneous connections by default.
+- There are two interfaces, TUI and CLI
+- Connect by LAN discovery or an explicit server IP. The server allows up to 32 simultaneous connections by default.
 
 ## Install
 
@@ -213,8 +208,7 @@ The application uses raw TCP/UDP sockets rather than HTTP or WebSocket framework
 - [Architecture and source map](docs/architecture.md)
 - [Protocol specification](docs/protocol-spec.md)
 - [Transport overview](docs/diagrams/transport-overview.md)
-- [Acceptance checks and evidence](docs/acceptance.md)
-- [Assignment checklist and PDF generation](docs/assignment-checklist.md)
+- [Assignment checklist](docs/assignment-checklist.md)
 - [Technical report](docs/technical-report.md)
 
 Useful tools (run from the project root):
@@ -224,7 +218,6 @@ Useful tools (run from the project root):
 | `python -m scripts.simulate_clients --host SERVER_IP --clients 1` | Diagnose discovery/TCP/TLS against a running server |
 | `python -m scripts.local_acceptance` | Isolated 20-client chat/file workload with temporary accounts and keys |
 | `python -m scripts.load_test --help` | Configure a workload against another machine |
-| `python -m scripts.build_report` | Generate the report PDF; needs `requirements-report.txt` |
 
 Real loopback tests are available; two-host LAN and packet-capture acceptance
 still need recorded evidence. For coursework, follow the assignment's academic

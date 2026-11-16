@@ -1,192 +1,159 @@
-# TLS setup: directly trusted self-signed server certificate
+# TLS setup
 
-The admin and clients agree on a trusted repository containing the app and public
-`lancollab/client/server-public.pem`. Clients trust that certificate locally, without contacting
-GitHub during a handshake. The server proves possession of the matching private key.
-Despite its filename, `server-public.pem` contains a complete X.509 certificate, not a raw
-public key. `server-secret.pem` contains the private identity key, not TLS session keys.
-This is direct certificate trust, not raw public-key pinning. No separate CA is created.
+LAN Collab uses TLS to encrypt client/server traffic and verify the server's identity.
+Each server has a self-signed certificate and a matching private key. Clients receive
+that server's public certificate from the admin or the group's trusted repository.
+Python's `ssl` module verifies the certificate, its validity and the expected server
+name before credentials or chat messages are sent. TLS 1.2 or newer is required.
 
-## Generate and distribute
+## Certificate files
 
-From the project root, using the active virtual environment:
+| File | Purpose |
+| --- | --- |
+| `certs/direct-trust/server-public.pem` | The server's public certificate |
+| `certs/direct-trust/server-secret.pem` | The server's private key; keep it on the server |
+| `lancollab/client/server-public.pem` | The public certificate bundled with the client |
+
+`server-public.pem` contains an X.509 certificate. It can be distributed to clients.
+`server-secret.pem` must never be shared or committed. The public certificate alone
+cannot recreate the private key.
+
+The generated certificate is valid for 365 days and uses EC P-256 with SHA-256.
+Its default server name is `lan-collab.local`. Clients verify this name even when
+connecting to an IP address, so an IP address change does not require a new certificate.
+
+## Set up the server
+
+Run commands from the project root in your active Python environment.
+
+### Automatic setup
+
+For a new server using the default certificate paths:
 
 ```bash
 python -m pip install -r requirements-dev.txt
-python -m lancollab.common.devcerts --out certs/direct-trust --bundle-cert
+python -m lancollab.server
 ```
 
-The generator creates only:
+When both server certificate files are absent, the server generates them and copies
+the public certificate into `lancollab/client/server-public.pem` in this checkout.
+Generation uses `cryptography`, installed above, or the system OpenSSL command.
+Later starts reuse the existing pair. If only one file is present or the key does
+not match the certificate, startup fails so the pair can be restored.
 
-| File | Usage |
-| --- | --- |
-| `certs/direct-trust/server-public.pem` | Public self-signed server certificate |
-| `certs/direct-trust/server-secret.pem` | Private server key; never distribute or commit |
-| `lancollab/client/server-public.pem` | Public copy installed by `--bundle-cert`; distribute with app |
+Custom paths supplied through `--cert` and `--key` require certificates to be
+provisioned beforehand.
 
-The certificate uses EC P-256, SHA-256, SAN `DNS:lan-collab.local`, serverAuth usage,
-and `BasicConstraints(ca=False)`. It is valid for 365 days. Extra `--san` and `--ip` options
-add names/addresses. Existing output files and a different bundled certificate are refused
-unless `--force` is explicitly supplied. Never generate a new identity on each startup.
-Run provisioning only on the server/admin machine; clients download the public certificate.
-The CA-free TLS runtime uses standard-library `ssl`; `cryptography` is needed only for
-provisioning and tests.
+### Manual generation
 
-## Client trust selection
-
-1. `--trusted-cert PATH`
-2. `LANCOLLAB_TRUSTED_CERT`
-3. Bundled `lancollab/client/server-public.pem`
-
-Missing or invalid trust is an error. No fallback to system trust, plaintext TCP or disabled
-verification. Public certificate files containing private keys are rejected.
+To deliberately create a new server identity and replace the bundled certificate:
 
 ```bash
-python -m lancollab.client --host SERVER_IP
-python -m lancollab.client --discover
-python -m lancollab.client --host SERVER_IP --trusted-cert path/to/server-public.pem
+python -m pip install -r requirements-dev.txt
+python -m lancollab.common.devcerts --out certs/direct-trust --bundle-cert --force
+python -m lancollab.server
 ```
 
-The client requires a running LAN Collab server. The hostname verified is
-`--server-name` (default `lan-collab.local`), independently of the IP or UDP discovery reply.
-Username/password may be collected before connecting, but are sent only after verified TLS.
+`--bundle-cert` copies the public certificate into the client package. `--force`
+allows replacement of existing output files and the bundled certificate, which
+already exists in a clone of this repository. This creates a new private key and
+certificate: use it for a new deployment or an intentional replacement, not on
+each startup. Stop a running server before replacing its files.
 
-## API and verification
+The generator also accepts `--san NAME` and `--ip ADDRESS` to add certificate names
+or IP addresses.
 
-```python
-from lancollab.common.tls import create_server_context, resolve_trusted_cert
-from lancollab.common.socket_transport import SocketTransport
+## Distribute the certificate and connect
 
-context = create_server_context(
-    "certs/direct-trust/server-public.pem", "certs/direct-trust/server-secret.pem"
-)
-# After listener.accept(), in a server worker:
-transport = SocketTransport.accept_verified(context, raw_socket)
+After provisioning, distribute `lancollab/client/server-public.pem` through the
+admin or the group's trusted repository. Clients need the certificate belonging
+to the server they will connect to. Clients do not run the generator.
 
-# Client:
-transport = SocketTransport.connect_verified(
-    host="127.0.0.1",
-    port=40000,
-    trusted_cert=resolve_trusted_cert(),
-    server_hostname="lan-collab.local",
-)
+With the correct certificate bundled in the client:
+
+```bash
+python -m lancollab.client --host SERVER_IP --port 40000 --tui
 ```
 
-`create_client_context()` loads the trusted server certificate using Python's `cafile`
-parameter (the library's parameter name does not imply a separate CA in this setup).
-`check_hostname=True`, `CERT_REQUIRED` and TLS 1.2+ remain enforced. OpenSSL checks certificate
-trust, validity and hostname during `do_handshake()`. TLS proves possession of the private key.
-The connector returns a message transport only after success. It does not perform raw
-public-key comparison or silently accept a certificate received over the network.
-See the [Python ssl documentation](https://docs.python.org/3/library/ssl.html).
+To use a separately supplied public certificate:
+
+```bash
+python -m lancollab.client --host SERVER_IP --port 40000 --tui --trusted-cert path/to/server-public.pem
+```
+
+Clients choose their trusted certificate in this order:
+
+1. `--trusted-cert PATH`
+2. The `LANCOLLAB_TRUSTED_CERT` environment variable
+3. Bundled `lancollab/client/server-public.pem`
+
+If using the installed `lancollab` command, reinstall with `./setup` or Windows
+`setup.bat` after updating the checkout's bundle, or pass `--trusted-cert` explicitly.
+
+`--server-name` sets the expected certificate name and defaults to `lan-collab.local`.
+`--discover` can find the server address on the LAN; certificate verification still
+applies. Missing or invalid trust files cause an error. Clients never automatically
+trust a replacement certificate received over the network, and no certificate needs
+to be installed in the operating system's trust store.
 
 ## Verify a running server
 
-Start `python -m lancollab.server` in one terminal. In another, use the same
-connection simulator used for concurrency checks:
+With the server running, open another terminal:
 
 ```bash
 python -m scripts.simulate_clients --host 127.0.0.1 --clients 1
 ```
 
-The simulator prints discovery/TCP/TLS details, including the verified certificate
-fingerprint. It does not log in unless asked to send synthetic credentials with
-`--send-auth`; that option tests rejection, not a successful account login. For a
-remote server replace `127.0.0.1` with its address, and use `--trusted-cert PATH`
-when its public certificate is not the bundled one. To test hostname rejection:
+Replace `127.0.0.1` with the server's address for a remote check. Add
+`--trusted-cert PATH` if needed. The simulator reports the connection, negotiated
+TLS version and cipher, and verified certificate fingerprint. It does not log in
+by default.
+
+## Renew or replace a certificate
+
+Generate a replacement pair in a separate directory so the current pair remains
+available during preparation:
 
 ```bash
-python -m scripts.simulate_clients --host 127.0.0.1 --server-name wrong.example
+python -m lancollab.common.devcerts --out certs/renewal
 ```
 
-## Migration from the old CA model
+Distribute the new public certificate through the same trusted channel and
+coordinate the change with clients. Stop the server, then start it with the new pair:
 
-The bundled CA has been removed. Use the self-signed pair in `certs/direct-trust` and
-distribute only `lancollab/client/server-public.pem`. Old deployments should retire their CA files
-and CA-signed server pair after switching to the new identity. Replace `--ca-file` with
-`--trusted-cert`, `LANCOLLAB_CA_FILE` with `LANCOLLAB_TRUSTED_CERT`, and `--bundle-ca` with
-`--bundle-cert`. Python callers use `trusted_cert`, `resolve_trusted_cert`,
-`BUNDLED_SERVER_CERT`, and `install_bundled_cert`. DevCerts exposes only `server_cert` and
-`server_key`. Update old handshake demos to use the self-signed certificate.
+```bash
+python -m lancollab.server --cert certs/renewal/server-public.pem --key certs/renewal/server-secret.pem
+```
 
-Only the public server certificate is allowed by the new `.gitignore` exception. Keep the
-private key on the server; it cannot be recovered from a clone. Include the public certificate
-as package data when building a wheel/executable.
-
-## Renewal and failures
-
-A changed server identity must be distributed through the agreed trusted repository before
-clients connect. Do not fetch replacement trust from an unverified server. Provision the new
-pair in a separate directory, review it, then install the public certificate with
-`install_bundled_cert(new_cert, force=True)` and coordinate the server/client rollout.
-Keep old keys until rollout is planned; do not use `--force` casually.
-
-| Failure | Result |
-| --- | --- |
-| Different/untrusted server certificate | TLS certificate verification fails |
-| Wrong hostname or expired certificate | TLS certificate verification fails |
-| Certificate and private key mismatch | Server context fails to load |
-| Missing trust file | Startup fails before prompting for credentials |
-| Silent TLS peer | Absolute handshake deadline (default 5 seconds) |
-
-Do not use CERT_NONE, disable hostname checking, or treat UDP replies as proof of identity.
-These certificates work across Windows/macOS/Linux through Python/OpenSSL without installing
-anything into the operating-system trust store.
-
-## What authenticates the server?
-
-1. Clients obtain the app and `server-public.pem` from the repository agreed with the admin.
-   That trusted distribution establishes identity; a self-signature alone does not.
-2. The client resolves an IP, connects by TCP, and starts TLS. Discovery supplies an address,
-   never a new trust anchor.
-3. OpenSSL verifies the presented certificate using the locally trusted certificate, checks
-   its validity and the expected hostname, and verifies the server's handshake proof.
-4. In a full certificate-authenticated TLS 1.3 handshake, CertificateVerify signs the handshake
-   transcript using the server's long-lived private identity key from `server-secret.pem`.
-   Copying the public certificate is insufficient to create that proof.
-5. Ephemeral (EC)DHE key exchange establishes a shared secret. HKDF derives separate traffic
-   keys; Finished authenticates the handshake. Application records use authenticated symmetric
-   encryption (the negotiated cipher), not direct encryption with the identity public key.
-6. Only after verified TLS completes does the client send AUTH_REQUEST. The CA-free runtime
-   performs these cryptographic operations through Python ssl/OpenSSL, not custom crypto code.
-
-The generator's identity key is EC P-256 and the certificate is self-signed with ECDSA/SHA-256.
-The ephemeral exchange group and traffic cipher are negotiated separately. TLS 1.2 is also
-allowed; the description above specifically illustrates TLS 1.3, as used in the local demo.
-See [RFC 8446, authentication and key schedule](https://www.rfc-editor.org/rfc/rfc8446.html).
-
-### Automatic first launch
-
-`python -m lancollab.server` calls `ensure_server_certs()` for the default paths. If both
-files are absent it generates an EC P-256 self-signed server certificate and private key,
-using cryptography or the system OpenSSL CLI, then updates the public client bundle in this
-checkout. Only the public PEM is copied. Existing pairs are not rotated; missing half-pairs
-or mismatched keys fail closed. A provisioning lock prevents simultaneous startup generation.
-Custom certificate paths still require manual provisioning. Share the new public bundle via
-the group's trusted repository before clients on other machines connect.
+Clients must use the new certificate through `--trusted-cert` or an updated bundle.
+Changing files alone does not update a running server's loaded certificate; restart
+it to apply the change.
 
 ## Diagnosing rejected connections
 
-The server logs the TLS phase and OpenSSL reason, not just `SSLError`. Each new
-source port is a separate connection attempt; it is not a file-transfer progress
-update. A peer certificate-rejection alert means the client refused the server
-certificate. Read that client's error for the precise verification failure.
-The client also prints the trust-file path and expected server name.
+Read the client's verification error and the server's TLS log. The client reports
+the trust-file path and expected server name, which help identify incorrect settings.
 
-Compare the certificate fingerprints on the server and the failing client:
+If OpenSSL is installed, compare the public certificate fingerprints:
 
 ```bash
-# Server
+# Server: use the certificate loaded by the server
 openssl x509 -in certs/direct-trust/server-public.pem -noout -fingerprint -sha256
-# Client (or substitute the file passed with --trusted-cert)
+# Client: use the actual trusted certificate path
 openssl x509 -in lancollab/client/server-public.pem -noout -fingerprint -sha256
 ```
 
-If they differ, obtain the intended server's **public** certificate through the
-agreed trusted repository/admin channel and use `--trusted-cert PATH`. Do not
-copy the secret key or disable verification. Also check certificate expiry, system
-clock, and `--server-name` (normally `lan-collab.local`). Restart the server after
-changing its certificate files: an already running process retains its loaded
-identity. `WRONG_VERSION_NUMBER` or `HTTP_REQUEST` may indicate plaintext traffic
-or the wrong destination port; use the LAN Collab TLS client on the TCP service
-port. Failed handshakes are closed and their worker slots are released.
+The fingerprints should match. If they differ, obtain the intended server's public
+certificate from the admin or trusted repository and update the client's trust path.
+
+| Problem | What to check |
+| --- | --- |
+| Untrusted certificate or peer rejected certificate | Client trust file matches the server certificate; read the client-side error |
+| Wrong hostname | `--server-name` matches a name in the certificate, normally `lan-collab.local` |
+| Expired or not-yet-valid certificate | Certificate validity dates and the machine's clock |
+| Certificate/private-key mismatch or missing half of the pair | Restore a matching certificate and private key on the server |
+| Missing or invalid trust file | `--trusted-cert`, environment variable or installed bundle path |
+| Handshake timeout | Server address, port and reachability; the normal handshake deadline is 5 seconds |
+| `WRONG_VERSION_NUMBER` or `HTTP_REQUEST` | Connect to the LAN Collab TLS port using the LAN Collab client |
+
+Keep certificate and hostname verification enabled while resolving connection errors.

@@ -3,8 +3,6 @@
 How a user stays logged in across restarts without typing their password
 every time, and what the server and client actually store.
 
-## The idea in one paragraph
-
 A token is a random 256-bit value, issued once when a user logs in with
 their password and asks to be remembered. It is **not** the password and
 **not** a hash of the password: stealing it does not reveal the password,
@@ -62,7 +60,7 @@ again.
 A dead token is deleted from the client store automatically; the client
 falls back to the Login / Sign up prompt.
 
-## What is stored where
+## Where is the token stored
 
 **Server — `accounts.db`, `tokens` table (one row per issued token):**
 
@@ -109,15 +107,3 @@ only `token_store.py`.
   `remember_me` issues no token.
 - `tests/test_codec.py` — `AUTH_RESULT` with an optional token, and the
   `TOKEN_EXPIRED` / `TOKEN_REVOKED` failure codes.
-
-## Deliberate limits (v1)
-
-- One token per login; a user who logs in with `remember_me` on two
-  machines has two independent tokens (revoking one does not revoke the
-  other, except a password change, which revokes all of them).
-- No "revoke all my sessions" button in the client yet — logout revokes
-  only the current session's token; the server CLI can change the password
-  to revoke everything.
-- Tokens are not bound to an IP address (DHCP changes the client IP),
-  the server verifies token ownership against the account in its database.
-  The client stores tokens by server host and verifies TLS before sending them.

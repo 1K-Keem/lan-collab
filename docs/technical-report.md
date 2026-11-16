@@ -1,6 +1,6 @@
 # LAN Collab — technical report draft
 
-Implementation snapshot: 10 November 2026. Team members: fill in before submission.
+Implementation review: 16 November 2026. Team members: fill in before submission.
 This report describes the implementation and local evidence; it is not a claim that the
 team has completed the manual acceptance checks or instructor review.
 
@@ -16,7 +16,8 @@ through the server. UDP discovery locates a candidate endpoint; TLS authenticate
  Carol CLI/TUI ---- TCP + verified TLS ----+    - accounts and token hashes: SQLite
        |                                       - active sessions and presence
        +----- UDP discovery/heartbeat -------->- bounded chat/file relay queues
-                                               - no persisted file/chat content
+                                               - bounded offline private-message storage
+                                               - files relayed without server disk storage
  Client storage: local chat-history SQLite; verified downloaded files; login token.
 ```
 
@@ -41,8 +42,6 @@ IDs distinguish a new login from an old connection using the same username.
 8. Encryption: certificate-verified TLS protects client-server links; the server sees plaintext.
 9. UI: portable CLI, optional full-screen TUI, online list, progress bar and local chat history.
 10. Verification: codec/core tests plus real TLS production-server integration and local load tests.
-
-<!-- pagebreak -->
 
 # Protocol specification
 
@@ -94,8 +93,6 @@ UDP messages are independent JSON datagrams, at most 1200 bytes. DISCOVER_REPLY 
 request instance ID and advertises the TCP endpoint. HEARTBEAT_ACK echoes instance ID and
 sequence for RTT/loss measurement. These messages have no authentication/presence authority.
 
-<!-- pagebreak -->
-
 # Message and file lifecycles
 
 ## Private message
@@ -114,7 +111,8 @@ Alice                     Server                       Bob
   | save outgoing locally    |               save/display |
 ```
 
-The ACK means accepted for queuing, not that Bob read the message. Bob must be online.
+The ACK means accepted for queuing, not that Bob read the message. If Bob is offline,
+private messages can be stored for delivery on login, subject to queue limits and expiry.
 A duplicate request ID gets ERROR without forwarding again. The authenticated session,
 not a sender-supplied field, determines the displayed sender identity.
 
@@ -143,8 +141,6 @@ zero chunks, followed by ACK offset zero and the verified result. Failures use C
 failed RESULT. The server does not independently hash file content or write it to disk.
 The receiver commits a non-overwriting filename only after verification; partial files are
 removed on cancellation/disconnect. At most one incoming transfer is admitted per receiver.
-
-<!-- pagebreak -->
 
 # Challenges and solutions — review draft
 
@@ -197,8 +193,6 @@ a valid token; an explicit authentication rejection does. Local history records 
 and server-acknowledged chat, isolated by trusted server identity and account. It is not encrypted
 at rest, and it is not an offline delivery service or an end-to-end encrypted protocol.
 
-<!-- pagebreak -->
-
 # Verification and remaining acceptance work
 
 The automated suite exercises framing/validation, TLS trust failures, transfer credit and state,
@@ -214,18 +208,18 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 python -m ruff check .
 ```
 
-The recorded docs/local-benchmark.json contains raw samples and environment details for 20
-clients, 100 chat ACK timings, 100 TCP PONG timings and a verified 10 MiB file. These are local
-loopback measurements. The workload launches file transfer before concurrent chat requests;
-resource values describe the combined server/client process, not a server-only profile.
+The workload generates `data/local-benchmark.json` with raw samples and environment
+details for 20 clients, 100 chat ACK timings, 100 TCP PONG timings and a verified 10 MiB
+file by default. These are local loopback measurements. The workload launches file
+transfer before concurrent chat requests; resource values describe the combined server/client process, not a server-only profile.
 Read the JSON for the exact run values rather than treating them as universal performance.
 
 The following evidence must still be collected on the deployment machines: a two-host LAN
 run, UDP broadcast/fallback behavior, a Wireshark capture of TCP/TLS and UDP, server resource
-measurements, and manual terminal usability checks on supported platforms. See
- docs/acceptance.md for the exact workload command and environment notes.
+measurements, and manual terminal usability checks on supported platforms.
 
 The team must also supply member names, actual reviewer signoff, the final submission date
-and the instructor's encryption-rubric clarification. The software uses verified TLS; no E2EE,
-file resume, or offline delivery is claimed. There is no need for internet connectivity after
+and the instructor's encryption-rubric clarification. The software uses verified TLS; neither E2EE
+nor file resume is claimed. Offline private messages use bounded, expiring server storage
+with at-most-once delivery. There is no need for internet connectivity after
 the trusted application/certificate has been distributed.

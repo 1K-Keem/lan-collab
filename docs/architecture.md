@@ -58,6 +58,6 @@ not a substitute for client history.
 
 ## Verification
 
-[Acceptance instructions](acceptance.md) separate automated unit/loopback evidence
-from the two-host, packet-capture and terminal checks needed for submission.
+Automated unit/loopback tests complement the two-host, packet-capture and terminal
+checks needed for submission.
 The [assignment checklist](assignment-checklist.md) maps those checks to the rubric.

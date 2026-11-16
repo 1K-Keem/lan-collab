@@ -168,6 +168,7 @@ def fake_curses(window):
     module.KEY_ENTER, module.KEY_MOUSE, module.KEY_RESIZE = 343, 409, 410
     module.KEY_F1, module.KEY_F2, module.KEY_F3, module.KEY_F4 = 265, 266, 267, 268
     module.KEY_F5, module.KEY_F6, module.KEY_F7 = 269, 270, 271
+    module.KEY_F8, module.KEY_F9 = 272, 273
     module.BUTTON1_CLICKED, module.BUTTON3_CLICKED = 1, 2
     module.BUTTON3_PRESSED, module.BUTTON4_PRESSED = 4, 8
     module.BUTTON5_PRESSED = 16

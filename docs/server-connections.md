@@ -67,6 +67,6 @@ python -m scripts.simulate_clients --clients 20 --host 127.0.0.1 --send-auth
 
 The simulation checks discovery/TLS and rejection of synthetic credentials, not successful
 login. `test_production_server` and `test_transfer_integration` use the actual authenticated
-server for chat, files, takeover and failures. The old unauthenticated MiniRelay has been
-removed. [Local benchmark](local-benchmark.json) records a separate loopback workload;
-[acceptance instructions](acceptance.md) describe the remaining two-host evidence.
+server for chat, files, takeover and failures. Run `python -m scripts.local_acceptance`
+for a separate loopback workload. Two-host verification still requires evidence from
+the deployment machines.

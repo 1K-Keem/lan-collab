@@ -16,7 +16,13 @@ from time import monotonic, sleep
 from threading import Event, Thread, Lock
 from typing import Callable
 
-from lancollab.client.application import ClientState, CollabClient, safe_display, _USERNAME
+from lancollab.client.application import (
+    ChatDisplay,
+    ClientState,
+    CollabClient,
+    safe_display,
+    _USERNAME,
+)
 from lancollab.client.token_store import TokenStore
 from lancollab.client.discovery import DiscoveryClient
 from lancollab.client.transfers import TransferError
@@ -124,6 +130,7 @@ _DETAILED_HELP += (
     "  Outside Direct, plain text still sends to everyone. Filters never delete history or stop incoming messages.",
     "NETWORK CHECKS — manual only: /ping for TCP, /net for UDP, or F4 for both.",
     "  Results appear only when requested; use /status to review connection details.",
+    "F9 or click a message to select it; C/Enter copies its text; Esc returns. Works in chat and history.",
     "F8 or /history opens saved sessions; Tab switches to people; Enter opens; Esc goes back. Home/End jump in history.",
     "Ctrl+W deletes a word; Ctrl+K deletes to end; Ctrl+L clears display.",
 )
@@ -407,7 +414,7 @@ class ConsoleSession:
                     tag, separator, body = notice.text.partition(" ")
                     tag = {"[CHAT_PRIVATE]": "[DM]", "[CHAT_GLOBAL]": "[All]"}.get(tag, tag)
                     text = tag + separator + body
-                    self.output(text)
+                    self.output(ChatDisplay(text, notice.copy_text))
                 else:
                     self.output(f"[{notice.kind}] {notice.text}")
             self._render_progress()
