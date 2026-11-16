@@ -5,7 +5,7 @@ TCP/TLS, and the auth_allowed opt-in does not verify TLS. Never set it True
 with real credentials until your connection bootstrap has verified TLS.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from threading import Event, Lock, RLock
@@ -44,6 +44,16 @@ class ProtocolViolation(Exception):
 class Notice:
     kind: str
     text: str
+    copy_text: str | None = field(default=None, compare=False, repr=False)
+
+
+class ChatDisplay(str):
+    """Safe display string carrying an untouched body for explicit copying."""
+
+    def __new__(cls, display, copy_text=None):
+        value = super().__new__(cls, display)
+        value.copy_text = copy_text
+        return value
 
 
 def safe_display(text: str) -> str:
@@ -517,7 +527,9 @@ class CollabClient:
                     queued_tag = (
                         " [sent while you were offline]" if payload.get("queued") is True else ""
                     )
-                    self._notices.append(Notice("chat", f"[{kind}] {sender}: {text}{queued_tag}"))
+                    self._notices.append(
+                        Notice("chat", f"[{kind}] {sender}: {text}{queued_tag}", payload["text"])
+                    )
 
                 elif kind == "CHAT_ACK":
                     self._require_authenticated(kind)
@@ -543,11 +555,16 @@ class CollabClient:
                                 Notice(
                                     "chat",
                                     f"[CHAT_PRIVATE] you -> {safe_display(to_sent or '')}: {safe_display(text_sent)}{stored_tag}",
+                                    text_sent,
                                 )
                             )
                         else:
                             self._notices.append(
-                                Notice("chat", f"[CHAT_GLOBAL] you: {safe_display(text_sent)}")
+                                Notice(
+                                    "chat",
+                                    f"[CHAT_GLOBAL] you: {safe_display(text_sent)}",
+                                    text_sent,
+                                )
                             )
 
                 elif kind == "ERROR":

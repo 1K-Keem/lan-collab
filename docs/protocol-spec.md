@@ -198,15 +198,14 @@ Never expose passwords/password hashes, stack traces or keys in errors. The form
 
 ## 8. Security and pending instructor clarification
 
-- TLS is an explicitly permitted standard encryption mechanism in the assignment wording. Use Python `ssl` with **verified server identity** and a trusted SAN certificate; fixed DNS identity `lan-collab.local` can be verified even if TCP destination IP changes via DHCP.
+- Use Python `ssl` with **verified server identity** and a trusted SAN certificate; fixed DNS identity `lan-collab.local` can be verified even if TCP destination IP changes via DHCP.
 - TLS handshakes have timeout and occur in client workers, not the `accept()` loop. Do not set `CERT_NONE` in the final client.
 - Provide cross-platform cert-generation/trust instructions without committing private keys.
 - **Pending:** ask lecturer to confirm TLS-only satisfies the “encrypt/decrypt payload” milestone. Do not add a second AES-GCM layer unless explicitly required.
 
 ## 9. Verification and diagrams
 
-The [acceptance runbook](acceptance.md) lists automated tests, load commands and
-remaining manual evidence. Synthetic fixtures are test inputs, not proof of real
+Synthetic fixtures are test inputs, not proof of real
 TCP/TLS operation. Production codec, connection and file tests exercise those paths.
 
 Reference diagrams: [architecture](diagrams/transport-overview.md),

@@ -295,6 +295,15 @@ a new session with its login time. `/quit`, `/logout`, and normal disconnects re
 end time. Messages are saved as they arrive, so an abrupt exit keeps saved messages even
 if the end time cannot be recorded. Sessions with no messages are also listed.
 
+**Copy messages:** In chat, a Direct conversation, or an open history transcript,
+click a message or press **F9**. Use Up/Down to choose a message, then **C**,
+**Enter**, or **Copy message** to copy its original text (without sender or time).
+Page Up/Down and the mouse wheel scroll the preview; **Esc** returns to your
+draft and previous position. Copying uses the local clipboard: PowerShell on
+Windows/WSL, `pbcopy` on macOS, or `wl-copy`/`xclip`/`xsel` on Linux. If no
+clipboard provider is available, the app shows an error; terminal selection
+remains an alternative. Over SSH, this targets the machine running the app.
+
 `/history` or **F8** opens a full-screen session picker, newest login first.
 Each row shows its local start time, message count, and a current-session
 marker. Session IDs remain available through the plain-console listing. Select a session with Up/Down and Enter, or click it, to read its complete

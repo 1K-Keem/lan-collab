@@ -15,6 +15,7 @@ from lancollab.client.application import ClientState, safe_display
 from lancollab.client.cli import Command, help_reference, parse_command
 
 from lancollab.client.branding import banner_lines
+from lancollab.client.clipboard import ClipboardError, copy_text
 
 
 @dataclass(frozen=True)
@@ -269,6 +270,49 @@ def message_rows(timestamp, sender, text, channel, width, username):
     return rows
 
 
+@dataclass(frozen=True)
+class CopyMessage:
+    label: str
+    text: str
+
+
+def transcript_copy_messages(rows):
+    return [
+        CopyMessage(
+            f"{display_time(timestamp)} · {'you' if direction == 'sent' else peer}"
+            + (f" → {peer}" if direction == "sent" and kind == "CHAT_PRIVATE" else ""),
+            text,
+        )
+        for timestamp, direction, kind, peer, text in rows
+    ]
+
+
+class CopyPicker:
+    """A snapshot: incoming messages cannot change what the user is copying."""
+
+    def __init__(self, messages, selected=None):
+        self.messages = tuple(messages)
+        self.selected = max(
+            0, min(len(messages) - 1, len(messages) - 1 if selected is None else selected)
+        )
+        self.scroll = 0
+        self.notice = None
+
+    def move(self, step):
+        self.selected = max(0, min(len(self.messages) - 1, self.selected + step))
+        self.scroll = 0
+        self.notice = None
+
+    def copy(self):
+        if not self.messages:
+            return
+        try:
+            copy_text(self.messages[self.selected].text)
+            self.notice = ("Copied to clipboard.", "success")
+        except ClipboardError as error:
+            self.notice = (str(error), "error")
+
+
 class HistoryBrowser:
     """Full-screen sessions and person transcripts with confirmed local deletion."""
 
@@ -349,6 +393,7 @@ class HistoryBrowser:
             return [(fit_cells(self.error, max(1, width)), "error")], 0
         if self.level == "messages" and self._width != width:
             self._rows = []
+            self._row_messages = []
             records = {record.id: record for record in self.records}
             previous = None
             for index, (timestamp, direction, kind, peer, text) in enumerate(self.transcript):
@@ -356,9 +401,11 @@ class HistoryBrowser:
                     previous = self.session_ids[index]
                     record = records[previous]
                     label = f"── Session · {display_time(record.started)} ──"
-                    self._rows.extend((line, "accent") for line in wrap_cells(label, max(1, width)))
+                    separator = [(line, "accent") for line in wrap_cells(label, max(1, width))]
+                    self._rows.extend(separator)
+                    self._row_messages.extend([None] * len(separator))
                 sender = f"you -> {peer}" if kind == "CHAT_PRIVATE" and not self.peer else "you"
-                self._rows.extend(
+                card = [
                     (line, style)
                     for _, line, style in message_rows(
                         display_time(timestamp),
@@ -368,7 +415,9 @@ class HistoryBrowser:
                         width,
                         self.session.client.username,
                     )
-                )
+                ]
+                self._rows.extend(card)
+                self._row_messages.extend(index if line.strip() else None for line, _ in card)
             if not self._rows:
                 self._rows = [("No saved messages.", "muted")]
             self._width = width
@@ -653,6 +702,7 @@ def run_tui(session):
         last_filter = session.display_filter
         show_help, help_scroll = False, 0
         history_browser = None
+        copy_picker = None
         sidebar_enabled = True
         # Transient context menu: kind, target, index, anchor. Rebuilt and
         # validated on every frame so resizes and disappearing people are safe.
@@ -679,12 +729,17 @@ def run_tui(session):
             # Only real events get a time prefix. Help text, history rows
             # (which carry their own timestamp) and plain notices do not.
             messages.append(
-                (datetime.now().strftime("%H:%M") if stamp else "", safe_display(text), kind)
+                (
+                    datetime.now().strftime("%H:%M") if stamp else "",
+                    safe_display(text),
+                    kind,
+                    getattr(text, "copy_text", None),
+                )
             )
 
         initial_width = window.getmaxyx()[1]
         for line in banner_lines(initial_width - (24 if initial_width >= 76 else 0) - 4):
-            messages.append(("", line, "accent"))
+            messages.append(("", line, "accent", None))
         add("Welcome to your study space.", "accent")
         add("Write a message to everyone, or type / to explore commands.")
         add("Try /msg for a private chat, /send to share a file, or /history to catch up.")
@@ -959,11 +1014,109 @@ def run_tui(session):
                 direct_flash = None
                 scroll = 0
                 switch_context("dm-inbox" if last_filter == "dm" else "main")
+            if copy_picker is not None:
+                height, width = window.getmaxyx()
+                window.erase()
+                write(0, 2, "Copy message", width - 4, "accent")
+                count = len(copy_picker.messages)
+                write(
+                    1,
+                    2,
+                    f"{copy_picker.selected + 1} of {count}"
+                    if count
+                    else "No messages to copy in this view.",
+                    width - 4,
+                )
+                list_size = min(5, max(1, height // 4))
+                start = max(0, copy_picker.selected - list_size + 1)
+                for y, index in enumerate(range(start, min(count, start + list_size)), 3):
+                    entry = copy_picker.messages[index]
+                    write(
+                        y,
+                        2,
+                        ("› " if index == copy_picker.selected else "  ")
+                        + safe_display(entry.label + " · " + entry.text),
+                        width - 4,
+                        "selected" if index == copy_picker.selected else "muted",
+                    )
+                preview_y = 4 + list_size
+                write(preview_y - 1, 2, "─" * max(0, width - 4), width - 4)
+                visible = max(1, height - preview_y - 4)
+                preview = (
+                    wrap_cells(
+                        safe_display(copy_picker.messages[copy_picker.selected].text),
+                        max(1, width - 4),
+                    )
+                    if count
+                    else []
+                )
+                copy_picker.scroll = max(0, min(copy_picker.scroll, len(preview) - visible))
+                for y, line in enumerate(
+                    preview[copy_picker.scroll : copy_picker.scroll + visible], preview_y
+                ):
+                    write(y, 2, line, width - 4)
+                if copy_picker.notice:
+                    feedback, style = copy_picker.notice
+                    for y, line in enumerate(
+                        wrap_cells(safe_display(feedback), max(1, width - 4))[:2], height - 4
+                    ):
+                        write(y, 2, line, width - 4, style)
+                write(height - 2, 2, "[Copy message]" if count else "", width - 4, "accent")
+                write(
+                    height - 1,
+                    2,
+                    "↑↓ choose · C/Enter copy · PgUp/Dn preview · Esc back",
+                    width - 4,
+                )
+                try:
+                    curses.curs_set(0)
+                    window.refresh()
+                    key = window.get_wch()
+                    if key in ("\x1b", "\x03"):
+                        copy_picker = None
+                        curses.curs_set(1)
+                    elif key in ("c", "C", "\n", "\r", curses.KEY_ENTER):
+                        copy_picker.copy()
+                    elif key in (curses.KEY_UP, curses.KEY_DOWN, curses.KEY_HOME, curses.KEY_END):
+                        copy_picker.move(
+                            -1
+                            if key == curses.KEY_UP
+                            else 1
+                            if key == curses.KEY_DOWN
+                            else -(10**9)
+                            if key == curses.KEY_HOME
+                            else 10**9
+                        )
+                    elif key in (curses.KEY_PPAGE, curses.KEY_NPAGE):
+                        copy_picker.scroll += -visible if key == curses.KEY_PPAGE else visible
+                    elif key == curses.KEY_MOUSE:
+                        _, mx, my, _, button = curses.getmouse()
+                        if button & getattr(curses, "BUTTON4_PRESSED", 0):
+                            copy_picker.scroll -= 3
+                        elif button & getattr(curses, "BUTTON5_PRESSED", 0):
+                            copy_picker.scroll += 3
+                        elif button & getattr(curses, "BUTTON1_CLICKED", 0):
+                            if my == height - 2 and 2 <= mx < 16:
+                                copy_picker.copy()
+                            elif (
+                                3 <= my < 3 + min(count - start, list_size) and 2 <= mx < width - 2
+                            ):
+                                copy_picker.move(start + my - 3 - copy_picker.selected)
+                except curses.error:
+                    pass
+                continue
             if history_browser is not None:
                 height, width = window.getmaxyx()
                 window.erase()
                 visible = max(1, height - 6)
-                write(0, 2, "History", width - 16, "accent")
+                write(0, 2, "History", width - 24, "accent")
+                can_copy = (
+                    history_browser.level == "messages"
+                    and not history_browser.error
+                    and history_browser.pending_delete is None
+                )
+                if can_copy:
+                    write(0, width - 21, "[Copy]", 6, "accent")
                 write(0, width - 12, "[Delete]", 8, "error")
                 write(1, 2, history_browser.breadcrumb, width - 4, "accent")
                 write(
@@ -983,7 +1136,7 @@ def run_tui(session):
                 for y, (line, style) in enumerate(page, 4):
                     write(y, 2, line, width - 4, style)
                 hint = (
-                    "↑↓ scroll · Del delete · Esc back · Home/End jump"
+                    "↑↓ scroll · F9 copy · Del delete · Esc back"
                     if history_browser.level == "messages"
                     else "↑↓ choose · Enter open · Del delete · Tab lists · Esc back"
                 )
@@ -1009,7 +1162,11 @@ def run_tui(session):
                             history_browser.pending_delete = None
                             history_browser.error = None
                         continue
-                    if key == curses.KEY_DC:
+                    if key == getattr(curses, "KEY_F9", -9) and can_copy:
+                        copy_picker = CopyPicker(
+                            transcript_copy_messages(history_browser.transcript)
+                        )
+                    elif key == curses.KEY_DC:
                         history_browser.request_delete()
                     elif key in ("\x1b", "\x03"):
                         if not history_browser.back():
@@ -1045,6 +1202,19 @@ def run_tui(session):
                             and width - 12 <= mx < width - 4
                         ):
                             history_browser.request_delete()
+                        elif button & getattr(curses, "BUTTON1_CLICKED", 0) and can_copy:
+                            if my == 0 and width - 21 <= mx < width - 15:
+                                copy_picker = CopyPicker(
+                                    transcript_copy_messages(history_browser.transcript)
+                                )
+                            elif 2 <= mx < width - 2 and 4 <= my < 4 + len(page):
+                                index = start + my - 4
+                                mapping = getattr(history_browser, "_row_messages", [])
+                                if index < len(mapping) and mapping[index] is not None:
+                                    copy_picker = CopyPicker(
+                                        transcript_copy_messages(history_browser.transcript),
+                                        mapping[index],
+                                    )
                         elif button & getattr(curses, "BUTTON4_PRESSED", 0):
                             history_browser.move(-3)
                         elif button & getattr(curses, "BUTTON5_PRESSED", 0):
@@ -1161,6 +1331,21 @@ def run_tui(session):
                 ("files", "4:Files"),
             )
             hits = []
+            copy_entries = []
+            row_copy_indices = []
+
+            def append_card(rows, card, label, text):
+                index = len(copy_entries)
+                copy_entries.append(CopyMessage(label, text))
+                rows.extend(card)
+                row_copy_indices.extend(index if line.strip() else None for _, line, _ in card)
+
+            def copy_hit(y, row_index):
+                if row_index < len(row_copy_indices) and row_copy_indices[row_index] is not None:
+                    hits.append(
+                        (y, 2, 2 + chat_width, ("copy_message", row_copy_indices[row_index]))
+                    )
+
             tab_x = 2
             for category, label in tabs:
                 write(
@@ -1229,7 +1414,8 @@ def run_tui(session):
                         rows = []
                         for timestamp, direction, _kind, peer, text in direct_page_rows or []:
                             sender = "you" if direction == "sent" else peer
-                            rows.extend(
+                            append_card(
+                                rows,
                                 message_rows(
                                     display_time(timestamp),
                                     sender,
@@ -1237,7 +1423,9 @@ def run_tui(session):
                                     None,
                                     chat_width,
                                     session.client.username,
-                                )
+                                ),
+                                f"{display_time(timestamp)} · {sender}",
+                                text,
                             )
                         if not rows:
                             rows = [("", "No private messages in this conversation yet.", "muted")]
@@ -1246,6 +1434,7 @@ def run_tui(session):
                         for y, (pre, line, style) in enumerate(
                             rows[max(0, end - capacity) : end], body_start
                         ):
+                            copy_hit(y, max(0, end - capacity) + y - body_start)
                             if pre:
                                 write(y, 2, pre, chat_width, "muted")
                             write(
@@ -1257,7 +1446,7 @@ def run_tui(session):
                             )
             else:
                 rows = []
-                for stamp, message, kind in messages:
+                for stamp, message, kind, original_text in messages:
                     if (
                         session.display_filter != "all"
                         and notice_category(message) != session.display_filter
@@ -1267,7 +1456,8 @@ def run_tui(session):
                     if sender is not None:
                         text = message.split(":", 1)[1].lstrip()
                         channel = "DM" if notice_category(message) == "dm" else "All"
-                        rows.extend(
+                        append_card(
+                            rows,
                             message_rows(
                                 stamp,
                                 sender,
@@ -1275,13 +1465,16 @@ def run_tui(session):
                                 channel,
                                 chat_width,
                                 session.client.username,
-                            )
+                            ),
+                            f"{stamp} · {sender} · {channel}",
+                            original_text if original_text is not None else text,
                         )
                     else:
                         prefix = f"{stamp}  " if stamp else ""
                         display = re.sub(r"^\[(?:file|presence|admin|display)\] ", "", message)
                         for pre, line in wrap_prefixed(prefix, display, chat_width):
                             rows.append((pre, line, kind))
+                            row_copy_indices.append(None)
                 if not rows and session.display_filter == "files":
                     rows = [("", "No files shared yet. Choose a person to send a file.", "muted")]
                 scroll = min(scroll, max(0, len(rows) - capacity))
@@ -1289,6 +1482,7 @@ def run_tui(session):
                     unseen = 0
                 end = len(rows) - scroll
                 for y, (pre, line, style) in enumerate(rows[max(0, end - capacity) : end], 4):
+                    copy_hit(y, max(0, end - capacity) + y - 4)
                     if pre:
                         write(y, 2, pre, chat_width, "muted")
                     write(
@@ -1530,13 +1724,13 @@ def run_tui(session):
                     if menu is not None
                     else "↑↓ choose · Tab complete · Enter use · Esc dismiss"
                     if options
-                    else "Enter send private · Esc inbox · ↑↓/PgUp scroll · / cmds · F1 Help"
+                    else "Enter send · Esc inbox · F9 copy · PgUp scroll · F1 help"
                     if direct_peer is not None
                     else "↑↓ choose · Enter open · Esc dismiss · / cmds · F1 Help"
                     if session.display_filter == "dm"
                     else guidance
                     if guidance
-                    else "Enter send · F1 help · F8 history · F7 people · PgUp scroll · Ctrl+C exit"
+                    else "Enter send · F1 help · F8 history · F9 copy · PgUp scroll"
                 )
             write(height - 1, 2, hint, width - 4, hint_style)
             try:
@@ -1594,6 +1788,8 @@ def run_tui(session):
             elif key == getattr(curses, "KEY_F1", -1):
                 show_help = True
                 help_scroll = 0
+            elif key == getattr(curses, "KEY_F9", -9):
+                copy_picker = CopyPicker(copy_entries)
             elif key == getattr(curses, "KEY_F8", -8):
                 try:
                     history_browser = HistoryBrowser(session)
@@ -1743,7 +1939,9 @@ def run_tui(session):
                             scroll = max(0, scroll - 3)  # Wheel down: back to live.
                     elif right:
                         hit = hit_at(mouse_x, mouse_y)
-                        if hit and hit[0] == "person":
+                        if hit and hit[0] == "copy_message":
+                            copy_picker = CopyPicker(copy_entries, hit[1])
+                        elif hit and hit[0] == "person":
                             anchor_x = (
                                 width - sidebar
                                 if sidebar and mouse_x >= width - sidebar
@@ -1761,7 +1959,9 @@ def run_tui(session):
                             else:
                                 menu = None
                         elif hit:
-                            if hit[0] == "direct_peer":
+                            if hit[0] == "copy_message":
+                                copy_picker = CopyPicker(copy_entries, hit[1])
+                            elif hit[0] == "direct_peer":
                                 open_direct(hit[1])
                             elif hit[0] == "direct_back":
                                 back_to_inbox()
