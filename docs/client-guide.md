@@ -349,8 +349,11 @@ the OS account and disk. Files are created with restrictive permissions on POSIX
 ## Dashboard and convenience commands
 
 The TUI header shows the app name, your username, and how many other people are online.
-A new-message indicator appears only while you are scrolled up. Connection diagnostics
-remain available through `/status`, `/ping`, `/net`, and F4; TLS encryption stays enabled.
+A new-message indicator appears only while you are scrolled up. The header also shows the
+server's connected IP:port, TCP/TLS state and TCP RTT; UDP probe loss stays above the footer.
+`Not measured` means no probe has run, not a broken connection. Use `/ping`, `/net`, or F4
+to measure; `/status` prints the same values. UDP loss counts unanswered probes, not TCP
+delivery failures. After disconnection, the TUI keeps its status visible until a key is pressed.
 The reply recipient appears when you type `/reply ` rather than in the header.
 At 76 columns or wider, the right panel shows people online, plus file transfers and
 pending account approvals when they need attention. F2 toggles it. Transfer summaries

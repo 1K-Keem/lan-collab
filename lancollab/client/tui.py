@@ -12,7 +12,7 @@ import sqlite3
 from unicodedata import combining, east_asian_width
 
 from lancollab.client.application import ClientState, safe_display
-from lancollab.client.cli import Command, help_reference, parse_command
+from lancollab.client.cli import Command, help_reference, network_status, parse_command
 
 from lancollab.client.branding import banner_lines
 from lancollab.client.clipboard import ClipboardError, copy_text
@@ -939,8 +939,12 @@ def run_tui(session):
                     return action
             return None
 
-        while session.client.state is not ClientState.CLOSED:
-            if monotonic() >= next_pending_refresh:
+        while True:
+            if session.client.state is ClientState.CLOSED:
+                show_help = False
+                history_browser = copy_picker = menu = None
+                session.display_filter = "all"
+            if session.client.state is not ClientState.CLOSED and monotonic() >= next_pending_refresh:
                 if session.client.role == "admin":
                     # Quiet refresh: update the sidebar's PENDING list without
                     # printing a "Pending users" line into the chat each time.
@@ -1307,23 +1311,20 @@ def run_tui(session):
             dock_height = min(3, len(transfers), max(0, height - popup_height - 10))
             dock_y = popup_y - dock_height
             capacity = max(1, dock_y - 5)
-            write(0, 2, f"LAN-COLLAB · {username} · {len(users)} online", width - 4, "accent")
             if direct_scroll == 0:
                 direct_unseen = 0
             new_count = direct_unseen if direct_peer is not None else unseen if scroll else 0
+            title = f"LAN-COLLAB · {username or 'disconnected'} · {len(users)} online"
             if new_count:
-                write(
-                    1,
-                    2,
-                    f"↓ {new_count} new message{'s' if new_count != 1 else ''}",
-                    width - 4,
-                    "accent",
-                )
-            divider = "─" * (width - 4)
-            if sidebar:
-                split = width - sidebar - 3
-                divider = divider[:split] + "┬" + divider[split + 1 :]
-            write(2, 2, divider, width - 4)
+                title += f" · ↓ {new_count} new message{'s' if new_count != 1 else ''}"
+            write(0, 2, title, width - 4, "accent")
+            server, connection, rtt, loss = network_status(
+                client, session.udp, getattr(session, "server_host", None)
+            )
+            closed = client.state is ClientState.CLOSED
+            write(1, 2, server, width - 4)
+            write(2, 2, f"{connection} {rtt}", width - 4, "error" if closed else "muted")
+            write(height - 2, 2, f"{loss} | F4", width - 4, "muted")
             tabs = (
                 ("all", "1:All"),
                 ("global", "2:Global"),
@@ -1732,6 +1733,8 @@ def run_tui(session):
                     if guidance
                     else "Enter send · F1 help · F8 history · F9 copy · PgUp scroll"
                 )
+            if closed:
+                hint, hint_style = "Disconnected - press any key to exit", "error"
             write(height - 1, 2, hint, width - 4, hint_style)
             try:
                 window.move(input_y, 4 + cell_width(composer.text[offset : composer.cursor]))
@@ -1739,6 +1742,8 @@ def run_tui(session):
                 key = window.get_wch()
             except curses.error:
                 continue
+            if closed:
+                return
             before = composer.text
             if key in ("\x03", "\x04"):
                 return

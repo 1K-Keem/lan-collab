@@ -6,17 +6,18 @@ from tests.test_tui_context_menu import FakeSession, click, expect, run
 
 
 class UserFocusTests(unittest.TestCase):
-    def test_header_is_simple_in_every_chat_tab(self):
+    def test_header_keeps_network_status_in_every_chat_tab(self):
         session = FakeSession(users=("bob", "carol"))
 
         def clean(window):
             header = window.lines.get(0, "")
-            return "LAN-COLLAB · alice · 2 online" in header and all(
+            return (
+                "LAN-COLLAB · alice · 2 online" in header
+                and "TCP/TLS: connected" in window.all_text()
+                and "UDP probe loss: unavailable" in window.all_text()
+            ) and all(
                 word not in window.all_text()
                 for word in (
-                    "TCP",
-                    "UDP",
-                    "TLS",
                     "Live conversation",
                     "Scrollback",
                     "reply:",

@@ -129,7 +129,8 @@ _DETAILED_HELP += (
     "  In a Direct conversation, plain text sends privately to the selected peer; Back or Esc returns to the inbox.",
     "  Outside Direct, plain text still sends to everyone. Filters never delete history or stop incoming messages.",
     "NETWORK CHECKS — manual only: /ping for TCP, /net for UDP, or F4 for both.",
-    "  Results appear only when requested; use /status to review connection details.",
+    "  The TUI always shows the server, TCP/TLS state, RTT and UDP probe loss.",
+    "  Not measured means no probe yet; UDP loss does not mean TCP disconnected.",
     "F9 or click a message to select it; C/Enter copies its text; Esc returns. Works in chat and history.",
     "F8 or /history opens saved sessions; Tab switches to people; Enter opens; Esc goes back. Home/End jump in history.",
     "Ctrl+W deletes a word; Ctrl+K deletes to end; Ctrl+L clears display.",
@@ -152,6 +153,31 @@ def progress_bar(row, width=14):
     fraction = min(1, row["done"] / row["size"]) if row["size"] else 0
     filled = int(fraction * width)
     return f"[{'█' * filled}{'░' * (width - filled)}] {fraction:.0%} {row['done']}/{row['size']} B · {row['status']}"
+
+def network_status(client, udp=None, server_host=None):
+    """Shared CLI/TUI labels; a failed UDP probe never changes TCP state."""
+    peer = getattr(getattr(client, "transport", None), "peer_address", None)
+    server = f"{peer[0]}:{peer[1]}" if peer else server_host or "unknown"
+    state = (
+        "disconnected" if client.state is ClientState.CLOSED
+        else "connected" if client.state is ClientState.AUTHENTICATED
+        else client.state.value
+    )
+    rtt = "not measured" if client.last_tcp_rtt is None else f"{client.last_tcp_rtt:.1f} ms"
+    if client.state is ClientState.CLOSED and client.last_tcp_rtt is not None:
+        rtt += " (last)"
+    quality = udp.quality if udp is not None else None
+    loss = (
+        "unavailable" if quality is None
+        else "not measured" if quality.sent == 0
+        else f"{quality.loss_percent:.1f}% ({quality.received}/{quality.sent})"
+    )
+    return (
+        f"Server: {safe_display(server)}",
+        f"TCP/TLS: {state}",
+        f"RTT: {rtt}",
+        f"UDP probe loss: {loss}",
+    )
 
 
 @dataclass(frozen=True)
@@ -678,12 +704,8 @@ class ConsoleSession:
                 for name, _address in users:
                     self.output(safe_display(name))
             elif command.name == "/status":
-                self.output(f"TCP/TLS: {self.client.state.value}")
-                if self.udp is not None:
-                    q = self.udp.quality
-                    self.output(
-                        f"UDP: {q.received}/{q.sent}, loss {q.loss_percent:.1f}%, RTT {q.last_rtt_ms}"
-                    )
+                for line in network_status(self.client, self.udp, self.server_host):
+                    self.output(line)
             elif command.name == "/net":
                 if self.udp is None or not self.server_host:
                     self.output("UDP unavailable; use --host or --discover")
