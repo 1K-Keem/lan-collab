@@ -702,6 +702,8 @@ def run_tui(session):
         # Reads are cached against client.direct_revision, never polled per frame.
         direct_peer = None
         direct_selected = direct_scroll = direct_unseen = 0
+        group_selected = 0
+        group_page_key, group_page_rows = None, None
         direct_conversations = None
         direct_conversations_revision = None
         direct_page_rows = None
@@ -738,6 +740,9 @@ def run_tui(session):
         messages = deque(maxlen=2000)
 
         def add(text, kind="muted", stamp=True):
+            nonlocal direct_flash
+            if kind == "error" and session.display_filter == "groups" and getattr(session, "current_group", None) is None:
+                direct_flash = (safe_display(text), "error", monotonic() + 10)
             # Only real events get a time prefix. Help text, history rows
             # (which carry their own timestamp) and plain notices do not.
             messages.append(
@@ -773,9 +778,16 @@ def run_tui(session):
             except ValueError as error:
                 message = safe_display(str(error))
                 add(message, "error")
-                if session.display_filter == "dm":
+                if session.display_filter in {"dm", "groups"}:
                     direct_flash = (message, "error", monotonic() + 10)
             return True
+
+        def select_filter(category):
+            session.display_filter = category
+            if category == "groups" and getattr(session, "current_group", None) not in groups:
+                session.current_group = None
+                if len(groups) == 1:
+                    run_command(f"/group open {next(iter(groups))}")
 
         def native_picker(*, folder=False):
             """Release the terminal for the desktop dialog, then restore input."""
@@ -928,6 +940,10 @@ def run_tui(session):
                 menu = None
                 back_to_inbox()
                 return True
+            if action[0] == "group_back":
+                menu = None
+                session.current_group = None
+                return True
             if action[0] == "accept_file":
                 menu = None
                 try:
@@ -1010,7 +1026,11 @@ def run_tui(session):
                     if kind == "dm":
                         direct_dirty = True
                     if (
-                        session.display_filter == "dm"
+                        (
+                            session.display_filter == "dm"
+                            or (session.display_filter == "groups"
+                                and getattr(session, "current_group", None) is None)
+                        )
                         and notice_category(notice) not in {"dm", "global"}
                         and not notice.startswith("[presence]")
                     ):
@@ -1328,6 +1348,22 @@ def run_tui(session):
                 groups = dict(getattr(client, "groups", {}))
                 group_owners = dict(getattr(client, "group_owners", {}))
             current_group = getattr(session, "current_group", None)
+            if current_group is None or session.display_filter != "groups":
+                group_page_key, group_page_rows = None, None
+            elif session.display_filter == "groups" and hasattr(session, "group_transcript"):
+                key = (current_group, getattr(client, "group_revision", None))
+                if key != group_page_key:
+                    try:
+                        group_page_rows = list(session.group_transcript(current_group))
+                    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+                        group_page_rows = None
+                        direct_flash = (
+                            "Could not read saved group history; showing live messages.",
+                            "error", monotonic() + 10,
+                        )
+                    group_page_key = key
+            group_names = sorted(groups)
+            group_selected = max(0, min(group_selected, len(group_names) - 1))
             transfers = client.files.snapshot()
             options = (
                 suggestions(composer.text, users, role, pending, transfers) if not dismissed else []
@@ -1510,8 +1546,38 @@ def run_tui(session):
                                 chat_width - cell_width(pre),
                                 style,
                             )
+            elif session.display_filter == "groups" and current_group is None:
+                write(4, 2, "Groups - click a name or press Enter", chat_width, "accent")
+                if not group_names:
+                    hint = "No groups yet. Use /group create NAME USER..."
+                    for y, text in enumerate(wrap_cells(hint, chat_width)[:capacity], 5):
+                        write(y, 2, text, chat_width, "muted")
+                start = max(0, group_selected - capacity + 1)
+                for y, index in enumerate(range(start, min(len(group_names), start + capacity)), 5):
+                    name = group_names[index]
+                    label = f"#{name} ({len(groups[name])} members)"
+                    write(y, 2, label, chat_width, "selected" if index == group_selected else "accent")
+                    hits.append((y, 2, 2 + chat_width, ("command", f"/group open {name}")))
             else:
+                body_start = 4
+                if session.display_filter == "groups":
+                    write(4, 2, "[Groups] Back to group list", chat_width, "accent")
+                    hits.append((4, 2, min(2 + chat_width, 28), ("group_back",)))
+                    body_start = 5
                 rows = []
+                if session.display_filter == "groups" and group_page_rows is not None:
+                    for timestamp, direction, _kind, _peer, text in group_page_rows:
+                        if direction == "sent":
+                            sender = "you"
+                        else:
+                            sender, _, text = text.partition(": ")
+                        append_card(
+                            rows,
+                            message_rows(display_time(timestamp), sender, text, f"#{current_group}",
+                                         chat_width, username),
+                            f"{display_time(timestamp)} · {sender} · #{current_group}",
+                            text,
+                        )
                 for stamp, message, kind, original_text in messages:
                     if (
                         session.display_filter != "all"
@@ -1520,6 +1586,8 @@ def run_tui(session):
                     ):
                         continue
                     group = chat_group(message)
+                    if session.display_filter == "groups" and group_page_rows is not None and group is not None:
+                        continue
                     if session.display_filter == "groups" and group is not None and group != current_group:
                         continue
                     sender = chat_sender(message)
@@ -1548,21 +1616,14 @@ def run_tui(session):
                 if not rows and session.display_filter == "files":
                     rows = [("", "No files shared yet. Choose a person to send a file.", "muted")]
                 if not rows and session.display_filter == "groups":
-                    hint = (
-                        f"No messages in #{current_group} yet."
-                        if current_group
-                        else "Use /group create NAME USER... or /group open NAME."
-                    )
+                    hint = f"No messages in #{current_group} yet."
                     rows = [("", text, "muted") for text in wrap_cells(hint, chat_width)]
-                    if current_group is None:
-                        rows += [("", f"#{name} ({len(members)} members)", "accent")
-                                 for name, members in groups.items()]
                 scroll = min(scroll, max(0, len(rows) - capacity))
                 if scroll == 0:
                     unseen = 0
                 end = len(rows) - scroll
-                for y, (pre, line, style) in enumerate(rows[max(0, end - capacity) : end], 4):
-                    copy_hit(y, max(0, end - capacity) + y - 4)
+                for y, (pre, line, style) in enumerate(rows[max(0, end - capacity) : end], body_start):
+                    copy_hit(y, max(0, end - capacity) + y - body_start)
                     if pre:
                         write(y, 2, pre, chat_width, "muted")
                     write(
@@ -1682,7 +1743,7 @@ def run_tui(session):
             visible = composer.text[offset:]
             placeholder = (
                 f"Message #{current_group}" if session.display_filter == "groups" and current_group
-                else "Use /group open NAME" if session.display_filter == "groups"
+                else "Choose a group above" if session.display_filter == "groups"
                 else
                 f"Message {direct_peer} privately, or / for commands"
                 if direct_peer is not None
@@ -1836,6 +1897,8 @@ def run_tui(session):
                     if direct_peer is not None
                     else "↑↓ choose · Enter open · Esc dismiss · / cmds · F1 Help"
                     if session.display_filter == "dm"
+                    else "Up/Down select · Enter open · Click a group"
+                    if session.display_filter == "groups" and current_group is None
                     else guidance
                     if guidance
                     else "Enter send · F1 help · F8 history · F9 copy · PgUp scroll"
@@ -1887,7 +1950,7 @@ def run_tui(session):
                 try:
                     alternate = window.get_wch()
                     if isinstance(alternate, str) and alternate in "12345":
-                        session.display_filter = FILTERS[int(alternate) - 1]
+                        select_filter(FILTERS[int(alternate) - 1])
                         scroll = 0
                     elif isinstance(alternate, str) and alternate.isprintable():
                         composer.insert(alternate)
@@ -1897,6 +1960,8 @@ def run_tui(session):
                     window.timeout(100)
                 if alternate is None and direct_peer is not None:
                     back_to_inbox()
+                elif alternate is None and session.display_filter == "groups" and current_group is not None:
+                    session.current_group = None
             elif key == getattr(curses, "KEY_F1", -1):
                 show_help = True
                 help_scroll = 0
@@ -1910,9 +1975,9 @@ def run_tui(session):
             elif key == getattr(curses, "KEY_F2", -2):
                 sidebar_enabled = not sidebar_enabled
             elif key == getattr(curses, "KEY_F3", -3):
-                session.display_filter = FILTERS[
+                select_filter(FILTERS[
                     (FILTERS.index(session.display_filter) + 1) % len(FILTERS)
-                ]
+                ])
                 scroll = 0
             elif key == getattr(curses, "KEY_F4", -4):
                 start_probe()
@@ -1937,6 +2002,17 @@ def run_tui(session):
             elif key in ("\n", "\r", curses.KEY_ENTER):
                 if options and composer.text != options[selection].value:
                     composer.replace(options[selection].value + " ")
+                elif (
+                    session.display_filter == "groups" and current_group is None
+                    and composer.text and not composer.text.startswith(("/", "@"))
+                ):
+                    message = "Choose a group first; your draft is kept."
+                    add(message, "error")
+                elif (
+                    session.display_filter == "groups" and current_group is None
+                    and not composer.text and group_names
+                ):
+                    run_command(f"/group open {group_names[group_selected]}")
                 elif (
                     session.display_filter == "dm"
                     and direct_peer is None
@@ -1967,9 +2043,6 @@ def run_tui(session):
                                 add(str(error), "error")
                         else:
                             if not line.startswith(("/", "@")):
-                                if session.display_filter == "groups" and current_group is None:
-                                    add("Choose /group open NAME before sending.", "error")
-                                    continue
                                 line = (
                                     f"/gmsg {current_group} {line}"
                                     if session.display_filter == "groups"
@@ -1991,6 +2064,8 @@ def run_tui(session):
                 direction = -1 if key == curses.KEY_UP else 1
                 if options:
                     selection = (selection + direction) % len(options)
+                elif session.display_filter == "groups" and current_group is None:
+                    group_selected = max(0, min(len(group_names) - 1, group_selected + direction))
                 elif session.display_filter == "dm":
                     if direct_peer is None and direct_conversations:
                         direct_selected = max(
@@ -2025,11 +2100,15 @@ def run_tui(session):
             elif key == curses.KEY_PPAGE:
                 if direct_peer is not None:
                     direct_scroll += capacity
+                elif session.display_filter == "groups" and current_group is None:
+                    group_selected = max(0, group_selected - capacity)
                 else:
                     scroll += capacity
             elif key == curses.KEY_NPAGE:
                 if direct_peer is not None:
                     direct_scroll = max(0, direct_scroll - capacity)
+                elif session.display_filter == "groups" and current_group is None:
+                    group_selected = min(len(group_names) - 1, group_selected + capacity)
                 else:
                     scroll = max(0, scroll - capacity)
             elif key == curses.KEY_MOUSE:
@@ -2048,11 +2127,15 @@ def run_tui(session):
                     if bstate & getattr(curses, "BUTTON4_PRESSED", 0):
                         if direct_peer is not None:
                             direct_scroll += 3  # Wheel up: older transcript.
+                        elif session.display_filter == "groups" and current_group is None:
+                            group_selected = max(0, group_selected - 3)
                         else:
                             scroll += 3  # Wheel up: older messages.
                     elif bstate & getattr(curses, "BUTTON5_PRESSED", 0):
                         if direct_peer is not None:
                             direct_scroll = max(0, direct_scroll - 3)
+                        elif session.display_filter == "groups" and current_group is None:
+                            group_selected = min(len(group_names) - 1, group_selected + 3)
                         else:
                             scroll = max(0, scroll - 3)  # Wheel down: back to live.
                     elif right:
@@ -2093,9 +2176,9 @@ def run_tui(session):
                                 )
                                 menu = [hit[1], hit[2], 0, anchor_x, mouse_y]
                             elif hit[0] == "filter":
-                                session.display_filter = hit[1]
+                                select_filter(hit[1])
                                 scroll = 0
-                            elif hit[0] in {"command", "accept_file", "send_group_file", "group_menu", "confirm_group"}:
+                            elif hit[0] in {"command", "accept_file", "send_group_file", "group_menu", "confirm_group", "group_back"}:
                                 if not perform(hit):
                                     return
                             elif hit[0] == "suggestion" and 0 <= hit[1] < len(options):

@@ -16,7 +16,7 @@ from lancollab.common.contracts import Envelope, SessionIdentity
 from lancollab.server.accounts import AccountError, AccountService
 from lancollab.server.application import CollabServer
 from tests.fake_transport import FakeTransport
-from tests.test_tui_context_menu import FakeSession, click, expect, run
+from tests.test_tui_context_menu import FakeSession, click, expect, run, timeout
 
 
 class GroupTests(unittest.TestCase):
@@ -368,6 +368,79 @@ class GroupFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_command("/sendgroup study")
 
+    def test_click_groups_opens_the_only_group_and_routes_plain_text(self):
+        run(self.shell, [
+            click("3:Groups"),
+            expect(lambda w: self.shell.current_group == "study", "hello\n"),
+            "\x03",
+        ])
+        message = self.peer.receive()
+        self.assertEqual((message.type, message.payload), ("CHAT_GROUP", {"group": "study", "text": "hello"}))
+
+    def test_multiple_groups_open_by_click_without_a_command_on_small_screen(self):
+        self.client.groups["other"] = ["alice", "eve"]
+        run(self.shell, [
+            click("3:Groups"),
+            expect(lambda w: self.shell.current_group is None, click("#other")),
+            expect(lambda w: self.shell.current_group == "other", "hello\n"),
+            "\x03",
+        ], rows=16, columns=40)
+        self.assertEqual(self.peer.receive().payload, {"group": "other", "text": "hello"})
+
+    def test_keyboard_can_open_groups_beyond_the_visible_list(self):
+        self.client.groups = {f"g{i:02}": ["alice", "bob"] for i in range(20)}
+        run(self.shell, [
+            click("3:Groups"),
+            lambda w: w.module.KEY_NPAGE,
+            lambda w: w.module.KEY_DOWN,
+            "\n",
+            expect(lambda w: self.shell.current_group == "g04", "\x03"),
+        ], rows=12, columns=40)
+
+    def test_back_to_list_keeps_group_drafts_separate(self):
+        self.client.groups["other"] = ["alice", "eve"]
+        run(self.shell, [
+            click("3:Groups"), click("#other"), "other draft",
+            click("[Groups]"),
+            expect(lambda w: self.shell.current_group is None, click("#study")),
+            expect(lambda w: "other draft" not in w.input_text(), click("[Groups]")),
+            click("#other"),
+            expect(lambda w: "other draft" in w.input_text(), "\x03"),
+        ])
+
+    def test_revocation_does_not_automatically_switch_to_another_group(self):
+        self.client.groups["other"] = ["alice", "eve"]
+
+        def revoke(window):
+            self.client.handle_event(Envelope("GROUP_LIST", "changed", {"groups": [{
+                "name": "other", "members": ["alice", "eve"], "owner": "eve",
+            }]}))
+            self.shell._drain()
+            return ""
+
+        run(self.shell, [
+            click("3:Groups"), click("#study"), revoke,
+            expect(lambda w: self.shell.current_group is None and "Groups - click" in w.all_text(),
+                   "\x03"),
+        ])
+        with self.assertRaises(TimeoutError):
+            self.peer.receive()
+
+    def test_escape_returns_to_list_even_with_one_group(self):
+        run(self.shell, [
+            click("3:Groups"), "\x1b", timeout,
+            expect(lambda w: self.shell.current_group is None and "Groups - click" in w.all_text(),
+                   "\x03"),
+        ])
+
+    def test_empty_group_list_keeps_errors_visible(self):
+        self.client.groups = {}
+        run(self.shell, [
+            click("3:Groups"),
+            expect(lambda w: "No groups yet" in w.all_text(), "/unknown\n"),
+            expect(lambda w: "Unknown command" in w.all_text(), "\x03"),
+        ])
+
 
 class GroupTerminalTests(unittest.TestCase):
     def session(self):
@@ -415,7 +488,8 @@ class GroupTerminalTests(unittest.TestCase):
         session.current_group = None
         run(session, [
             expect(lambda w: "3:Groups" in w.all_text(), "hello\n"),
-            "\x03",
+            expect(lambda w: "hello" in w.input_text() and "Choose a group first" in w.all_text(),
+                   "\x03"),
         ], rows=16, columns=40)
         self.assertEqual(session.executed, [])
 

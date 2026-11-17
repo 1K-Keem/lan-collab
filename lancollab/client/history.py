@@ -182,8 +182,8 @@ class HistoryStore:
         and coming back starts a new session instead of extending the old one.
         Rows saved before sessions existed carry session "".
         """
-        with self._lock:
-            timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._lock, self._db:
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
             self._db.execute(
                 "INSERT OR IGNORE INTO history_sessions(server, account, session, started) "
                 "VALUES(?,?,?,?)",
@@ -203,7 +203,6 @@ class HistoryStore:
                     session,
                 ),
             )
-            self._db.commit()
 
     def recent(self, server, account, peer=None, limit=50, session=None, with_session=False):
         """Last ``limit`` messages, oldest first.

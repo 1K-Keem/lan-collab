@@ -157,11 +157,12 @@ other members, with extra account-review commands; the server process stays runn
 | Group chat | `/all Hello everyone` (or plain text in the TUI outside Direct) |
 | Private chat | `/msg bob Hello`, `@bob Hello`, or open Bob's Direct page |
 | Create a private group | `/group create study bob carol` (you are included) |
-| Open a group | `/group open study`, or click it under **GROUPS** |
+| Open a group | **3:Groups**, then click a group (a sole group opens automatically); CLI: `/group open study` |
 | List your groups | `/groups` |
 | Manage your own group | `/group add study bob`, `/group kick study bob`, `/group delete study` |
 | Leave someone else's group | `/group leave study` |
 | Send to a group | `/gmsg study Hello`; plain text in an opened TUI group also works |
+| Read group history | Open the group; locally saved messages from previous logins load automatically |
 | Send a file | `/send bob "notes/chapter 3.pdf"` |
 | Send a file to a group | `/sendgroup study "notes/chapter 3.pdf"` or `/send #study PATH` |
 | Choose a save folder | `/accept 4b44b161 "~/Downloads/Study notes"` |

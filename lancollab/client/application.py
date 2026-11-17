@@ -121,16 +121,18 @@ class CollabClient:
         self._notices: list[Notice] = []
         self._lock = RLock()
         self._send_lock = RLock()  # The writer/transport must serialize frame bytes
-        # Current-session private DMs, kept even when history saving is off.
-        # The TUI polls direct_revision instead of rescanning history.
+        # Unpersisted messages stay available in-session; revisions invalidate TUI caches.
         self._direct_lock = Lock()
         self._direct_messages: list[tuple[str, str, str, str, str]] = []
         self.direct_revision = 0
+        self._group_messages: list[tuple[str, str, str, str, str]] = []
+        self.group_revision = 0
         self.files = TransferManager(self._send_file, downloads_dir, notify=self._file_notice)
 
     def _remember_chat(self, direction, kind, peer, text):
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds")
         private = kind == "CHAT_PRIVATE"
+        group = kind == "CHAT_GROUP"
         saved = False
         if self.history is not None and self.username is not None:
             try:
@@ -146,18 +148,26 @@ class CollabClient:
                 saved = True
             except (OSError, sqlite3.Error):
                 self._notices.append(Notice("error", "Could not save local chat history"))
-        if private:
-            # Revision is the refresh barrier: bump it only after the SQL
-            # commit above, or the TUI could cache a transcript without the row.
+        if private or group:
+            # Publish revisions only after the history write completes.
             with self._direct_lock:
                 if not saved:
-                    self._direct_messages.append((timestamp, direction, kind, peer, text))
-                self.direct_revision += 1
+                    messages = self._direct_messages if private else self._group_messages
+                    messages.append((timestamp, direction, kind, peer, text))
+                if private:
+                    self.direct_revision += 1
+                else:
+                    self.group_revision += 1
 
     def direct_messages(self):
         """Current session's private DMs in order: (timestamp, direction, kind, peer, text)."""
         with self._direct_lock:
             return list(self._direct_messages)
+
+    def group_messages(self):
+        """Current-session group messages that could not be saved (or history is disabled)."""
+        with self._direct_lock:
+            return list(self._group_messages)
 
     def ping(self) -> str:
         with self._lock:
@@ -847,5 +857,7 @@ class CollabClient:
             with self._direct_lock:
                 self._direct_messages.clear()
                 self.direct_revision += 1
+                self._group_messages.clear()
+                self.group_revision += 1
         self.files.close()
         self.transport.close()

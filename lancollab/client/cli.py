@@ -137,7 +137,7 @@ _DETAILED_HELP += (
     "DISPLAY FILTER GUIDE — the Direct tab also changes who receives plain text.",
     "  1:All — All messages and notices. /filter all",
     "  2:Global — Group chat only. /filter global",
-    "  3:Groups — Open a private group with /group open NAME; plain text goes only there.",
+    "  3:Groups — Click a group or use Up/Down + Enter; one group opens automatically.",
     "  4:Direct — Inbox of everyone you have DMed; click a peer to read the full transcript. /filter dm",
     "  5:Files — File-transfer notices only. /filter files",
     "  Click a tab, use Alt+1/2/3/4/5, or press F3 to cycle filters.",
@@ -389,7 +389,12 @@ class ConsoleSession:
                         for row in client._direct_messages
                         if peer is not None and row[3] != peer
                     ]
+                    client._group_messages = [
+                        row for row in client._group_messages
+                        if peer is not None and row[3] != peer
+                    ]
                 client.direct_revision += 1
+                client.group_revision += 1
             return count
 
     def history_label(self, record):
@@ -460,6 +465,22 @@ class ConsoleSession:
             for row in self.client.direct_messages()
             if row[2] == "CHAT_PRIVATE" and row[3] == peer
         ]
+
+    def group_transcript(self, name):
+        """All locally saved group messages across logins, plus unsaved live messages."""
+        client = self.client
+        with client._lock:
+            username, history, server = client.username, client.history, client.history_server
+            live = [row for row in client.group_messages() if row[3] == f"#{name}"]
+        if username is None:
+            return []
+        if history is None:
+            return live
+        rows = [
+            tuple(row[1:]) for row in history.archive(server, username, f"#{name}")
+            if row[3] == "CHAT_GROUP"
+        ]
+        return sorted([*rows, *live], key=lambda row: row[0]) if live else rows
 
     def _drain(self) -> None:
         with self._drain_lock:

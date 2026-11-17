@@ -324,7 +324,7 @@ Up/Down, Page Up/Page Down, and the mouse wheel scroll messages. Home/End jump
 to the beginning/end. Esc or Ctrl+C returns to the picker and then to chat.
 Opening history never resumes a session or sends typed text. Your saved messages remain isolated by your account and trusted server;
 they are organized inside SQLite, not in another user's folders. With
-`--no-history`, this browser is unavailable; Direct still has this login's DMs.
+`--no-history`, this browser is unavailable; Direct and Groups still show this login's messages.
 
 `/history show ID [USER]` opens a particular session in the full-screen reader,
 optionally filtered to one person. `/history show legacy` opens messages from
@@ -333,7 +333,7 @@ the first message time when their login time was not recorded.
 
 In the plain console, `/history` (or `/history sessions`) prints login IDs and
 `/history people` prints people. The same transcript commands print the complete
-matching messages. Live chat, history and search use short `DM` / `All` labels.
+matching messages. Live chat, history and search use `DM`, `All`, or `#GROUP` labels.
 
 While browsing, press **Delete** or click **[Delete]** to remove the selected
 session or person's saved messages. Press **Y** to confirm; **Esc** or **N** cancels.
@@ -354,11 +354,24 @@ the OS account and disk. Files are created with restrictive permissions on POSIX
 Use `/group create study bob carol` to create a group with yourself, Bob and Carol.
 Names are case-sensitive, with 1-32 letters, digits, underscores, dots or hyphens.
 Members must have approved accounts, but may be offline when the group is created.
-Run `/groups` to refresh your list, then `/group open study` to select one.
-In the TUI, click a group under **GROUPS**, or select **3:Groups** (Alt+3/F3).
+Run `/groups` to refresh your list; CLI users can select one with `/group open study`.
+In the TUI, select **3:Groups** (Alt+3/F3), then click a group or use Up/Down + Enter.
+A sole group opens automatically; an existing selection is remembered when returning.
+Click **[Groups]** or press Esc inside a group to return to the list and choose another.
+The list works without the sidebar and scrolls with PageUp/PageDown or the mouse wheel.
+You can also click a group under **GROUPS** in the sidebar.
 Plain text in that view goes only to the selected group; without a selection it is
 rejected rather than broadcast globally. `/gmsg study Hello` works in either interface.
 Drafts are separate for each group and for global/private chat.
+Opening a group loads its complete locally saved transcript across login sessions,
+like Direct, rather than just the current scrollback. Incoming messages are saved when
+received; outgoing messages appear only after the server's queue ACK. Scroll to read
+older messages, or use F9/click to copy their original text.
+History is isolated by trusted server identity, account and group name. With
+`--no-history`, only the current session remains available and nothing is saved for
+the next launch. Disk-write errors are reported and unsaved messages stay visible
+in-session. This is local history, not server synchronization: it cannot retrieve
+messages sent while you were offline or before joining a group.
 
 The creator is the group owner, shown by `/groups` and in the opened group's header.
 Only that account may use `/group add study USER`, `/group kick study USER`, or
