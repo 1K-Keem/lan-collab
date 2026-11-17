@@ -205,6 +205,31 @@ def _enum(values: frozenset[str]) -> Validator:
 _check_username = _str_regex(_USERNAME_RE, "must match [A-Za-z0-9_.-]{1,32}")
 _check_port = _int_range(1, 65535)
 
+def _check_group_members(value: Any, *, minimum=2) -> None:
+    if not isinstance(value, list) or not minimum <= len(value) <= FIELD_LIMITS["max_group_members"]:
+        raise _Invalid("invalid group member count")
+    for member in value:
+        _check_username(member)
+    if len(set(value)) != len(value):
+        raise _Invalid("duplicate group member")
+
+def _check_groups(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > FIELD_LIMITS["max_groups"]:
+        raise _Invalid("too many groups")
+    names = set()
+    for group in value:
+        if not isinstance(group, dict) or not {"name", "members"} <= set(group) <= {"name", "members", "owner"}:
+            raise _Invalid("groups need name, members and optional owner")
+        _check_username(group["name"])
+        _check_group_members(group["members"], minimum=1)
+        if "owner" in group:
+            _check_username(group["owner"])
+            if group["owner"] not in group["members"]:
+                raise _Invalid("owner must be a group member")
+        if group["name"] in names:
+            raise _Invalid("duplicate group")
+        names.add(group["name"])
+
 
 def _check_online_user(value: Any) -> None:
     if not isinstance(value, dict) or set(value) != {"username", "ip", "port"}:
@@ -295,6 +320,10 @@ def _compile_field(field: str, spec: str) -> Validator:
         return _check_online_user_list
     if spec == "list:pending_user":
         return _check_pending_user_list
+    if spec == "list:group_member":
+        return _check_group_members
+    if spec == "list:group":
+        return _check_groups
     raise KeyError(f"unsupported field spec {spec!r} for {field!r}")
 
 
@@ -359,7 +388,12 @@ def _presence_rules(payload: dict[str, Any]) -> None:
         raise _Invalid("offline forbids ip and port")
 
 
+def _group_manage_rules(payload: dict[str, Any]) -> None:
+    if ("username" in payload) != (payload["action"] in {"add", "kick"}):
+        raise _Invalid("only add/kick require a username")
+
 _CONDITIONAL_RULES: dict[str, Callable[[dict[str, Any]], None]] = {
+    "C:GROUP_MANAGE": _group_manage_rules,
     "S:AUTH_RESULT": _auth_result_rules,
     "S:REGISTER_RESULT": _register_result_rules,
     "S:ACCOUNT_REVIEW_RESULT": _review_result_rules,

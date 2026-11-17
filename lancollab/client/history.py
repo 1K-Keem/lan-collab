@@ -115,7 +115,7 @@ class HistoryStore:
             return self._db.execute(
                 "SELECT m.peer, m.timestamp, m.text, last.count FROM messages m JOIN ("
                 "SELECT peer, MAX(id) AS id, COUNT(*) AS count FROM messages "
-                "WHERE server=? AND account=? AND peer NOT IN (?, '*') "
+                    "WHERE server=? AND account=? AND peer NOT IN (?, '*') AND kind!='CHAT_GROUP' "
                 "GROUP BY peer) last ON m.id=last.id ORDER BY m.id DESC",
                 (server, account, account),
             ).fetchall()

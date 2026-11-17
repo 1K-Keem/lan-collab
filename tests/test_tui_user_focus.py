@@ -30,8 +30,8 @@ class UserFocusTests(unittest.TestCase):
             session,
             [
                 expect(clean, click("2:Global")),
-                expect(clean, click("3:Direct")),
-                expect(clean, click("4:Files")),
+                expect(clean, click("4:Direct")),
+                expect(clean, click("5:Files")),
                 expect(clean, "\x03"),
             ],
         )

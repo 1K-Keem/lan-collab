@@ -99,6 +99,93 @@ class ProductionTests(unittest.TestCase):
                 return message
         self.fail(f"No {kind}")
 
+    def test_private_group_over_verified_tls(self):
+        alice, bob, eve = (self.client(name) for name in ("alice", "bob", "eve"))
+        alice.create_group("study", ["bob"])
+        self.wait(lambda: "study" in alice.groups and "study" in bob.groups)
+        self.assertEqual(eve.groups, {})
+        bob.drain_notices()
+        eve.drain_notices()
+        alice.send_group("study", "hello over TLS")
+        received = []
+
+        def group_arrived():
+            received.extend(bob.drain_notices())
+            return any(n.text == "[#study] alice: hello over TLS" for n in received)
+
+        self.wait(group_arrived)
+        self.assertFalse(any("hello over TLS" in n.text for n in eve.drain_notices()))
+        eve._chat("CHAT_GROUP", {"group": "study", "text": "intrusion"}, "intrusion")
+        errors = []
+
+        def rejected():
+            errors.extend(eve.drain_notices())
+            return any(n.kind == "error" and n.text == "GROUP_NOT_FOUND" for n in errors)
+
+        self.wait(rejected)
+        self.assertIs(eve.state, ClientState.AUTHENTICATED)
+
+    def test_group_management_owner_permissions_and_revocation_over_tls(self):
+        alice, bob, eve = (self.client(name) for name in ("alice", "bob", "eve"))
+        alice.create_group("study", ["bob"])
+        self.wait(lambda: bob.group_owners.get("study") == "alice")
+        with bob._lock:
+            forged = bob._new_request("GROUP_MANAGE", {"group": "study", "action": "delete"})
+        bob._send(forged)
+        errors = []
+
+        def owner_only():
+            errors.extend(bob.drain_notices())
+            return any(n.kind == "error" and n.text == "NOT_AUTHORIZED" for n in errors)
+
+        self.wait(owner_only)
+        self.assertIn("study", alice.groups)
+        alice.manage_group("study", "add", "eve")
+        self.wait(lambda: eve.group_owners.get("study") == "alice")
+        alice.manage_group("study", "kick", "bob")
+        self.wait(lambda: "study" not in bob.groups and "bob" not in alice.groups["study"])
+        with self.assertRaises(ValueError):
+            bob.send_group("study", "denied")
+        with self.assertRaises(ValueError):
+            bob.offer_group_file("not-read.txt", "study")
+        eve.manage_group("study", "leave")
+        self.wait(lambda: "study" not in eve.groups and alice.groups.get("study") == ["alice"])
+        with self.assertRaises(ValueError):
+            alice.manage_group("study", "leave")
+        alice.manage_group("study", "delete")
+        self.wait(lambda: "study" not in alice.groups)
+        self.assertTrue(all(c.state == ClientState.AUTHENTICATED for c in (alice, bob, eve)))
+        self.assertEqual(self.accounts.list_groups("alice"), [])
+
+    def test_group_file_has_independent_consent_and_verified_copies(self):
+        alice, bob, carol, eve = (self.client(name) for name in ("alice", "bob", "carol", "eve"))
+        self.accounts.create_account("offline", "synthetic-password", status="active")
+        alice.create_group("study", ["bob", "carol", "offline"])
+        self.wait(lambda: "study" in alice.groups and "study" in bob.groups and "study" in carol.groups)
+        self.wait(lambda: all(name in alice.online_users for name in ("bob", "carol", "eve")))
+        source = Path(self.tmp.name) / "group notes.bin"
+        contents = bytes(range(256)) * 1024 + b"partial chunk"
+        source.write_bytes(contents)
+        offered = alice.offer_group_file(source, "study")
+        self.assertEqual(set(offered), {"bob", "carol"})
+        self.wait(lambda: offered["bob"] in bob.files.incoming and offered["carol"] in carol.files.incoming)
+        self.assertEqual(eve.files.snapshot(), [])
+        self.assertTrue(all(entry.sent_bytes == 0 for entry in alice.files.outgoing.values()))
+        bob.files.accept(offered["bob"])
+        carol.files.reject(offered["carol"])
+        self.wait(lambda: all(tid in alice.files.terminal for tid in offered.values()))
+        self.assertEqual((Path(self.tmp.name) / "bob" / source.name).read_bytes(), contents)
+        self.assertFalse((Path(self.tmp.name) / "carol" / source.name).exists())
+        self.assertEqual(alice.state, ClientState.AUTHENTICATED)
+        second = alice.offer_group_file(source, "study")
+        self.wait(lambda: second["bob"] in bob.files.incoming and second["carol"] in carol.files.incoming)
+        bob.files.accept(second["bob"])
+        carol.files.accept(second["carol"])
+        self.wait(lambda: all(tid in alice.files.terminal for tid in second.values()))
+        self.assertEqual((Path(self.tmp.name) / "bob" / "group notes (1).bin").read_bytes(), contents)
+        self.assertEqual((Path(self.tmp.name) / "carol" / source.name).read_bytes(), contents)
+        self.assertTrue(any("skipped offline members: offline" in n.text for n in alice.drain_notices()))
+
     def test_twenty_authenticated_clients_chat_during_file_transfer(self):
         for i in range(20):
             self.accounts.create_account(f"user{i}", "synthetic-password", status="active")

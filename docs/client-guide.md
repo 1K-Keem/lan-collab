@@ -191,8 +191,9 @@ or ANSI color sequences.
   suggestion; Enter on a complete command executes it. Clicking a suggestion completes it.
 - `/msg` and `/send` suggest online usernames. `/history` suggests only `people`
   and `sessions`; choose a person inside the full-screen picker.
-- Plain text sends global chat outside Direct. On a Direct conversation page, plain
-  text goes only to the selected peer; the Direct inbox never sends to global chat.
+- Plain text sends global chat outside Direct and Groups. On a Direct conversation page,
+  it goes only to the selected peer; in Groups it goes only to the selected group.
+  Neither an unselected group nor the Direct inbox sends to global chat.
 - Left/Right, Home/End, Backspace and Delete edit the input. Ctrl+U clears it, Ctrl+W
   deletes the word before the cursor.
 - Up/Down recall submitted input when the suggestion menu is closed; Esc dismisses the menu.
@@ -227,7 +228,7 @@ remains available without `--tui`.
 
 ### Direct conversations
 
-Select **3:Direct** to browse people you have exchanged private messages with, most
+Select **4:Direct** to browse people you have exchanged private messages with, most
 recent first. Click a conversation or select it with Up/Down and Enter to open its
 message page. Type and Enter to send directly to that peer; no `/msg` prefix is needed.
 Use the Back control or Esc to return to the conversation list. To start with someone
@@ -348,6 +349,53 @@ the OS account and disk. Files are created with restrictive permissions on POSIX
 
 ## Dashboard and convenience commands
 
+### Private groups
+
+Use `/group create study bob carol` to create a group with yourself, Bob and Carol.
+Names are case-sensitive, with 1-32 letters, digits, underscores, dots or hyphens.
+Members must have approved accounts, but may be offline when the group is created.
+Run `/groups` to refresh your list, then `/group open study` to select one.
+In the TUI, click a group under **GROUPS**, or select **3:Groups** (Alt+3/F3).
+Plain text in that view goes only to the selected group; without a selection it is
+rejected rather than broadcast globally. `/gmsg study Hello` works in either interface.
+Drafts are separate for each group and for global/private chat.
+
+The creator is the group owner, shown by `/groups` and in the opened group's header.
+Only that account may use `/group add study USER`, `/group kick study USER`, or
+`/group delete study`; global account admins have no extra group privileges.
+Other members may use `/group leave study`. The owner cannot leave or kick themselves;
+they must delete the group instead. The owner can remain alone after others leave.
+On wide TUI screens, **[Manage]** opens owner actions; other members see **[Leave]**.
+Delete and Leave require confirmation in the TUI. Typed commands act immediately.
+When removed or deleted, the selected group is cleared without switching to global chat.
+
+Groups and ownership persist in the server's account database.
+There are at most 128 groups per server and 32 members per group. Messages reach online
+members only and are saved in each participant's local history, if enabled.
+Send a file with `/sendgroup study "path/to/notes.pdf"` or `/send #study PATH`.
+On wide TUI screens, the opened group's **[Send file]** button opens the file picker.
+Each other online member receives an ordinary file offer and chooses Accept/Reject
+independently. `/transfers` shows a separate ID and progress for each recipient;
+`/cancel ID` cancels only that transfer. Offline members are skipped and reported;
+the server does not store a copy for them. One rejection/failure does not cancel other
+recipients. Each transfer retains the 50 MiB limit and receiver SHA-256 verification.
+The server checks current sender/recipient membership on each new group file offer.
+Already-admitted transfers remain independent; leaving/kicking/deleting does not erase
+local history or downloaded files, or automatically cancel those existing transfers.
+Update clients and server together before using groups.
+
+Older versions did not store the creator. Their groups keep their members but have an
+unknown owner; management is blocked rather than granting ownership to an arbitrary member.
+For these legacy groups only, the server operator must verify the actual creator, stop
+the server and back up `accounts.db`, then run:
+
+```text
+python -m lancollab.server --recover-group-owner study alice
+```
+
+Use `--db PATH` if the database is elsewhere, then restart the server. Recovery requires
+an approved current member and refuses to overwrite an existing owner.
+
 The TUI header shows the app name, your username, and how many other people are online.
 A new-message indicator appears only while you are scrolled up. The header also shows the
 server's connected IP:port, TCP/TLS state and TCP RTT; UDP probe loss stays above the footer.
@@ -381,7 +429,7 @@ not success until receiver verification completes.
 
 Tab completes `@username`, pending usernames after `/approve` and `/reject-user`, and
 transfer short IDs after file actions. Ambiguous IDs are rejected; enter more characters.
-Category tabs can be clicked or selected with Alt+1/2/3/4, so ordinary numeric chat input
+Category tabs can be clicked or selected with Alt+1/2/3/4/5, so ordinary numeric chat input
 still works. F3 cycles filters. F1 opens help; F4 probes TCP and UDP; F5 lists transfers;
 F6 accepts the sole pending offer (asks for an ID through an error if there are several).
 Ctrl+W deletes the previous word, Ctrl+K deletes to the end, and Ctrl+L clears the display.

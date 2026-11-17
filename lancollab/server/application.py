@@ -116,10 +116,18 @@ class CollabServer:
             self._reply(ident, "AUTH_RESULT", rid, payload),
             self._user_list(ident),
         ]
+        if self.accounts.list_groups(username):
+            events.append(self._group_list(ident))
         for old_id in closed:
             events += self.transfer_events(self.transfers.close_session(old_id, "SESSION_REPLACED"))
         events += self._drain_queue(ident)
         return events + self._presence(ident, "online", exclude=ident.session_id)
+
+    def _group_list(self, session, request_id=None):
+        return self._reply(
+            session, "GROUP_LIST", request_id or uuid.uuid4().hex,
+            {"groups": self.accounts.list_groups(session.username)},
+        )
 
     def _store_offline(self, sender: str | None, payload: dict) -> bool:
         """Store a private message for an offline recipient.
@@ -314,6 +322,41 @@ class CollabServer:
                 return [self._error(session, rid, "NOT_AUTHENTICATED")]
             return [self._reply(session, "PONG", rid, {"nonce": payload["nonce"]})]
 
+        if kind in {"GROUP_CREATE", "GROUP_MANAGE", "GROUP_LIST_REQUEST", "CHAT_GROUP"}:
+            if authed is None:
+                return [self._error(session, rid, "NOT_AUTHENTICATED")]
+            if kind == "GROUP_LIST_REQUEST":
+                return [self._group_list(authed, rid)]
+            if kind in {"GROUP_CREATE", "GROUP_MANAGE"}:
+                try:
+                    if kind == "GROUP_CREATE":
+                        self.accounts.create_group(payload["group"], payload["members"], authed.username)
+                        affected = set(payload["members"])
+                    else:
+                        affected = self.accounts.manage_group(
+                            payload["group"], authed.username, payload["action"], payload.get("username")
+                        )
+                except AccountError as error:
+                    return [self._error(session, rid, error.code)]
+                return [
+                    self._group_list(member, rid if member.session_id == authed.session_id else None)
+                    for member in self._sessions.values()
+                    if member.username in affected
+                ]
+            group = next(
+                (g for g in self.accounts.list_groups(authed.username) if g["name"] == payload["group"]),
+                None,
+            )
+            if group is None:
+                return [self._error(session, rid, "GROUP_NOT_FOUND")]
+            events = [
+                self._reply(target, "CHAT_GROUP", uuid.uuid4().hex,
+                            {"group": group["name"], "from": authed.username, "text": payload["text"]})
+                for target in self._sessions.values()
+                if target.username in group["members"] and target.session_id != authed.session_id
+            ]
+            return events + [self._reply(authed, "CHAT_ACK", rid, {"status": "queued"})]
+
         if kind in ("CHAT_GLOBAL", "CHAT_PRIVATE"):
             if authed is None:
                 return [self._error(session, rid, "NOT_AUTHENTICATED")]
@@ -357,6 +400,13 @@ class CollabServer:
             if authed is None:
                 return [self._error(session, rid, "NOT_AUTHENTICATED")]
             if kind == "FILE_OFFER":
+                if "group" in payload:
+                    group = next(
+                        (g for g in self.accounts.list_groups(authed.username)
+                         if g["name"] == payload["group"]), None,
+                    )
+                    if group is None or payload["to"] not in group["members"]:
+                        return [self._error(session, rid, "GROUP_NOT_FOUND")]
                 target_id = self._by_username.get(payload["to"])
                 if target_id is None:
                     return [self._error(session, rid, "USER_OFFLINE")]

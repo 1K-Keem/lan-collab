@@ -34,10 +34,14 @@ COMMANDS = (
     Suggestion("/ping", "", "Measure encrypted TCP latency"),
     Suggestion("/whoami", "", "Account and connection details"),
     Suggestion("/clear", "", "Clear the conversation display"),
-    Suggestion("/filter", "CATEGORY", "all, global, dm or files"),
+    Suggestion("/filter", "CATEGORY", "all, global, dm, files or groups"),
     Suggestion("/all", "TEXT", "Message everyone online"),
     Suggestion("/msg", "USER TEXT", "Send a private message"),
+    Suggestion("/groups", "", "List your private groups"),
+    Suggestion("/group", "ACTION NAME [USER...]", "create, open, add, kick, delete or leave"),
+    Suggestion("/gmsg", "NAME TEXT", "Send a group message"),
     Suggestion("/send", "USER PATH", "Offer a file to someone"),
+    Suggestion("/sendgroup", "NAME PATH", "Offer a file to online group members"),
     Suggestion("/users", "", "See who is online"),
     Suggestion(
         "/history",
@@ -109,10 +113,12 @@ def suggestions(text, users=(), role="member", pending=(), transfers=()):
     return []
 
 
-FILTERS = ("all", "global", "dm", "files")
+FILTERS = ("all", "global", "groups", "dm", "files")
 
 
 def notice_category(message):
+    if chat_group(message) is not None:
+        return "groups"
     if message.startswith(("[DM]", "[chat] [CHAT_PRIVATE]", "[CHAT_PRIVATE]")):
         return "dm"
     if message.startswith(("[All]", "[chat] [CHAT_GLOBAL]", "[CHAT_GLOBAL]")):
@@ -173,7 +179,11 @@ def chat_sender(message):
 
     Notices carry a ``[chat] `` prefix before the ``[CHAT_*]`` part.
     """
-    match = re.match(r"^(?:\[chat\] )?\[(?:All|DM|CHAT_GLOBAL|CHAT_PRIVATE)\] ([^:]+):", message)
+    match = re.match(r"^(?:\[chat\] )?\[(?:All|DM|CHAT_GLOBAL|CHAT_PRIVATE|#[A-Za-z0-9_.-]{1,32})\] ([^:]+):", message)
+    return match.group(1) if match else None
+
+def chat_group(message):
+    match = re.match(r"^(?:\[chat\] )?\[#([A-Za-z0-9_.-]{1,32})\] ", message)
     return match.group(1) if match else None
 
 
@@ -218,7 +228,7 @@ def composer_guidance(text):
     head, _, rest = text.partition(" ")
     argument = rest.strip()
     if argument and " " not in argument:
-        if head == "/send":
+        if head in {"/send", "/sendgroup"}:
             return "File: type or paste a path (quote spaces), then Enter"
         if head == "/msg":
             return "Message: type your private message, then Enter"
@@ -405,13 +415,15 @@ class HistoryBrowser:
                     self._rows.extend(separator)
                     self._row_messages.extend([None] * len(separator))
                 sender = f"you -> {peer}" if kind == "CHAT_PRIVATE" and not self.peer else "you"
+                if kind == "CHAT_GROUP" and direction != "sent":
+                    sender, _, text = text.partition(": ")
                 card = [
                     (line, style)
                     for _, line, style in message_rows(
                         display_time(timestamp),
-                        sender if direction == "sent" else peer,
+                        sender if direction == "sent" or kind == "CHAT_GROUP" else peer,
                         text,
-                        "DM" if kind == "CHAT_PRIVATE" else "All",
+                        peer if kind == "CHAT_GROUP" else "DM" if kind == "CHAT_PRIVATE" else "All",
                         width,
                         self.session.client.username,
                     )
@@ -791,13 +803,14 @@ def run_tui(session):
             Direct drafts are keyed by peer, so text typed for one conversation
             can never become a global message after a tab or peer switch.
             """
-            nonlocal context_key, selection, dismissed
+            nonlocal context_key, selection, dismissed, scroll
             if key == context_key:
                 return
             drafts[context_key] = composer.text
             context_key = key
             composer.replace(drafts.get(key, ""))
             selection, dismissed = 0, False
+            scroll = 0
 
         def reset_direct_page():
             nonlocal direct_peer, direct_page_rows, direct_page_revision
@@ -892,6 +905,22 @@ def run_tui(session):
             if action[0] == "command":
                 menu = None
                 return run_command(action[1])
+            if action[0] == "group_menu":
+                menu = ["group", action[1], 0, None, None]
+                return True
+            if action[0] == "confirm_group":
+                menu = ["group_confirm", (action[1], action[2]), 1, None, None]
+                return True
+            if action[0] == "group_add":
+                menu = None
+                if composer.text:
+                    add("Finish or clear your draft before adding a member.", "error")
+                else:
+                    composer.replace(f"/group add {action[1]} ")
+                return True
+            if action[0] == "close_menu":
+                menu = None
+                return True
             if action[0] == "direct_peer":
                 menu = None
                 return open_direct(action[1])
@@ -910,17 +939,20 @@ def run_tui(session):
                 finally:
                     window.clearok(True)
                 return True
-            if action[0] == "send_file":
+            if action[0] in {"send_file", "send_group_file"}:
                 menu = None
                 try:
                     path = native_picker()
                     if path:
-                        with session.client._lock:
-                            online = action[1] in session.client.online_users
-                        if not online:
-                            add("Recipient went offline; no file sent.", "error")
+                        if action[0] == "send_group_file":
+                            session.execute(Command("/sendgroup", (action[1], path)))
                         else:
-                            session.execute(Command("/send", (action[1], path)))
+                            with session.client._lock:
+                                online = action[1] in session.client.online_users
+                            if not online:
+                                add("Recipient went offline; no file sent.", "error")
+                            else:
+                                session.execute(Command("/send", (action[1], path)))
                 except (RuntimeError, OSError) as error:
                     add(str(error), "error")
                 finally:
@@ -996,8 +1028,12 @@ def run_tui(session):
                     if (
                         scroll
                         and incoming
-                        and category in {"global", "dm"}
+                        and category in {"global", "dm", "groups"}
                         and session.display_filter in {"all", category}
+                        and (
+                            category != "groups" or session.display_filter == "all"
+                            or chat_group(notice) == getattr(session, "current_group", None)
+                        )
                     ):
                         unseen += 1
                     if (
@@ -1018,6 +1054,8 @@ def run_tui(session):
                 direct_flash = None
                 scroll = 0
                 switch_context("dm-inbox" if last_filter == "dm" else "main")
+            if session.display_filter == "groups":
+                switch_context(f"group:{getattr(session, 'current_group', None)}")
             if copy_picker is not None:
                 height, width = window.getmaxyx()
                 window.erase()
@@ -1287,6 +1325,9 @@ def run_tui(session):
                 users = sorted(name for name in client.online_users if name != username)
                 pending = [item["username"] for item in client.pending_users]
                 reply_target = client.reply_target
+                groups = dict(getattr(client, "groups", {}))
+                group_owners = dict(getattr(client, "group_owners", {}))
+            current_group = getattr(session, "current_group", None)
             transfers = client.files.snapshot()
             options = (
                 suggestions(composer.text, users, role, pending, transfers) if not dismissed else []
@@ -1315,6 +1356,10 @@ def run_tui(session):
                 direct_unseen = 0
             new_count = direct_unseen if direct_peer is not None else unseen if scroll else 0
             title = f"LAN-COLLAB · {username or 'disconnected'} · {len(users)} online"
+            if session.display_filter == "groups" and current_group:
+                title += f" · #{current_group}"
+                if group_owners.get(current_group) == username:
+                    title += " (owner)"
             if new_count:
                 title += f" · ↓ {new_count} new message{'s' if new_count != 1 else ''}"
             write(0, 2, title, width - 4, "accent")
@@ -1328,9 +1373,12 @@ def run_tui(session):
             tabs = (
                 ("all", "1:All"),
                 ("global", "2:Global"),
-                ("dm", "3:Direct"),
-                ("files", "4:Files"),
+                ("groups", "3:Groups"),
+                ("dm", "4:Direct"),
+                ("files", "5:Files"),
             )
+            if width < 58:
+                tabs = tuple((name, label if name == "groups" else label[:3]) for name, label in tabs)
             hits = []
             copy_entries = []
             row_copy_indices = []
@@ -1358,6 +1406,23 @@ def run_tui(session):
                 )
                 hits.append((3, tab_x, tab_x + len(label), ("filter", category)))
                 tab_x += len(label) + 2
+            if (
+                session.display_filter == "groups" and current_group in groups
+                and tab_x + 11 <= width - sidebar - 2
+            ):
+                write(3, tab_x, "[Send file]", 11, "accent")
+                hits.append((3, tab_x, tab_x + 11, ("send_group_file", current_group)))
+                tab_x += 12
+            owner = group_owners.get(current_group)
+            if session.display_filter == "groups" and current_group in groups and owner is not None:
+                label = "[Manage]" if owner == username else "[Leave]"
+                action = (
+                    ("group_menu", current_group) if owner == username
+                    else ("confirm_group", "leave", current_group)
+                )
+                if tab_x + len(label) <= width - sidebar - 2:
+                    write(3, tab_x, label, len(label), "accent")
+                    hits.append((3, tab_x, tab_x + len(label), action))
             if session.display_filter == "dm":
                 refresh_direct()
                 if direct_peer is None:
@@ -1451,12 +1516,16 @@ def run_tui(session):
                     if (
                         session.display_filter != "all"
                         and notice_category(message) != session.display_filter
+                        and not (session.display_filter == "groups" and kind in {"error", "file"})
                     ):
+                        continue
+                    group = chat_group(message)
+                    if session.display_filter == "groups" and group is not None and group != current_group:
                         continue
                     sender = chat_sender(message)
                     if sender is not None:
                         text = message.split(":", 1)[1].lstrip()
-                        channel = "DM" if notice_category(message) == "dm" else "All"
+                        channel = f"#{group}" if group else "DM" if notice_category(message) == "dm" else "All"
                         append_card(
                             rows,
                             message_rows(
@@ -1478,6 +1547,16 @@ def run_tui(session):
                             row_copy_indices.append(None)
                 if not rows and session.display_filter == "files":
                     rows = [("", "No files shared yet. Choose a person to send a file.", "muted")]
+                if not rows and session.display_filter == "groups":
+                    hint = (
+                        f"No messages in #{current_group} yet."
+                        if current_group
+                        else "Use /group create NAME USER... or /group open NAME."
+                    )
+                    rows = [("", text, "muted") for text in wrap_cells(hint, chat_width)]
+                    if current_group is None:
+                        rows += [("", f"#{name} ({len(members)} members)", "accent")
+                                 for name, members in groups.items()]
                 scroll = min(scroll, max(0, len(rows) - capacity))
                 if scroll == 0:
                     unseen = 0
@@ -1505,6 +1584,9 @@ def run_tui(session):
                     ("● " + name, "success", "user", name)
                     for name in users[: max(1, (dock_y - 12) // 2)]
                 ]
+                if groups:
+                    sidebar_rows.append(("GROUPS", "accent", None, None))
+                    sidebar_rows += [(f"#{name}", "accent", "group", name) for name in list(groups)[:4]]
                 if dock_rows:
                     sidebar_rows += [("FILES", "accent", None, None)]
                 for row in dock_rows[:2]:
@@ -1543,9 +1625,11 @@ def run_tui(session):
                     visible_label = fit_cells(text, sidebar - 3)
                     write(y, x + 1, visible_label, sidebar - 3, style)
                     if name is not None and valid_username(name):
-                        hits.append(
-                            (y, x + 1, x + 1 + cell_width(visible_label), ("person", kind, name))
+                        action = (
+                            ("command", f"/group open {name}") if kind == "group"
+                            else ("person", kind, name)
                         )
+                        hits.append((y, x + 1, x + 1 + cell_width(visible_label), action))
             # The dock always keeps rows for offers: Accept/Reject stay
             # clickable even when the sidebar has more people than fits.
             for y, row in enumerate(dock_rows[:dock_height], dock_y):
@@ -1597,6 +1681,9 @@ def run_tui(session):
                 offset += 1
             visible = composer.text[offset:]
             placeholder = (
+                f"Message #{current_group}" if session.display_filter == "groups" and current_group
+                else "Use /group open NAME" if session.display_filter == "groups"
+                else
                 f"Message {direct_peer} privately, or / for commands"
                 if direct_peer is not None
                 else "Open a conversation, or / for commands"
@@ -1650,6 +1737,25 @@ def run_tui(session):
                         ("Direct message", ("direct_peer", target)),
                         ("Send file", ("send_file", target)),
                     ]
+                elif kind == "group" and target in groups and group_owners.get(target) == username:
+                    entries = [
+                        ("Add member...", ("group_add", target)),
+                        ("Delete group...", ("confirm_group", "delete", target)),
+                    ]
+                    entries += [
+                        (f"Kick {member}", ("command", f"/group kick {target} {member}"))
+                        for member in groups[target] if member != username
+                    ]
+                elif kind == "group_confirm":
+                    verb, name = target
+                    owner = group_owners.get(name)
+                    if name in groups and owner is not None and (
+                        (verb == "delete" and owner == username) or (verb == "leave" and owner != username)
+                    ):
+                        entries = [
+                            (f"Confirm {verb} #{name}", ("command", f"/group {verb} {name}")),
+                            ("Cancel", ("close_menu",)),
+                        ]
                 elif (
                     kind == "pending"
                     and role == "admin"
@@ -1665,7 +1771,8 @@ def run_tui(session):
             if menu is not None:
                 menu[2] = min(menu[2], len(entries) - 1)
                 title = (
-                    "People"
+                    "Confirm group action" if menu[0] == "group_confirm"
+                    else "People"
                     if menu[0] == "people"
                     else f"Pending: {menu[1]}"
                     if menu[0] == "pending"
@@ -1779,7 +1886,7 @@ def run_tui(session):
                 window.timeout(30)
                 try:
                     alternate = window.get_wch()
-                    if isinstance(alternate, str) and alternate in "1234":
+                    if isinstance(alternate, str) and alternate in "12345":
                         session.display_filter = FILTERS[int(alternate) - 1]
                         scroll = 0
                     elif isinstance(alternate, str) and alternate.isprintable():
@@ -1860,7 +1967,13 @@ def run_tui(session):
                                 add(str(error), "error")
                         else:
                             if not line.startswith(("/", "@")):
+                                if session.display_filter == "groups" and current_group is None:
+                                    add("Choose /group open NAME before sending.", "error")
+                                    continue
                                 line = (
+                                    f"/gmsg {current_group} {line}"
+                                    if session.display_filter == "groups"
+                                    else
                                     f"/msg {direct_peer} {line}"
                                     if direct_peer is not None
                                     else "/all " + line
@@ -1982,7 +2095,7 @@ def run_tui(session):
                             elif hit[0] == "filter":
                                 session.display_filter = hit[1]
                                 scroll = 0
-                            elif hit[0] in {"command", "accept_file"}:
+                            elif hit[0] in {"command", "accept_file", "send_group_file", "group_menu", "confirm_group"}:
                                 if not perform(hit):
                                     return
                             elif hit[0] == "suggestion" and 0 <= hit[1] < len(options):

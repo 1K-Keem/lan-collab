@@ -49,6 +49,61 @@ Notation: C→S = client request, S→C = server response/event; `?` means optio
 
 **Strict schema:** no unknown payload keys; username, filename, size, nonnegative sequence/offset, hash and valid JSON types must be checked by the codec/server handlers. A schema-valid message can still be rejected for unauthorized sender, invalid state or capacity. `FILE_ACK` and `FILE_RESULT` forwarded by server get new event `request_id` and are correlated with `transfer_id`.
 
+### Private chat groups
+
+Update server and clients together when enabling groups. The version-1 envelope and
+existing chat/file messages are unchanged; older clients do not understand group events.
+
+| Message | Direction | Payload |
+| --- | --- | --- |
+| `GROUP_CREATE` | C→S | `group:str, members:[username]` |
+| `GROUP_MANAGE` | C→S | `group:str, action:"add"\|"kick"\|"delete"\|"leave"`; `username:str` only for add/kick |
+| `GROUP_LIST_REQUEST` | C→S | `{}` |
+| `GROUP_LIST` | S→C | `groups:[{name:str, members:[username], owner?:username}]` |
+| `CHAT_GROUP` | C→S | `group:str, text:str` |
+| `CHAT_GROUP` | S→C | `group:str, from:str, text:str` |
+
+Names use the username syntax and are unique across the server. Membership includes
+the creator and 2-32 distinct, approved accounts total; offline members are allowed.
+SQLite stores at most 128 groups. The creator, derived from the authenticated session,
+is the persistent owner. Only this account can add approved members, kick members or
+delete the group, irrespective of global admin role. Other members can leave.
+The owner cannot leave or kick themselves; deletion is explicit. A group can therefore
+have one remaining member (the owner), although creation still requires at least two.
+Only authenticated members can send to a group or see it in their group list.
+The server derives `from` from the current authenticated session and forwards only to
+online members, excluding the sender. `CHAT_ACK(status="queued")` confirms queue admission,
+not delivery/read. Group messages are never queued for offline users.
+
+A successful create replies to the creator with a correlated `GROUP_LIST`; other online
+members receive fresh-ID snapshots. Login restores the member's groups, if any.
+`GROUP_LIST_REQUEST` always returns a correlated snapshot, including an empty list.
+A successful management request sends a correlated snapshot to the actor and fresh-ID
+snapshots to all other affected online members, including removed/added members.
+The database mutation and snapshot admission are serialized with chat routing.
+Clients clear a removed selection without falling back to global-message routing.
+Unknown and unauthorized group sends both return `GROUP_NOT_FOUND`; other group errors
+are `GROUP_EXISTS`, `GROUP_LIMIT_REACHED`, and `INVALID_GROUP_MEMBER`.
+Management also uses `NOT_AUTHORIZED`, `GROUP_OWNER_CANNOT_LEAVE`, and `GROUP_OWNER_UNKNOWN`.
+Legacy rows without a recorded creator omit `owner`; never infer ownership from member
+order. Management is denied until the local server operator explicitly recovers the
+verified creator with `--recover-group-owner GROUP USER`. Existing owners cannot be replaced.
+Group membership survives disconnect, takeover and server restart. Existing queue bounds,
+request replay protection and chat byte limits apply.
+
+Group file sending is client-side fan-out using the existing `FILE_OFFER` protocol,
+not a new multicast wire message. The sender takes a membership/presence snapshot,
+excludes itself, reports offline members and offers separately to each online member.
+Group-originated C→S `FILE_OFFER` includes optional `group:str`; the server verifies both
+participants against current membership before admitting it, not the client's cached list.
+Each offer has its own UUID, receiver consent, ACK window, progress, SHA-256 result
+and cancellation. Recipients see ordinary incoming file offers from the sender.
+The server applies the existing one-to-one authorization, recipient-busy, capacity
+and timeout rules to each transfer. A disconnect after the snapshot can reject one
+offer asynchronously without affecting the others. No server file storage or offline
+file delivery is added. Previously admitted offers/transfers continue independently
+after a membership change or deletion; local history and downloaded files are not erased.
+
 ## 3. Authentication and sessions
 
 - **Registration and admin approval (implemented).** A client self-registers with `REGISTER_REQUEST`; the account starts `pending` and cannot log in until an admin approves it (`PENDING_USERS_REQUEST` / `ACCOUNT_REVIEW_REQUEST` from an admin client, or the server CLI). The first admin is created on the server machine: `python -m lancollab.server --add-admin admin`. Passwords are stored as scrypt hashes with a per-account salt in SQLite (`accounts.db`, never committed).

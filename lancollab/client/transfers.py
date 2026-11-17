@@ -195,10 +195,12 @@ class TransferManager:
         ):
             raise TransferError("Transfer UUID already used in this session")
 
-    def offer(self, path: str | Path, recipient: str) -> str:
+    def offer(self, path: str | Path, recipient: str, *, group: str | None = None) -> str:
         """Hash file locally before advertising; stream data only after consent."""
         if not isinstance(recipient, str) or _NAME.fullmatch(recipient) is None:
             raise TransferError("Invalid recipient")
+        if group is not None and (not isinstance(group, str) or _NAME.fullmatch(group) is None):
+            raise TransferError("Invalid group")
         file_path = Path(path)
         checked_filename(file_path.name)
         if not file_path.is_file():
@@ -226,6 +228,7 @@ class TransferManager:
                     "name": file_path.name,
                     "size": size,
                     "sha256": digest.hexdigest(),
+                    **({"group": group} if group is not None else {}),
                 },
             )
         except Exception:

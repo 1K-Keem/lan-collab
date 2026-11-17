@@ -13,6 +13,8 @@ MESSAGE_FIELDS: dict[str, dict[str, dict[str, str]]] = json.loads(
 )
 
 FIELD_LIMITS = {
+    "max_groups": 128,
+    "max_group_members": 32,
     "json_body_bytes": 262_144,
     "file_chunk_bytes": 16 * 1024,
     "file_size_bytes": 50 * 1024 * 1024,

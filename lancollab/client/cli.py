@@ -32,7 +32,9 @@ _MIN_PASSWORD_LEN = 8  # Must match the server's account policy.
 
 _HELP = (
     "/help, /users, /status, /history [USER|people|sessions|show ID [USER]], /all TEXT, /msg USER TEXT, "
-    "/send USER PATH, /accept [ID] [PATH], /reject ID, /cancel ID, "
+    "/groups, /group create NAME USER..., /group open NAME, /group delete|leave NAME, "
+    "/group add|kick NAME USER, /gmsg NAME TEXT, "
+    "/send USER PATH, /sendgroup NAME PATH, /accept [ID] [PATH], /reject ID, /cancel ID, "
     "/pending, /approve USER, /reject-user USER, /net, /quit, /logout, "
     "/reply TEXT, /transfers, /files, /search TEXT, /ping, /whoami, /clear, /filter CATEGORY"
 )
@@ -44,6 +46,15 @@ _DETAILED_HELP = (
     "ID = file offer or saved session ID; [USER] = optional username.",
     "",
     "CHAT AND PEOPLE",
+    "/group create NAME USER... — Create a private group; you are included automatically.",
+    "  Example: /group create study bob carol. All members must have approved accounts.",
+    "/groups — Refresh and list your groups and their members.",
+    "/group open NAME — Select a group. In the TUI, plain text then goes only to that group.",
+    "/group add NAME USER, /group kick NAME USER — Only the creator/group owner can change members.",
+    "/group delete NAME — Only the group owner can delete a group.",
+    "/group leave NAME — Leave a group. The owner must delete it instead of leaving.",
+    "/gmsg NAME TEXT — Send to online members of one of your groups.",
+    "  Groups survive server restarts. Group messages are live-only, not queued offline.",
     "/all TEXT — Send a global message to everyone else online.",
     "  Example: /all Study group starts at 7 pm",
     "/msg USER TEXT — Send a private message; delivered now if the user is online, stored for their next login if not.",
@@ -60,6 +71,10 @@ _DETAILED_HELP = (
     "FILES",
     "/send USER PATH — Offer a local file up to 50 MiB; the recipient must accept.",
     '  Example: /send bob "notes/chapter 3.pdf"',
+    "/sendgroup NAME PATH — Offer a file to each other online group member.",
+    '  Example: /sendgroup study "notes/chapter 3.pdf"; /send #study PATH also works.',
+    "  Each recipient accepts/rejects separately; offline members are skipped and reported.",
+    "  Use /transfers for individual IDs/progress and /cancel ID to cancel one recipient.",
     "/accept [ID] [PATH] — Accept a file; optionally choose its destination folder.",
     '  Example: /accept 123e4567 "~/Documents/Study notes". --dir PATH also works.',
     '  One pending offer: /accept --dir "~/Downloads". Without a folder, use the default.',
@@ -117,17 +132,18 @@ _DETAILED_HELP += (
     "/ping — Check connection latency. Use /net for network quality.",
     "/whoami — Show your account, role, server and downloads directory.",
     "/clear — Clear the TUI display without deleting history.",
-    "/filter [all|global|dm|files] — Select visible TUI message categories.",
+    "/filter [all|global|dm|files|groups] — Select visible TUI message categories.",
     "F1 help; F2 sidebar; F3 cycle filter; F4 TCP+UDP probe; F5 transfers; F6 accept sole offer.",
     "DISPLAY FILTER GUIDE — the Direct tab also changes who receives plain text.",
     "  1:All — All messages and notices. /filter all",
     "  2:Global — Group chat only. /filter global",
-    "  3:Direct — Inbox of everyone you have DMed; click a peer to read the full transcript. /filter dm",
-    "  4:Files — File-transfer notices only. /filter files",
-    "  Click a tab, use Alt+1/2/3/4, or press F3 to cycle filters.",
-    "  Typing 1, 2, 3 or 4 alone is normal message input, not a filter shortcut.",
+    "  3:Groups — Open a private group with /group open NAME; plain text goes only there.",
+    "  4:Direct — Inbox of everyone you have DMed; click a peer to read the full transcript. /filter dm",
+    "  5:Files — File-transfer notices only. /filter files",
+    "  Click a tab, use Alt+1/2/3/4/5, or press F3 to cycle filters.",
+    "  Typing 1, 2, 3, 4 or 5 alone is normal message input, not a filter shortcut.",
     "  In a Direct conversation, plain text sends privately to the selected peer; Back or Esc returns to the inbox.",
-    "  Outside Direct, plain text still sends to everyone. Filters never delete history or stop incoming messages.",
+    "  Outside Direct and Groups, plain text sends to everyone. Filters never delete history or stop incoming messages.",
     "NETWORK CHECKS — manual only: /ping for TCP, /net for UDP, or F4 for both.",
     "  The TUI always shows the server, TCP/TLS state, RTT and UDP probe loss.",
     "  Not measured means no probe yet; UDP loss does not mean TCP disconnected.",
@@ -198,6 +214,7 @@ def parse_command(line: str) -> Command:
     if action in {
         "/help",
         "/users",
+        "/groups",
         "/status",
         "/net",
         "/quit",
@@ -217,9 +234,18 @@ def parse_command(line: str) -> Command:
             raise ValueError("Usage: /history [USER|people|sessions|show ID [USER]]")
         return Command(action, args)
     if action == "/filter":
-        if rest.strip() not in {"", "all", "global", "dm", "files"}:
-            raise ValueError("Usage: /filter [all|global|dm|files]")
+        if rest.strip() not in {"", "all", "global", "dm", "files", "groups"}:
+            raise ValueError("Usage: /filter [all|global|dm|files|groups]")
         return Command(action, (rest.strip() or "all",))
+    if action == "/group":
+        args = tuple(rest.split())
+        if (
+            (len(args) == 2 and args[0] in {"open", "delete", "leave"})
+            or (len(args) == 3 and args[0] in {"add", "kick"})
+            or (len(args) >= 3 and args[0] == "create")
+        ):
+            return Command(action, args)
+        raise ValueError("Usage: /group create NAME USER..., open|delete|leave NAME, add|kick NAME USER")
     if action in {"/reply", "/search"}:
         if not rest.strip():
             raise ValueError(f"Usage: {action} TEXT")
@@ -228,11 +254,12 @@ def parse_command(line: str) -> Command:
         if not rest:
             raise ValueError("Usage: /all TEXT")
         return Command(action, (rest,))
-    if action in {"/msg", "/send"}:
+    if action in {"/msg", "/send", "/sendgroup", "/gmsg"}:
         to, separator, message = rest.strip().partition(" ")
         if not separator or not message.strip():
-            raise ValueError(f"Usage: {action} USER {'TEXT' if action == '/msg' else 'PATH'}")
-        if action == "/send":
+            target = "NAME" if action in {"/gmsg", "/sendgroup"} else "USER"
+            raise ValueError(f"Usage: {action} {target} {'PATH' if action in {'/send', '/sendgroup'} else 'TEXT'}")
+        if action in {"/send", "/sendgroup"}:
             message = message.strip()
             if message.startswith('"') and message.endswith('"') and len(message) >= 2:
                 message = message[1:-1]
@@ -304,6 +331,7 @@ class ConsoleSession:
     ) -> None:
         self._udp_lock = Lock()
         self.display_filter = "all"
+        self.current_group: str | None = None
         self.clear_generation = 0
         self.output = output
         self._drain_lock = Lock()
@@ -383,6 +411,9 @@ class ConsoleSession:
     @staticmethod
     def history_message(row):
         timestamp, direction, kind, peer, text = row
+        if kind == "CHAT_GROUP":
+            sender = "you: " if direction == "sent" else ""
+            return safe_display(f"{local_time(timestamp)} [{peer}] {sender}{text}")
         channel = "DM" if kind == "CHAT_PRIVATE" else "All"
         sender = (f"you → {peer}" if channel == "DM" else "you") if direction == "sent" else peer
         return safe_display(f"{local_time(timestamp)} [{channel}] {sender}: {text}")
@@ -433,6 +464,16 @@ class ConsoleSession:
     def _drain(self) -> None:
         with self._drain_lock:
             notices = self.client.drain_notices()
+            lost_group = None
+            with self.client._lock:
+                if (
+                    self.client.state is ClientState.AUTHENTICATED
+                    and self.current_group is not None and self.current_group not in self.client.groups
+                ):
+                    lost_group = self.current_group
+                    self.current_group = None
+            if lost_group is not None:
+                self.output(f"[groups] Access ended for #{lost_group}; choose another group.")
             if notices:
                 self._clear_progress()
             for notice in notices:
@@ -584,6 +625,27 @@ class ConsoleSession:
                 if target is None:
                     raise ValueError("No DM reply target yet; use /msg USER TEXT")
                 self.client.send_private(target, command.args[0])
+            elif command.name == "/groups":
+                self.client.list_groups()
+            elif command.name == "/group":
+                if command.args[0] == "create":
+                    self.client.create_group(command.args[1], list(command.args[2:]))
+                    self.output(f"Creating #{safe_display(command.args[1])}; then use /group open NAME.")
+                elif command.args[0] in {"add", "kick", "delete", "leave"}:
+                    self.client.manage_group(
+                        command.args[1], command.args[0],
+                        command.args[2] if len(command.args) == 3 else None,
+                    )
+                else:
+                    name = command.args[1]
+                    with self.client._lock:
+                        if name not in self.client.groups:
+                            raise ValueError("Group not found; use /groups to see your groups")
+                    self.current_group = name
+                    self.display_filter = "groups"
+                    self.output(f"[groups] Opened #{name}")
+            elif command.name == "/gmsg":
+                self.client.send_group(*command.args)
             elif command.name == "/ping":
                 self.client.ping()
                 self.output("TCP/TLS probe sent; awaiting PONG…")
@@ -719,9 +781,14 @@ class ConsoleSession:
                 self.client.send_global(command.args[0])
             elif command.name == "/msg":
                 self.client.send_private(*command.args)
-            elif command.name == "/send":
-                transfer_id = self.client.offer_file(command.args[1], command.args[0])
-                self.output(f"File offered: {transfer_id} (waiting for consent)")
+            elif command.name in {"/send", "/sendgroup"}:
+                target, path = command.args
+                if command.name == "/sendgroup" or target.startswith("#"):
+                    group = target[1:] if target.startswith("#") else target
+                    self.client.offer_group_file(path, group)
+                else:
+                    transfer_id = self.client.offer_file(path, target)
+                    self.output(f"File offered: {transfer_id} (waiting for consent)")
             elif command.name == "/accept":
                 self.client.files.accept(
                     self.client.files.resolve_id(command.args[0] if command.args else "", "accept"),

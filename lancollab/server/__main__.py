@@ -60,6 +60,10 @@ def main() -> int:
     parser.add_argument("--db", type=Path, default=Path("accounts.db"))
     parser.add_argument("--add-admin", metavar="USERNAME", help="Create first admin and exit")
     parser.add_argument(
+        "--recover-group-owner", nargs=2, metavar=("GROUP", "USERNAME"),
+        help="Set the verified creator for a legacy group with unknown owner (local operator only)",
+    )
+    parser.add_argument(
         "--change-password", metavar="USERNAME", help="Change an account password and exit"
     )
     parser.add_argument(
@@ -73,6 +77,16 @@ def main() -> int:
         return _add_admin(args.db, args.add_admin)
     if args.change_password:
         return _change_password(args.db, args.change_password)
+    if args.recover_group_owner:
+        accounts = AccountService(args.db)
+        try:
+            accounts.recover_group_owner(*args.recover_group_owner)
+        except AccountError as error:
+            parser.exit(1, f"Cannot recover group owner: {error.code}\n")
+        finally:
+            accounts.close()
+        print("Legacy group owner recorded; existing owners are never overwritten.")
+        return 0
     accounts = tokens = queue = server = None
     try:
         if (args.cert, args.key) == (

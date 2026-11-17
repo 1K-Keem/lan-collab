@@ -21,6 +21,7 @@ from lancollab.client.history import HistoryStore
 
 from lancollab.common.contracts import Envelope, MessageTransport
 from lancollab.common.codec import ProtocolError
+from lancollab.common.message_schema import FIELD_LIMITS
 from lancollab.client.transfers import TransferManager, TransferError
 
 _USERNAME = re.compile(r"[A-Za-z0-9_.-]{1,32}\Z")
@@ -97,6 +98,8 @@ class CollabClient:
         self.role: str | None = None
         self.reply_target: str | None = None
         self.last_tcp_rtt: float | None = None
+        self.groups: dict[str, list[str]] = {}
+        self.group_owners: dict[str, str | None] = {}
         # Fresh id on every successful login: quitting and coming back
         # starts a new history session instead of extending the old one.
         self.session_id: str | None = None
@@ -178,11 +181,35 @@ class CollabClient:
             self._file_requests[request.request_id] = payload["transfer_id"]
         self._send(request)
 
-    def offer_file(self, path: str | Path, recipient: str) -> str:
+    def offer_file(self, path: str | Path, recipient: str, *, group: str | None = None) -> str:
         with self._lock:
             if self.state is not ClientState.AUTHENTICATED:
                 raise RuntimeError("Authenticate before file transfer")
-        return self.files.offer(path, recipient)
+        return self.files.offer(path, recipient, group=group)
+
+    def offer_group_file(self, path: str | Path, group: str) -> dict[str, str]:
+        with self._lock:
+            self._require_authenticated("FILE_OFFER")
+            if not isinstance(group, str) or group not in self.groups:
+                raise ValueError("Group not found; use /groups to see your groups")
+            members = set(self.groups[group]) - {self.username}
+            recipients = sorted(members & self.online_users.keys())
+            offline = sorted(members - self.online_users.keys())
+        if offline:
+            self._file_notice(f"#{group}: skipped offline members: {', '.join(offline)}")
+        if not recipients:
+            raise ValueError(f"No other online members in #{group}; no file offers sent")
+        offered = {}
+        # ponytail: up to 31 independent offers; share hashing if batch preparation becomes slow.
+        for recipient in recipients:
+            try:
+                transfer_id = self.offer_file(path, recipient, group=group)
+            except (TransferError, OSError, RuntimeError) as error:
+                self._file_notice(f"#{group} -> {recipient}: not offered: {error}")
+            else:
+                offered[recipient] = transfer_id
+                self._file_notice(f"#{group} -> {recipient}: offered {transfer_id} (waiting for consent)")
+        return offered
 
     def _new_request(self, kind: str, payload: dict[str, Any]) -> Envelope:
         if self._issued_count >= _MAX_REQUESTS_PER_SESSION:
@@ -304,12 +331,66 @@ class CollabClient:
             request = self._new_request(kind, payload)
             # Remember what we sent, so CHAT_ACK can echo it back as our own
             # message (the server never echoes a message to its sender).
-            self._pending_chat[request.request_id] = (kind, text, payload.get("to"))
+            self._pending_chat[request.request_id] = (kind, text, payload.get("to", payload.get("group")))
         self._send(request)
         return request.request_id
 
     def send_global(self, text: str) -> str:
         return self._chat("CHAT_GLOBAL", {"text": text}, text)
+
+    def create_group(self, name: str, members: list[str]) -> str:
+        if not isinstance(name, str) or _USERNAME.fullmatch(name) is None:
+            raise ValueError("Group names use 1-32 letters, digits, _, . or -")
+        if (
+            not isinstance(members, list) or not members
+            or any(not isinstance(u, str) or _USERNAME.fullmatch(u) is None for u in members)
+        ):
+            raise ValueError("Choose valid member usernames")
+        with self._lock:
+            self._require_authenticated("GROUP_CREATE")
+            members = sorted(set([self.username, *members]))
+            if not 2 <= len(members) <= FIELD_LIMITS["max_group_members"]:
+                raise ValueError("A group needs 2-32 different members including you")
+            request = self._new_request("GROUP_CREATE", {"group": name, "members": members})
+        self._send(request)
+        return request.request_id
+
+    def list_groups(self) -> str:
+        with self._lock:
+            self._require_authenticated("GROUP_LIST_REQUEST")
+            request = self._new_request("GROUP_LIST_REQUEST", {})
+        self._send(request)
+        return request.request_id
+
+    def manage_group(self, name: str, action: str, username: str | None = None) -> str:
+        if (
+            not isinstance(action, str) or action not in {"add", "kick", "delete", "leave"}
+            or not isinstance(name, str) or _USERNAME.fullmatch(name) is None
+            or ((username is not None) != (action in {"add", "kick"}))
+            or (username is not None and (not isinstance(username, str) or _USERNAME.fullmatch(username) is None))
+        ):
+            raise ValueError("Invalid group management command")
+        with self._lock:
+            self._require_authenticated("GROUP_MANAGE")
+            if name not in self.groups:
+                raise ValueError("Group not found; use /groups to see your groups")
+            owner = self.group_owners.get(name)
+            if action != "leave" and owner is not None and owner != self.username:
+                raise ValueError("Only the group owner can manage this group")
+            if action == "leave" and owner == self.username:
+                raise ValueError("The group owner must delete the group instead of leaving")
+            payload = {"group": name, "action": action}
+            if username is not None:
+                payload["username"] = username
+            request = self._new_request("GROUP_MANAGE", payload)
+        self._send(request)
+        return request.request_id
+
+    def send_group(self, name: str, text: str) -> str:
+        with self._lock:
+            if name not in self.groups:
+                raise ValueError("Choose one of your groups with /group open NAME")
+        return self._chat("CHAT_GROUP", {"group": name, "text": text}, text)
 
     def send_private(self, recipient: str, text: str) -> str:
         if not isinstance(recipient, str) or _USERNAME.fullmatch(recipient) is None:
@@ -502,10 +583,53 @@ class CollabClient:
                         raise ProtocolViolation("Invalid presence status")
                     self._notices.append(Notice("presence", f"{safe_display(username)}: {status}"))
 
-                elif kind in {"CHAT_GLOBAL", "CHAT_PRIVATE"}:
+                elif kind == "GROUP_LIST":
                     self._require_authenticated(kind)
-                    allowed = {"from", "text"} | ({"queued"} if kind == "CHAT_PRIVATE" else set())
-                    if not {"from", "text"} <= set(payload) <= allowed:
+                    groups = payload.get("groups")
+                    if (
+                        set(payload) != {"groups"} or not isinstance(groups, list)
+                        or len(groups) > FIELD_LIMITS["max_groups"]
+                    ):
+                        raise ProtocolViolation("Invalid group list")
+                    updated, owners = {}, {}
+                    for group in groups:
+                        if (
+                            not isinstance(group, dict)
+                            or not {"name", "members"} <= set(group) <= {"name", "members", "owner"}
+                            or not isinstance(group["name"], str)
+                            or _USERNAME.fullmatch(group["name"]) is None
+                            or not isinstance(group["members"], list)
+                            or any(not isinstance(u, str) or _USERNAME.fullmatch(u) is None
+                                   for u in group["members"])
+                            or not 1 <= len(group["members"]) <= FIELD_LIMITS["max_group_members"]
+                            or len(set(group["members"])) != len(group["members"])
+                            or self.username not in group["members"]
+                            or group["name"] in updated
+                        ):
+                            raise ProtocolViolation("Invalid group membership")
+                        owner = group.get("owner")
+                        if "owner" in group and (not isinstance(owner, str) or owner not in group["members"]):
+                            raise ProtocolViolation("Invalid group owner")
+                        updated[group["name"]] = group["members"]
+                        owners[group["name"]] = owner
+                    expected = self._pending.get(event.request_id)
+                    if expected is not None:
+                        if expected not in {"GROUP_CREATE", "GROUP_MANAGE", "GROUP_LIST_REQUEST"}:
+                            raise ProtocolViolation("Unexpected group response")
+                        self._pop_expected(event, expected)
+                    self.groups = updated
+                    self.group_owners = owners
+                    listing = "; ".join(
+                        f"#{name} (owner: {owners[name] or 'unknown'}): {', '.join(members)}"
+                        for name, members in updated.items()
+                    )
+                    self._notices.append(Notice("groups", listing or "No groups. Use /group create NAME USER..."))
+
+                elif kind in {"CHAT_GLOBAL", "CHAT_PRIVATE", "CHAT_GROUP"}:
+                    self._require_authenticated(kind)
+                    required = {"from", "text"} | ({"group"} if kind == "CHAT_GROUP" else set())
+                    allowed = required | ({"queued"} if kind == "CHAT_PRIVATE" else set())
+                    if not required <= set(payload) <= allowed:
                         raise ProtocolViolation("Invalid routed chat fields")
                     if (
                         not isinstance(payload["from"], str)
@@ -521,30 +645,40 @@ class CollabClient:
                         raise ProtocolViolation("Invalid queued flag")
                     if kind == "CHAT_PRIVATE":
                         self.reply_target = payload["from"]
-                    self._remember_chat("received", kind, payload["from"], payload["text"])
+                    group = payload.get("group")
+                    if kind == "CHAT_GROUP":
+                        if not isinstance(group, str) or payload["from"] not in self.groups.get(group, []):
+                            raise ProtocolViolation("Group message outside membership")
+                        self._remember_chat("received", kind, f"#{group}", f"{payload['from']}: {payload['text']}")
+                    else:
+                        self._remember_chat("received", kind, payload["from"], payload["text"])
                     sender = safe_display(payload["from"])
                     text = safe_display(payload["text"])
                     queued_tag = (
                         " [sent while you were offline]" if payload.get("queued") is True else ""
                     )
+                    tag = f"#{group}" if kind == "CHAT_GROUP" else kind
                     self._notices.append(
-                        Notice("chat", f"[{kind}] {sender}: {text}{queued_tag}", payload["text"])
+                        Notice("chat", f"[{tag}] {sender}: {text}{queued_tag}", payload["text"])
                     )
 
                 elif kind == "CHAT_ACK":
                     self._require_authenticated(kind)
                     expected = self._pending.get(event.request_id)
-                    if expected not in {"CHAT_GLOBAL", "CHAT_PRIVATE"}:
+                    if expected not in {"CHAT_GLOBAL", "CHAT_PRIVATE", "CHAT_GROUP"}:
                         raise ProtocolViolation("CHAT_ACK has no pending chat request")
                     if set(payload) != {"status"}:
                         raise ProtocolViolation("Invalid CHAT_ACK fields")
                     if payload.get("status") not in {"queued", "stored"}:
                         raise ProtocolViolation("Unexpected CHAT_ACK status")
+                    if expected == "CHAT_GROUP" and payload["status"] != "queued":
+                        raise ProtocolViolation("Group messages cannot be stored offline")
                     self._pop_expected(event, expected)
                     sent = self._pending_chat.pop(event.request_id, None)
                     if sent is not None:
                         kind_sent, text_sent, to_sent = sent
-                        self._remember_chat("sent", kind_sent, to_sent or "*", text_sent)
+                        peer = f"#{to_sent}" if kind_sent == "CHAT_GROUP" else to_sent or "*"
+                        self._remember_chat("sent", kind_sent, peer, text_sent)
                         if kind_sent == "CHAT_PRIVATE":
                             stored_tag = (
                                 f" [stored — {safe_display(to_sent or '')} is offline]"
@@ -558,6 +692,10 @@ class CollabClient:
                                     text_sent,
                                 )
                             )
+                        elif kind_sent == "CHAT_GROUP":
+                            self._notices.append(Notice(
+                                "chat", f"[#{to_sent}] you: {safe_display(text_sent)}", text_sent
+                            ))
                         else:
                             self._notices.append(
                                 Notice(
@@ -699,6 +837,8 @@ class CollabClient:
             self.issued_token = None
             self._token_login = False
             self.online_users.clear()
+            self.groups.clear()
+            self.group_owners.clear()
             self._pending.clear()
             self._pending_pings.clear()
             self.ping_rtts.clear()

@@ -8,6 +8,7 @@ The server relays messages and files between clients, and the connection use TLS
 ## What you can do
 
 - Chat with all the online users or open private conversation pages.
+- Create private chat groups with selected approved accounts.
 - Sign up and have an admin approve your account; optionally remember your login.
 - Send files up to 50 MiB and choose where to save each incoming file. Both users must be online for a file transfer.
 - Browse and search chat history saved on your own computer.
@@ -155,15 +156,29 @@ other members, with extra account-review commands; the server process stays runn
 | Find commands | Type `/` for suggestions; `/help` or F1 opens detailed help |
 | Group chat | `/all Hello everyone` (or plain text in the TUI outside Direct) |
 | Private chat | `/msg bob Hello`, `@bob Hello`, or open Bob's Direct page |
+| Create a private group | `/group create study bob carol` (you are included) |
+| Open a group | `/group open study`, or click it under **GROUPS** |
+| List your groups | `/groups` |
+| Manage your own group | `/group add study bob`, `/group kick study bob`, `/group delete study` |
+| Leave someone else's group | `/group leave study` |
+| Send to a group | `/gmsg study Hello`; plain text in an opened TUI group also works |
 | Send a file | `/send bob "notes/chapter 3.pdf"` |
+| Send a file to a group | `/sendgroup study "notes/chapter 3.pdf"` or `/send #study PATH` |
 | Choose a save folder | `/accept 4b44b161 "~/Downloads/Study notes"` |
 | Accept into the default folder | `/accept 4b44b161`; omit the ID if only one offer is pending |
 | Choose a folder visually | Click **Accept** on an incoming offer |
-| Review saved chats | `/history`; use **3:Direct** for private conversation pages |
+| Review saved chats | `/history`; use **4:Direct** for private conversation pages |
 | Close and remember login | `/quit` |
 | Forget the saved login | `/logout` |
 
 Transfer IDs above are examples: use the ID or unique prefix shown in your offer.
+The creator owns the group; only that account can add/kick members or delete it.
+Other members can leave. The owner must delete the group instead of leaving.
+Groups start with 2-32 approved members and survive server restarts. Messages reach online
+members only. Group files create separate offers for each other online member, with
+individual consent and progress; offline members are skipped and reported. In an opened
+TUI group, **[Send file]** opens a file picker when there is room beside the tabs.
+Update server and clients together for group support.
 The progress bar updates in place; a file is successful only after receiver
 verification. Under WSL, Windows folders use paths such as
 `/mnt/c/Users/YOUR_NAME/Downloads`.

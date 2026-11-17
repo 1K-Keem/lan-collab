@@ -1,4 +1,28 @@
 {
+  "C:GROUP_CREATE": {
+    "required": {"group": "str:username", "members": "list:group_member"},
+    "optional": {}
+  },
+  "C:GROUP_MANAGE": {
+    "required": {"group": "str:username", "action": "enum:add|kick|delete|leave"},
+    "optional": {"username": "str:username"}
+  },
+  "C:GROUP_LIST_REQUEST": {
+    "required": {},
+    "optional": {}
+  },
+  "S:GROUP_LIST": {
+    "required": {"groups": "list:group"},
+    "optional": {}
+  },
+  "C:CHAT_GROUP": {
+    "required": {"group": "str:username", "text": "str:chat"},
+    "optional": {}
+  },
+  "S:CHAT_GROUP": {
+    "required": {"group": "str:username", "from": "str:username", "text": "str:chat"},
+    "optional": {}
+  },
   "C:AUTH_REQUEST": {
     "required": {
       "username": "str:username",
@@ -84,7 +108,7 @@
       "size": "int:file_size",
       "sha256": "str:sha256"
     },
-    "optional": {}
+    "optional": {"group": "str:username"}
   },
   "S:FILE_OFFER": {
     "required": {

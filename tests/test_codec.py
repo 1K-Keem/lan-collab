@@ -59,7 +59,7 @@ class RoundTripTests(unittest.TestCase):
 
     def test_every_catalog_entry_is_implemented(self) -> None:
         # Import-time compilation fails for unknown specs; this guards catalog drift.
-        self.assertEqual(len(MESSAGE_FIELDS), 38)
+        self.assertEqual(len(MESSAGE_FIELDS), 44)
 
 
 class FramingTests(unittest.TestCase):
