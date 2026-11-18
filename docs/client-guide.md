@@ -512,3 +512,24 @@ check that device for a client or test script repeatedly connecting.
 
 `/ping` checks TCP/TLS latency; `/net` checks UDP; F4 runs both. These are manual
 checks. A failed UDP probe does not by itself mean the TCP chat connection is broken.
+
+## Server-side account management
+
+On the server machine, run `python -m lancollab.server --list-users` to list all
+registered accounts with their roles, statuses and signup times. This works while
+the server is running. Passwords and tokens are never displayed.
+
+Stop the server before running `python -m lancollab.server --delete-user USERNAME`.
+Confirm by typing the username, or supply `--yes` for scripted use. Use `--db PATH`
+when managing a database other than the default `accounts.db`.
+
+Deletion removes the account, its login tokens, queued messages involving it,
+groups it owns and memberships in other groups, in one transaction. Client history
+and downloaded files are not deleted. The last active admin is protected. Restart
+the server after maintenance; deleted names may sign up again, including through
+first-login account creation when `--auto-approve` is enabled.
+
+The server holds a local `.server.lock` file beside its database to prevent deletion
+while it is running. The file may remain after shutdown; the operating-system lock
+is released automatically. Stop any server started with an older app version before
+using these commands, since older versions do not hold this lock.

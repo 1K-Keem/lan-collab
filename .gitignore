@@ -49,3 +49,6 @@ certs/
 # Test artifacts
 *.log
 coverage.xml
+
+# Local server maintenance locks
+*.server.lock

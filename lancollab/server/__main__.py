@@ -1,12 +1,15 @@
 """Concurrent TCP/TLS and UDP discovery server with SQLite account auth."""
 
 import argparse
+from contextlib import ExitStack
+import sqlite3
 import getpass
 import logging
 from pathlib import Path
 
 from lancollab.common.tls import create_server_context
 from lancollab.common.devcerts import ensure_server_certs
+from lancollab.server.maintenance import database_maintenance_lock
 from lancollab.server.accounts import AccountError, AccountService
 from lancollab.server.application import CollabServer
 from lancollab.server.queue import MessageQueue
@@ -50,6 +53,44 @@ def _change_password(db_path: Path, username: str) -> int:
     return 0
 
 
+def _manage_users(db_path, username=None, yes=False):
+    if not db_path.is_file():
+        print(f"Account database not found: {db_path}")
+        return 1
+    try:
+        with ExitStack() as stack:
+            if username is not None:
+                stack.enter_context(database_maintenance_lock(db_path))
+            accounts = AccountService(db_path)
+            stack.callback(accounts.close)
+            if username is None:
+                rows = accounts.list_accounts()
+                print(f"{'USERNAME':32} {'ROLE':8} {'STATUS':10} SIGNED UP")
+                for row in rows:
+                    print(
+                        f"{row['username']:32} {row['role']:8} {row['status']:10} {row['created_at']}"
+                    )
+                print(f"{len(rows)} account(s)")
+                return 0
+            if accounts.get_account(username) is None:
+                raise AccountError("USER_NOT_FOUND")
+            if not yes:
+                print(f"Delete {username}, their login tokens, queued messages and owned groups?")
+                print("Memberships in other groups will be removed. Client history is kept.")
+                if input("Type the username to confirm: ") != username:
+                    print("Deletion cancelled.")
+                    return 0
+            accounts.delete_account(username)
+            print(f"Deleted account '{username}' and its dependent server data.")
+            return 0
+    except (AccountError, OSError, ValueError, sqlite3.Error) as error:
+        print(f"Account management failed: {error}")
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("\nDeletion cancelled.")
+        return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=40000)
@@ -58,12 +99,24 @@ def main() -> int:
     parser.add_argument("--cert", default="certs/direct-trust/server-public.pem")
     parser.add_argument("--key", default="certs/direct-trust/server-secret.pem")
     parser.add_argument("--db", type=Path, default=Path("accounts.db"))
-    parser.add_argument("--add-admin", metavar="USERNAME", help="Create first admin and exit")
-    parser.add_argument(
-        "--recover-group-owner", nargs=2, metavar=("GROUP", "USERNAME"),
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument(
+        "--list-users", action="store_true", help="List all signed-up accounts and exit"
+    )
+    actions.add_argument(
+        "--delete-user",
+        metavar="USERNAME",
+        help="Delete an account and its dependent data; stop the server first",
+    )
+    parser.add_argument("--yes", action="store_true", help="Skip the --delete-user confirmation")
+    actions.add_argument("--add-admin", metavar="USERNAME", help="Create first admin and exit")
+    actions.add_argument(
+        "--recover-group-owner",
+        nargs=2,
+        metavar=("GROUP", "USERNAME"),
         help="Set the verified creator for a legacy group with unknown owner (local operator only)",
     )
-    parser.add_argument(
+    actions.add_argument(
         "--change-password", metavar="USERNAME", help="Change an account password and exit"
     )
     parser.add_argument(
@@ -72,6 +125,10 @@ def main() -> int:
         help="Activate new accounts on signup/first login; first account in an empty DB becomes admin",
     )
     args = parser.parse_args()
+    if args.yes and not args.delete_user:
+        parser.error("--yes requires --delete-user")
+    if args.list_users or args.delete_user:
+        return _manage_users(args.db, args.delete_user, args.yes)
     logging.basicConfig(level=logging.INFO, format="%(threadName)s: %(message)s")
     if args.add_admin:
         return _add_admin(args.db, args.add_admin)
@@ -88,7 +145,9 @@ def main() -> int:
         print("Legacy group owner recorded; existing owners are never overwritten.")
         return 0
     accounts = tokens = queue = server = None
+    maintenance = ExitStack()
     try:
+        maintenance.enter_context(database_maintenance_lock(args.db))
         if (args.cert, args.key) == (
             "certs/direct-trust/server-public.pem",
             "certs/direct-trust/server-secret.pem",
@@ -120,6 +179,7 @@ def main() -> int:
             tokens.close()
         if accounts is not None:
             accounts.close()
+        maintenance.close()
     return 0
 
 

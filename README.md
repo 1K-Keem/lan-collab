@@ -122,6 +122,31 @@ The default ports are TCP **40000** and UDP **40001**. See the
 [user guide](docs/client-guide.md#server-setup) for custom ports, database location
 and optional automatic account approval.
 
+## Manage registered accounts on the server
+
+List every signed-up account, including pending and rejected accounts:
+
+```bash
+python -m lancollab.server --list-users
+```
+
+The list shows username, role, status and signup time. Stop the server before deleting
+an account, then run:
+
+```bash
+python -m lancollab.server --delete-user alice
+```
+
+Type the exact username to confirm. Deletion removes the account, its remembered-login
+tokens, queued messages sent by or addressed to it, and groups it owns. It also removes
+its memberships in other groups. Other clients' local history and downloaded files remain.
+The last active administrator cannot be deleted; create another admin first if needed.
+
+Use `--db PATH` with either command for a custom database. For scripted deletion,
+`--delete-user alice --yes` skips confirmation. Restart the server afterward. Deletion
+is not a permanent username ban: signup can create the name again, and `--auto-approve`
+allows automatic account creation on a later login. Old login tokens stay invalid.
+
 ## Open the client — everyone, including admins
 
 After setup, open a new terminal:

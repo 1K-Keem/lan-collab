@@ -54,7 +54,9 @@ class AccountService:
                 "CREATE TABLE IF NOT EXISTS chat_groups "
                 "(name TEXT PRIMARY KEY, members TEXT NOT NULL, owner TEXT)"
             )
-            if "owner" not in {row[1] for row in self._conn.execute("PRAGMA table_info(chat_groups)")}:
+            if "owner" not in {
+                row[1] for row in self._conn.execute("PRAGMA table_info(chat_groups)")
+            }:
                 # Old groups never recorded their creator; do not guess an owner.
                 self._conn.execute("ALTER TABLE chat_groups ADD COLUMN owner TEXT")
 
@@ -178,6 +180,57 @@ class AccountService:
             return False, "ACCOUNT_REJECTED", None
         return True, None, row["role"]
 
+    def list_accounts(self) -> list[dict]:
+        """Local operator listing, without password hashes or token material."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT username, role, status, created_at FROM accounts ORDER BY username"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_account(self, username: str) -> None:
+        """Delete an account and dependent data atomically during offline maintenance."""
+        with self._lock, self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            row = self._conn.execute(
+                "SELECT role, status FROM accounts WHERE username=?", (username,)
+            ).fetchone()
+            if row is None:
+                raise AccountError("USER_NOT_FOUND")
+            if row["role"] == "admin" and row["status"] == "active":
+                count = self._conn.execute(
+                    "SELECT COUNT(*) FROM accounts WHERE role='admin' AND status='active'"
+                ).fetchone()[0]
+                if count == 1:
+                    raise AccountError("LAST_ACTIVE_ADMIN")
+            tables = {
+                r[0]
+                for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            if "tokens" in tables:
+                self._conn.execute("DELETE FROM tokens WHERE username=?", (username,))
+            if "queued_messages" in tables:
+                self._conn.execute(
+                    "DELETE FROM queued_messages WHERE sender=? OR recipient=?",
+                    (username, username),
+                )
+            for group in self._conn.execute(
+                "SELECT name, members, owner FROM chat_groups"
+            ).fetchall():
+                members = json.loads(group["members"])
+                if group["owner"] == username:
+                    self._conn.execute("DELETE FROM chat_groups WHERE name=?", (group["name"],))
+                elif username in members:
+                    members.remove(username)
+                    if members:
+                        self._conn.execute(
+                            "UPDATE chat_groups SET members=? WHERE name=?",
+                            (json.dumps(members), group["name"]),
+                        )
+                    else:
+                        self._conn.execute("DELETE FROM chat_groups WHERE name=?", (group["name"],))
+            self._conn.execute("DELETE FROM accounts WHERE username=?", (username,))
+
     def list_pending(self) -> list[dict[str, str]]:
         with self._lock:
             rows = self._conn.execute(
@@ -227,18 +280,23 @@ class AccountService:
 
     def create_group(self, name: str, members: list[str], creator: str) -> None:
         if (
-            not isinstance(name, str) or _USERNAME_RE.fullmatch(name) is None
+            not isinstance(name, str)
+            or _USERNAME_RE.fullmatch(name) is None
             or not isinstance(members, list)
             or not 2 <= len(members) <= FIELD_LIMITS["max_group_members"]
             or any(not isinstance(u, str) or _USERNAME_RE.fullmatch(u) is None for u in members)
-            or len(set(members)) != len(members) or creator not in members
+            or len(set(members)) != len(members)
+            or creator not in members
         ):
             raise AccountError("INVALID_MESSAGE")
         with self._lock, self._conn:
             self._conn.execute("BEGIN IMMEDIATE")
             if self._conn.execute("SELECT 1 FROM chat_groups WHERE name=?", (name,)).fetchone():
                 raise AccountError("GROUP_EXISTS")
-            if self._conn.execute("SELECT COUNT(*) FROM chat_groups").fetchone()[0] >= FIELD_LIMITS["max_groups"]:
+            if (
+                self._conn.execute("SELECT COUNT(*) FROM chat_groups").fetchone()[0]
+                >= FIELD_LIMITS["max_groups"]
+            ):
                 raise AccountError("GROUP_LIMIT_REACHED")
             for member in members:
                 row = self._conn.execute(
@@ -254,25 +312,39 @@ class AccountService:
     def list_groups(self, username: str) -> list[dict]:
         # ponytail: at most 128 groups; use a membership table if that ceiling grows.
         with self._lock:
-            rows = self._conn.execute("SELECT name, members, owner FROM chat_groups ORDER BY name").fetchall()
+            rows = self._conn.execute(
+                "SELECT name, members, owner FROM chat_groups ORDER BY name"
+            ).fetchall()
         groups = [
-            {"name": row["name"], "members": json.loads(row["members"]),
-             **({"owner": row["owner"]} if row["owner"] is not None else {})}
+            {
+                "name": row["name"],
+                "members": json.loads(row["members"]),
+                **({"owner": row["owner"]} if row["owner"] is not None else {}),
+            }
             for row in rows
         ]
         return [group for group in groups if username in group["members"]]
 
-    def manage_group(self, name: str, actor: str, action: str, username: str | None = None) -> set[str]:
+    def manage_group(
+        self, name: str, actor: str, action: str, username: str | None = None
+    ) -> set[str]:
         if (
-            not isinstance(action, str) or action not in {"add", "kick", "delete", "leave"}
-            or not isinstance(name, str) or _USERNAME_RE.fullmatch(name) is None
+            not isinstance(action, str)
+            or action not in {"add", "kick", "delete", "leave"}
+            or not isinstance(name, str)
+            or _USERNAME_RE.fullmatch(name) is None
             or ((username is not None) != (action in {"add", "kick"}))
-            or (username is not None and (not isinstance(username, str) or _USERNAME_RE.fullmatch(username) is None))
+            or (
+                username is not None
+                and (not isinstance(username, str) or _USERNAME_RE.fullmatch(username) is None)
+            )
         ):
             raise AccountError("INVALID_MESSAGE")
         with self._lock, self._conn:
             self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute("SELECT members, owner FROM chat_groups WHERE name=?", (name,)).fetchone()
+            row = self._conn.execute(
+                "SELECT members, owner FROM chat_groups WHERE name=?", (name,)
+            ).fetchone()
             if row is None or actor not in (members := json.loads(row["members"])):
                 raise AccountError("GROUP_NOT_FOUND")
             owner = row["owner"]
@@ -285,7 +357,9 @@ class AccountService:
                 self._conn.execute("DELETE FROM chat_groups WHERE name=?", (name,))
                 return affected
             if action == "add":
-                account = self._conn.execute("SELECT status FROM accounts WHERE username=?", (username,)).fetchone()
+                account = self._conn.execute(
+                    "SELECT status FROM accounts WHERE username=?", (username,)
+                ).fetchone()
                 if account is None or account["status"] != "active" or username in members:
                     raise AccountError("INVALID_GROUP_MEMBER")
                 if len(members) >= FIELD_LIMITS["max_group_members"]:
@@ -308,13 +382,21 @@ class AccountService:
         """Local operator recovery only: old versions never stored the creator."""
         with self._lock, self._conn:
             self._conn.execute("BEGIN IMMEDIATE")
-            row = self._conn.execute("SELECT owner, members FROM chat_groups WHERE name=?", (name,)).fetchone()
+            row = self._conn.execute(
+                "SELECT owner, members FROM chat_groups WHERE name=?", (name,)
+            ).fetchone()
             if row is None:
                 raise AccountError("GROUP_NOT_FOUND")
             if row["owner"] is not None:
                 raise AccountError("GROUP_OWNER_ALREADY_SET")
-            account = self._conn.execute("SELECT status FROM accounts WHERE username=?", (username,)).fetchone()
-            if username not in json.loads(row["members"]) or account is None or account["status"] != "active":
+            account = self._conn.execute(
+                "SELECT status FROM accounts WHERE username=?", (username,)
+            ).fetchone()
+            if (
+                username not in json.loads(row["members"])
+                or account is None
+                or account["status"] != "active"
+            ):
                 raise AccountError("INVALID_GROUP_MEMBER")
             self._conn.execute("UPDATE chat_groups SET owner=? WHERE name=?", (username, name))
 
