@@ -74,7 +74,7 @@ class CopyInteractionTests(unittest.TestCase):
                     lambda w: w.module.KEY_F9,
                     click("[Copy message]"),
                     expect(lambda w: "Clipboard unavailable." in w.all_text(), "\x1b"),
-                    expect(lambda w: "[Back]" in w.all_text(), "\x03"),
+                    expect(lambda w: "← Back" in w.all_text(), "\x03"),
                 ],
             )
         copy.assert_called_once_with("private body")

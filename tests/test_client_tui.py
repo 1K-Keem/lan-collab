@@ -38,8 +38,9 @@ class TuiTests(unittest.TestCase):
         self.assertIs(session.output, output)
         drawn = [call.args[2] for call in window.addstr.call_args_list]
         joined = " ".join(drawn)
-        self.assertIn("LAN COLLAB — Help", joined)
-        self.assertIn("/send USER PATH", joined)
+        self.assertIn("Help", joined)
+        self.assertIn("commands and shortcuts", joined)
+        self.assertIn("/group create NAME USER...", joined)
         self.assertIn("back to chat", joined)
 
 

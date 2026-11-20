@@ -12,7 +12,7 @@ class UserFocusTests(unittest.TestCase):
         def clean(window):
             header = window.lines.get(0, "")
             return (
-                "LAN-COLLAB · alice · 2 online" in header
+                "LAN Collab  alice · 2 online" in header
                 and "TCP/TLS: connected" in window.all_text()
                 and "UDP probe loss: unavailable" in window.all_text()
             ) and all(
@@ -29,9 +29,9 @@ class UserFocusTests(unittest.TestCase):
         run(
             session,
             [
-                expect(clean, click("2:Global")),
-                expect(clean, click("4:Direct")),
-                expect(clean, click("5:Files")),
+                expect(clean, click("Global")),
+                expect(clean, click("Direct")),
+                expect(clean, click("Files")),
                 expect(clean, "\x03"),
             ],
         )

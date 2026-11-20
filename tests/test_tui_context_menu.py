@@ -347,7 +347,7 @@ class ContextMenuEventLoopTests(unittest.TestCase):
                     expect(lambda w: "Direct message" in w.all_text(), click("Direct message")),
                     expect(
                         lambda w: (
-                            "[Back] ← bob" in w.all_text()
+                            "← Back   ● bob" in w.all_text()
                             and "Message bob privately" in w.input_text()
                         ),
                         "\x03",
@@ -450,14 +450,14 @@ class DirectTabEventLoopTests(unittest.TestCase):
             transcripts={"carol": [(self.STAMP, "received", "CHAT_PRIVATE", "carol", "hello")]},
         )
         events = [
-            click("4:Direct"),
+            click("Direct"),
             expect(
                 lambda w: w.find("bob latest")[0] < w.find("carol latest")[0],
                 lambda w: w.module.KEY_DOWN,
             ),
-            expect(lambda w: w.find("› carol")[0], lambda w: w.module.KEY_ENTER),
+            expect(lambda w: w.find("› ○ carol")[0], lambda w: w.module.KEY_ENTER),
             expect(
-                lambda w: "[Back] ← carol" in w.all_text() and "hello" in w.all_text(),
+                lambda w: "← Back   ○ carol" in w.all_text() and "hello" in w.all_text(),
                 "\x03",
             ),
         ]
@@ -467,9 +467,9 @@ class DirectTabEventLoopTests(unittest.TestCase):
     def test_plain_text_on_peer_page_is_private_and_never_global(self):
         session = FakeSession(conversations=[("bob", self.STAMP, "old")])
         events = [
-            click("4:Direct"),
+            click("Direct"),
             expect(lambda w: "bob" in w.all_text(), click("bob")),
-            expect(lambda w: "[Back] ← bob" in w.all_text(), "hello bob"),
+            expect(lambda w: "← Back   ○ bob" in w.all_text(), "hello bob"),
             expect(
                 lambda w: "hello bob" in w.input_text(),
                 "\r",
@@ -489,12 +489,12 @@ class DirectTabEventLoopTests(unittest.TestCase):
     def test_esc_and_back_button_return_to_inbox(self):
         session = FakeSession(conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []})
         events = [
-            click("4:Direct"),
+            click("Direct"),
             click("bob"),
-            expect(lambda w: "[Back] ← bob" in w.all_text(), "\x1b"),
+            expect(lambda w: "← Back   ○ bob" in w.all_text(), "\x1b"),
             timeout,
             expect(lambda w: "Conversations" in w.all_text(), click("bob")),
-            expect(lambda w: "[Back] ← bob" in w.all_text(), click("[Back]")),
+            expect(lambda w: "← Back   ○ bob" in w.all_text(), click("← Back")),
             expect(lambda w: "Conversations" in w.all_text(), "\x03"),
         ]
         run(session, events)
@@ -502,7 +502,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
     def test_plain_text_in_inbox_never_falls_through_to_global(self):
         session = FakeSession(conversations=[("bob", self.STAMP, "old")])
         events = [
-            click("4:Direct"),
+            click("Direct"),
             "hello",
             "\r",
             expect(
@@ -519,9 +519,9 @@ class DirectTabEventLoopTests(unittest.TestCase):
             transcripts={"bob": [], "carol": []},
         )
         events = [
-            click("4:Direct"),
+            click("Direct"),
             click("bob"),
-            expect(lambda w: "[Back] ← bob" in w.all_text(), "secret"),
+            expect(lambda w: "← Back   ○ bob" in w.all_text(), "secret"),
             expect(lambda w: "secret" in w.input_text(), "\x1b"),
             timeout,
             expect(
@@ -529,16 +529,16 @@ class DirectTabEventLoopTests(unittest.TestCase):
                 click("carol"),
             ),
             expect(
-                lambda w: "[Back] ← carol" in w.all_text() and "secret" not in w.input_text(),
-                click("1:All"),
+                lambda w: "← Back   ○ carol" in w.all_text() and "secret" not in w.input_text(),
+                click("All"),
             ),
-            expect(lambda w: "secret" not in w.input_text(), click("4:Direct")),
+            expect(lambda w: "secret" not in w.input_text(), click("Direct")),
             expect(
                 lambda w: "Conversations" in w.all_text() and "secret" not in w.input_text(),
                 click("bob"),
             ),
             expect(
-                lambda w: "[Back] ← bob" in w.all_text() and "secret" in w.input_text(),
+                lambda w: "← Back   ○ bob" in w.all_text() and "secret" in w.input_text(),
                 "\x03",
             ),
         ]
@@ -554,7 +554,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             return window.module.KEY_RESIZE
 
         events = [
-            click("4:Direct"),
+            click("Direct"),
             expect(lambda w: "bob" in w.all_text(), arrives),
             expect(
                 lambda w: "carol" in w.all_text() and "brand new" in w.all_text(),
@@ -569,7 +569,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             transcripts={"bob": RuntimeError("Database unavailable")},
         )
         events = [
-            click("4:Direct"),
+            click("Direct"),
             click("bob"),
             expect(lambda w: "Database unavailable" in w.all_text(), "\x03"),
         ]
@@ -578,9 +578,9 @@ class DirectTabEventLoopTests(unittest.TestCase):
     def test_slash_commands_still_dispatch_inside_peer_page(self):
         session = FakeSession(conversations=[("bob", self.STAMP, "one")], transcripts={"bob": []})
         events = [
-            click("4:Direct"),
+            click("Direct"),
             click("bob"),
-            expect(lambda w: "[Back] ← bob" in w.all_text(), "/whoami"),
+            expect(lambda w: "← Back   ○ bob" in w.all_text(), "/whoami"),
             "\n",
             expect(
                 lambda w: session.executed and session.executed[-1].name == "/whoami",
@@ -598,7 +598,7 @@ class DirectTabEventLoopTests(unittest.TestCase):
             conversations=[("bob", self.STAMP, "msg7")], transcripts={"bob": rows}
         )
         events = [
-            click("4:Direct"),
+            click("Direct"),
             click("bob"),
             expect(lambda w: "msg7" in w.all_text(), lambda w: w.module.KEY_PPAGE),
             expect(

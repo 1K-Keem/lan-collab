@@ -121,7 +121,7 @@ class GroupHistoryTests(unittest.TestCase):
 
         with patch.object(self.store, "archive", wraps=self.store.archive) as query:
             run(self.shell, [
-                click("3:Groups"),
+                click("Groups"),
                 expect(lambda w: "archived message" in w.all_text(), ""),
                 expect(lambda w: query.call_count == 1, incoming),
                 expect(lambda w: w.all_text().count("new message") == 1 and query.call_count == 2, "\x03"),
@@ -134,7 +134,7 @@ class GroupHistoryTests(unittest.TestCase):
                 return ""
 
             run(self.shell, [
-                click("3:Groups"), incoming,
+                click("Groups"), incoming,
                 expect(lambda w: "still visible" in w.all_text() and "Could not read saved" in w.all_text(),
                        "\x03"),
             ])
@@ -142,7 +142,7 @@ class GroupHistoryTests(unittest.TestCase):
     def test_saved_message_copy_uses_original_body(self):
         self.save_old("archived copy")
         with patch("lancollab.client.tui.copy_text") as copy:
-            run(self.shell, [click("3:Groups"), lambda w: w.module.KEY_F9, "c", "\x1b", "\x03"])
+            run(self.shell, [click("Groups"), lambda w: w.module.KEY_F9, "c", "\x1b", "\x03"])
         copy.assert_called_once_with("archived copy")
 
 

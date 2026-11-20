@@ -14,7 +14,7 @@ from unicodedata import combining, east_asian_width
 from lancollab.client.application import ClientState, safe_display
 from lancollab.client.cli import Command, help_reference, network_status, parse_command
 
-from lancollab.client.branding import banner_lines
+from lancollab.client.settings import load_theme, save_theme
 from lancollab.client.clipboard import ClipboardError, copy_text
 
 
@@ -56,6 +56,7 @@ COMMANDS = (
     Suggestion("/pending", "", "List accounts awaiting approval", True),
     Suggestion("/approve", "USER", "Approve a new member", True),
     Suggestion("/reject-user", "USER", "Reject a pending account", True),
+    Suggestion("/theme", "[dark|light]", "Switch between dark and light colors"),
     Suggestion("/help", "", "Show all commands"),
     Suggestion("/quit", "", "Close the app; keep remembered login"),
     Suggestion("/logout", "", "Log out and forget this device"),
@@ -92,6 +93,12 @@ def suggestions(text, users=(), role="member", pending=(), transfers=()):
                 for row in transfers
                 if row["id"].startswith(argument)
                 and (command == "/cancel" or row["status"] == "offer")
+            ]
+        if command == "/theme":
+            return [
+                Suggestion(f"/theme {name}", "", f"{name.capitalize()} colors")
+                for name in ("dark", "light")
+                if name.startswith(argument)
             ]
         if command == "/filter":
             return [
@@ -239,7 +246,7 @@ SENDER_STYLES = ("sender_a", "sender_b", "sender_c", "sender_d", "sender_e")
 
 
 def sender_style_name(sender, username):
-    """Own messages are bold accent; others get a stable color per sender."""
+    """Own messages use the accent; others get a stable color per sender."""
     if sender is None:
         return None
     if sender in {"you", username} or sender.startswith("you ->"):
@@ -264,19 +271,122 @@ def transfer_summary(row):
     return f"{'Receiving' if status == 'receiving' else 'Sending'} · {percent}%"
 
 
+def transfer_bar(row, width):
+    """Thin progress bar for a running transfer, or None while it waits."""
+    if row["status"] not in {"sending", "receiving"} or width < 8:
+        return None
+    fraction = min(1, row["done"] / row["size"]) if row["size"] else 0
+    room = width - 5
+    filled = int(fraction * room)
+    return [("━" * filled, "file"), ("─" * (room - filled), "faint"), (f" {fraction:4.0%}", "muted")]
+
+
+# A rendered row is a list of (text, style) segments drawn left to right.
+
+
+def row_text(row):
+    return "".join(text for text, _ in row)
+
+
+def fit_row(row, width):
+    """Clip a segment row to ``width`` display cells."""
+    result, used = [], 0
+    for text, style in row:
+        part = fit_cells(text, max(0, width - used))
+        if part:
+            result.append((part, style))
+            used += cell_width(part)
+        if len(part) < len(text):
+            break
+    return result
+
+
+def spread_row(left, right, width):
+    """Left segments, then right segments flush with the right edge if they fit."""
+    gap = width - cell_width(row_text(left)) - cell_width(row_text(right))
+    if not right or gap < 2:
+        return fit_row(left, width)
+    return left + [(" " * gap, "")] + right
+
+
+def wrap_words(text, width):
+    """Wrap at spaces where possible; only words wider than a row are split."""
+    width = max(1, width)
+    rows, line = [], ""
+    for word in re.findall(r"\S+\s*|\s+", text):
+        if cell_width(line + word.rstrip()) <= width:
+            line += word
+            continue
+        if line.strip():
+            rows.append(line.rstrip())
+        line = ""
+        while cell_width(word.rstrip()) > width:
+            part = fit_cells(word, width) or word[0]  # A wide glyph in a 1-cell row.
+            rows.append(part)
+            word = word[len(part) :]
+        line += word
+    rows.append(fit_cells(line.rstrip(), width))
+    return rows
+
+
 def message_rows(timestamp, sender, text, channel, width, username):
-    """Readable message cards, with identity and boundaries even without color."""
+    """Chat card: a colored sender line, then the body indented beneath it.
+
+    Identity survives without color: the bullet marks others, the chevron
+    marks your own messages, and a blank row closes every card.
+    """
     width = max(1, width)
     sender, text = safe_display(sender), safe_display(text)
     own = sender in {"you", username} or sender.startswith("you ->")
     label = "You" + sender[3:] if sender.startswith("you") and own else sender
     style = sender_style_name(sender, username) or "muted"
-    header = f"{'▸' if own else '●'} {label}"
-    header += (f" · {channel}" if channel else "") + f" · {timestamp}"
-    rows = [("", part, style) for part in wrap_cells(header, width)]
-    for part in wrap_cells(text, max(1, width - 2)):
-        rows.append(("", fit_cells("│ " + part, width), style))
-    rows.append(("", "", "muted"))
+    meta = " · ".join(part for part in (channel, timestamp) if part)
+    rows = [fit_row([("› " if own else "● ", style), (label, style), ("  " + meta, "muted")], width)]
+    indent = "  " if width > 4 else ""
+    for part in wrap_words(text, width - len(indent)):
+        rows.append([(indent, ""), (part, "text")])
+    rows.append([])
+    return rows
+
+
+NOTICE_GLYPHS = {"error": "✗", "file": "↕", "admin": "◆", "success": "✓", "dm": "•"}
+
+
+def notice_rows(stamp, text, kind, width):
+    """System line: glyph, wrapped text, and the time at the right edge."""
+    width = max(1, width)
+    glyph = NOTICE_GLYPHS.get(kind, "•")
+    body = "muted" if kind == "muted" else kind
+    lines = wrap_words(text, max(1, width - 2))
+    rows = [[(glyph + " ", "faint" if kind == "muted" else kind), (lines[0], body)]]
+    if stamp:
+        rows[0] = spread_row(rows[0], [(stamp, "faint")], width)
+    rows += [[("  ", ""), (line, body)] for line in lines[1:]]
+    return [fit_row(row, width) for row in rows]
+
+
+def welcome_rows(width, username):
+    """Opening card in the All tab; redrawn at the current width."""
+    lines = [
+        [("✻ ", "accent"), ("Welcome to LAN Collab", "title")]
+        + ([(", " + safe_display(username), "title")] if username else []),
+        [],
+        [("Type a message to chat with everyone online.", "muted")],
+        [("/ ", "key"), ("commands  ", "muted"), ("@name ", "key"), ("private chat  ", "muted"),
+         ("F1 ", "key"), ("help", "muted")],
+        [("F7 ", "key"), ("people  ", "muted"), ("F8 ", "key"), ("history  ", "muted"),
+         ("Alt+1…5 ", "key"), ("tabs", "muted")],
+    ]
+    inner = min(width, 66) - 4
+    if inner < 16:
+        return [fit_row(line, width) for line in lines] + [[]]
+    rows = [[("╭" + "─" * (inner + 2) + "╮", "faint")]]
+    for line in lines:
+        line = fit_row(line, inner)
+        pad = inner - cell_width(row_text(line))
+        rows.append([("│ ", "faint")] + line + [(" " * pad + " │", "faint")])
+    rows.append([("╰" + "─" * (inner + 2) + "╯", "faint")])
+    rows.append([])
     return rows
 
 
@@ -355,52 +465,55 @@ class HistoryBrowser:
     def breadcrumb(self):
         account = safe_display(self.session.client.username or "")
         if self.level == "sessions":
-            return f"{account} / Sessions"
+            return f"{account} › Sessions"
         if self.level == "people":
-            return f"{account} / People"
+            return f"{account} › People"
         scope = display_time(self.record.started) if self.record else "All sessions"
         if self.peer:
-            return f"{account} / {safe_display(self.peer)} / {scope}"
-        return f"{account} / {scope}"
+            return f"{account} › {safe_display(self.peer)} › {scope}"
+        return f"{account} › {scope}"
 
     def items(self):
+        """List rows for the people or sessions level, as segment rows."""
         if self.level == "people":
             return [
-                (
-                    f"{safe_display(peer)} · {count} msgs · {safe_display(text)}",
-                    sender_style_name(peer, self.session.client.username),
-                )
+                [
+                    (safe_display(peer), sender_style_name(peer, self.session.client.username)),
+                    (f"  {count} msgs", "muted"),
+                    ("  " + safe_display(text), "muted"),
+                ]
                 for peer, _stamp, text, count in self.people
             ]
         return [
-            (
-                f"{'CURRENT · ' if r.id == self.session.client.session_id else ''}"
-                f"{display_time(r.started)} · {r.count} msgs",
-                "accent" if r.id == self.session.client.session_id else "muted",
-            )
+            ([("current  ", "accent")] if r.id == self.session.client.session_id else [])
+            + [(display_time(r.started), "text"), (f"  {r.count} msgs", "muted")]
             for r in self.records
         ]
 
     def page(self, width, visible):
+        """Visible segment rows and the index of the first one."""
+        width = max(1, width)
         if self.pending_delete is not None:
             lines = [
-                self.pending_delete[2],
-                "",
-                "Only your saved copy is deleted.",
-                "This cannot be undone.",
-                "",
-                "Y: delete    Esc / N: cancel",
+                (self.pending_delete[2], "title"),
+                ("", ""),
+                ("Only your saved copy is deleted.", "muted"),
+                ("This cannot be undone.", "error"),
+                ("", ""),
             ]
             if self.error:
-                lines.insert(0, self.error)
+                lines.insert(0, (self.error, "error"))
             rows = [
-                (part, "error" if index == 0 else "muted")
-                for index, line in enumerate(lines)
-                for part in wrap_cells(line, max(1, width))
+                [(part, style)]
+                for line, style in lines
+                for part in wrap_words(line, width)
             ]
+            rows.append(fit_row([("Y", "key"), (" delete    ", "muted"),
+                                 ("Esc", "key"), (" / ", "muted"), ("N", "key"),
+                                 (" cancel", "muted")], width))
             return rows[:visible], 0
         if self.error:
-            return [(fit_cells(self.error, max(1, width)), "error")], 0
+            return [[(fit_cells(self.error, width), "error")]], 0
         if self.level == "messages" and self._width != width:
             self._rows = []
             self._row_messages = []
@@ -410,28 +523,27 @@ class HistoryBrowser:
                 if self.session_ids and self.session_ids[index] != previous:
                     previous = self.session_ids[index]
                     record = records[previous]
-                    label = f"── Session · {display_time(record.started)} ──"
-                    separator = [(line, "accent") for line in wrap_cells(label, max(1, width))]
-                    self._rows.extend(separator)
-                    self._row_messages.extend([None] * len(separator))
+                    label = f" Session · {display_time(record.started)} "
+                    rule = max(0, width - cell_width(label) - 2)
+                    self._rows.append(fit_row(
+                        [("──", "faint"), (label, "muted"), ("─" * rule, "faint")], width
+                    ))
+                    self._row_messages.append(None)
                 sender = f"you -> {peer}" if kind == "CHAT_PRIVATE" and not self.peer else "you"
                 if kind == "CHAT_GROUP" and direction != "sent":
                     sender, _, text = text.partition(": ")
-                card = [
-                    (line, style)
-                    for _, line, style in message_rows(
-                        display_time(timestamp),
-                        sender if direction == "sent" or kind == "CHAT_GROUP" else peer,
-                        text,
-                        peer if kind == "CHAT_GROUP" else "DM" if kind == "CHAT_PRIVATE" else "All",
-                        width,
-                        self.session.client.username,
-                    )
-                ]
+                card = message_rows(
+                    display_time(timestamp),
+                    sender if direction == "sent" or kind == "CHAT_GROUP" else peer,
+                    text,
+                    peer if kind == "CHAT_GROUP" else "DM" if kind == "CHAT_PRIVATE" else "All",
+                    width,
+                    self.session.client.username,
+                )
                 self._rows.extend(card)
-                self._row_messages.extend(index if line.strip() else None for line, _ in card)
+                self._row_messages.extend(index if row_text(row).strip() else None for row in card)
             if not self._rows:
-                self._rows = [("No saved messages.", "muted")]
+                self._rows = [[("No saved messages.", "muted")]]
             self._width = width
         if self.level == "messages":
             end = max(0, len(self._rows) - visible)
@@ -442,16 +554,19 @@ class HistoryBrowser:
             return self._rows[self.scroll : self.scroll + visible], self.scroll
         items = self.items()
         start = max(0, self.selected - visible + 1)
-        page = [
-            (
-                fit_cells(("› " if i == self.selected else "  ") + label, max(1, width)),
-                "selected" if i == self.selected else style,
-            )
-            for i, (label, style) in enumerate(items)
-            if start <= i < start + visible
-        ]
+        page = []
+        for i, row in enumerate(items):
+            if not start <= i < start + visible:
+                continue
+            if i == self.selected:
+                row = [("› ", "accent")] + [
+                    (text, "muted" if style == "muted" else "selected") for text, style in row
+                ]
+            else:
+                row = [("  ", "")] + row
+            page.append(fit_row(row, width))
         empty = "No saved people yet." if self.level == "people" else "No saved sessions."
-        return page or [(empty, "muted")], start
+        return page or [[(empty, "muted")]], start
 
     def move(self, step):
         if self.level == "messages":
@@ -589,56 +704,125 @@ class Composer:
         self.index = None
 
 
-def _palette(curses):
-    styles = {
-        name: 0
-        for name in (
-            "accent",
-            "success",
-            "muted",
-            "error",
-            "file",
-            "selected",
-            "dm",
-            "admin",
-            *SENDER_STYLES,
-        )
-    }
-    styles["accent"] = curses.A_BOLD
-    styles["muted"] = curses.A_DIM
-    styles["selected"] = curses.A_REVERSE
+# Per theme: base foreground/background, then style name -> (256-color
+# foreground, 8-color foreground, extra attributes). DIM8 dims only when
+# the terminal has 8 colors and cannot show a softer gray.
+THEMES = {
+    "dark": {
+        "base": (252, 234, "WHITE", None),
+        "pill": (234, 173),
+        "highlight": (231, 238),
+        "styles": {
+            "accent": (173, "CYAN", "BOLD"),
+            "title": (173, "CYAN", "BOLD"),
+            "success": (114, "GREEN", ""),
+            "muted": (246, "WHITE", "DIM8"),
+            "faint": (240, "WHITE", "DIM"),
+            "heading": (250, "WHITE", "BOLD"),
+            "error": (203, "RED", ""),
+            "file": (179, "YELLOW", ""),
+            "dm": (176, "MAGENTA", ""),
+            "admin": (111, "BLUE", ""),
+            "sender_a": (111, "BLUE", "BOLD"),
+            "sender_b": (141, "MAGENTA", "BOLD"),
+            "sender_c": (80, "CYAN", "BOLD"),
+            "sender_d": (179, "YELLOW", "BOLD"),
+            "sender_e": (150, "GREEN", "BOLD"),
+        },
+    },
+    "light": {
+        "base": (236, 255, "BLACK", "WHITE"),
+        "pill": (231, 166),
+        "highlight": (232, 252),
+        "styles": {
+            "accent": (166, "BLUE", "BOLD"),
+            "title": (166, "BLUE", "BOLD"),
+            "success": (28, "GREEN", ""),
+            "muted": (243, "BLACK", "DIM8"),
+            "faint": (249, "BLACK", "DIM"),
+            "heading": (238, "BLACK", "BOLD"),
+            "error": (160, "RED", ""),
+            "file": (130, "YELLOW", ""),
+            "dm": (127, "MAGENTA", ""),
+            "admin": (25, "BLUE", ""),
+            "sender_a": (25, "BLUE", "BOLD"),
+            "sender_b": (91, "MAGENTA", "BOLD"),
+            "sender_c": (30, "CYAN", "BOLD"),
+            "sender_d": (130, "YELLOW", "BOLD"),
+            "sender_e": (28, "GREEN", "BOLD"),
+        },
+    },
+}
+
+
+def _palette(curses, theme="dark"):
+    """Curses attributes per style: 256 colors, 8 colors, or emphasis only."""
+    spec = THEMES.get(theme, THEMES["dark"])
+    styles = {name: 0 for name in spec["styles"]}
+    styles.update(
+        text=0, key=curses.A_BOLD, selected=curses.A_REVERSE, pill=curses.A_REVERSE,
+        highlight=curses.A_REVERSE,
+    )
+    styles["heading"] = curses.A_BOLD
+    styles["accent"] = styles["title"] = curses.A_BOLD
+    styles["muted"] = styles["faint"] = curses.A_DIM
     styles["dm"] = curses.A_BOLD
+    for name in SENDER_STYLES:
+        styles[name] = curses.A_BOLD
     try:
-        if "NO_COLOR" not in os.environ and curses.has_colors():
-            curses.start_color()
-            background = curses.COLOR_BLACK
-            try:
-                curses.use_default_colors()
-                background = -1
-            except curses.error:
-                pass
-            for number, (name, color) in enumerate(
-                (
-                    ("accent", curses.COLOR_CYAN),
-                    ("success", curses.COLOR_GREEN),
-                    ("muted", curses.COLOR_WHITE),
-                    ("error", curses.COLOR_RED),
-                    ("file", curses.COLOR_YELLOW),
-                    ("sender_a", curses.COLOR_MAGENTA),
-                    ("sender_b", curses.COLOR_BLUE),
-                    ("sender_c", curses.COLOR_YELLOW),
-                    ("sender_d", curses.COLOR_GREEN),
-                    ("sender_e", curses.COLOR_CYAN),
-                    ("dm", curses.COLOR_MAGENTA),
-                    ("admin", curses.COLOR_BLUE),
-                ),
-                1,
-            ):
-                curses.init_pair(number, color, background)
-                styles[name] |= curses.color_pair(number)
-            styles["selected"] |= styles["accent"]
+        if "NO_COLOR" in os.environ or not curses.has_colors():
+            return styles
+        curses.start_color()
+        default_background = curses.COLOR_BLACK
+        try:
+            curses.use_default_colors()
+            default_background = -1
+        except curses.error:
+            pass
+        rich = getattr(curses, "COLORS", 8) >= 256 and getattr(curses, "COLOR_PAIRS", 0) > 32
+        fine_text, fine_background, basic_text, basic_background = spec["base"]
+        # 256 colors paint the theme's own background; 8 colors keep the
+        # terminal's dark background unless the light theme asks for white.
+        background = (
+            fine_background if rich
+            else getattr(curses, "COLOR_" + basic_background) if basic_background
+            else default_background
+        )
+        number = 0
+
+        def pair(foreground, back=background):
+            nonlocal number
+            number += 1
+            curses.init_pair(number, foreground, back)
+            return curses.color_pair(number)
+
+        styles["text"] = pair(fine_text if rich else getattr(curses, "COLOR_" + basic_text))
+        for name, (fine, basic, extra) in spec["styles"].items():
+            attributes = curses.A_BOLD if extra == "BOLD" else 0
+            if extra == "DIM" or (extra == "DIM8" and not rich):
+                attributes |= curses.A_DIM
+            styles[name] = pair(fine if rich else getattr(curses, "COLOR_" + basic)) | attributes
+        styles["key"] = styles["text"] | curses.A_BOLD
+        styles["selected"] = styles["accent"] | curses.A_BOLD
+        if rich:
+            styles["pill"] = pair(*spec["pill"]) | curses.A_BOLD
+            styles["highlight"] = pair(*spec["highlight"]) | curses.A_BOLD
+        else:
+            styles["selected"] |= curses.A_REVERSE
+            styles["pill"] = styles["accent"] | curses.A_REVERSE
+            styles["highlight"] = styles["accent"] | curses.A_REVERSE
     except curses.error:
         pass  # Monochrome terminals retain emphasis and selection.
+    return styles
+
+
+def apply_theme(curses, window, theme):
+    """Palette plus the window background, so empty cells use the theme too."""
+    styles = _palette(curses, theme)
+    try:
+        window.bkgd(" ", styles["text"])
+    except (AttributeError, TypeError, curses.error):
+        pass
     return styles
 
 
@@ -649,25 +833,57 @@ def help_lines(width, role="member"):
     /help in the plain CLI can never drift apart. F1 or /help opens this
     view; Ctrl+C (or Esc) returns to the chat.
     """
-    rows = [("LAN COLLAB — Help", "accent"), ("", "muted")]
+    width = max(10, width)
+    rows = [("LAN COLLAB — Help", "title"), ("", "")]
     for line in help_reference(role):
         if not line:
-            rows.append(("", "muted"))
-        elif line.startswith("  "):
-            for part in wrap_cells(line, max(10, width)):
-                rows.append((part, "muted"))
-        elif line.startswith("/"):
-            for part in wrap_cells(line, max(10, width)):
-                rows.append((part, "success"))
-        elif line.isupper() or line.startswith("ADMIN ONLY"):
-            for part in wrap_cells(line, max(10, width)):
-                rows.append((part, "accent"))
-        else:
-            for part in wrap_cells(line, max(10, width)):
-                rows.append((part, "muted"))
-    rows.append(("", "muted"))
-    rows.append(("Ctrl+C / Esc — back to chat", "accent"))
+            rows.append(("", ""))
+            continue
+        style = (
+            "muted" if line.startswith("  ")
+            else "command" if line.startswith("/")
+            else "section" if line.isupper() or line.startswith("ADMIN ONLY")
+            else "muted"
+        )
+        indent = "  " if line.startswith("  ") else ""
+        for index, part in enumerate(wrap_words(line.strip(), width - len(indent))):
+            part = indent + part
+            rows.append((part, style if index == 0 or style != "command" else "text"))
+    rows.append(("", ""))
+    rows.append(("Ctrl+C / Esc — back to chat", "muted"))
     return rows
+
+
+def help_segments(text, style):
+    """Commands are highlighted up to their em dash; sections stand out."""
+    if style == "command":
+        command, dash, rest = text.partition(" — ")
+        return [(command, "accent"), (dash + rest, "text")]
+    if style == "section":
+        return [(text, "title")]
+    return [(text, style or "text")]
+
+
+TABS = (
+    ("all", "All"),
+    ("global", "Global"),
+    ("groups", "Groups"),
+    ("dm", "Direct"),
+    ("files", "Files"),
+)
+
+
+def hint_row(pairs):
+    """Footer hints: keys in bold, actions dimmed, separated by thin dots."""
+    row = []
+    for key, label in pairs:
+        if row:
+            row.append(("  ·  ", "faint"))
+        row += [(key, "key"), (" " + label, "muted")]
+    return row
+
+
+DESTRUCTIVE = ("Delete", "Kick", "Reject", "Confirm delete", "Confirm leave")
 
 
 def run_tui(session):
@@ -678,7 +894,8 @@ def run_tui(session):
     session.output = notices.put
 
     def screen(window):
-        styles = _palette(curses)
+        theme = load_theme()
+        styles = apply_theme(curses, window, theme)
         window.timeout(100)
         window.keypad(True)
         mouse_mask = (
@@ -724,6 +941,8 @@ def run_tui(session):
         clear_generation = session.clear_generation
         next_pending_refresh = monotonic() + 10
         probe_worker = None
+        # Incoming chats that arrived in a tab you were not looking at.
+        unread = {"global": 0, "groups": 0, "dm": 0}
 
         def probe():
             session.execute(parse_command("/ping"))
@@ -754,12 +973,7 @@ def run_tui(session):
                 )
             )
 
-        initial_width = window.getmaxyx()[1]
-        for line in banner_lines(initial_width - (24 if initial_width >= 76 else 0) - 4):
-            messages.append(("", line, "accent", None))
-        add("Welcome to your study space.", "accent")
-        add("Write a message to everyone, or type / to explore commands.")
-        add("Try /msg for a private chat, /send to share a file, or /history to catch up.")
+        messages.append(("", "", "welcome", None))
 
         def write(y, x, text, width, style="muted"):
             if width <= 0:
@@ -768,6 +982,65 @@ def run_tui(session):
                 window.addstr(y, x, fit_cells(text, width), styles.get(style, 0))
             except curses.error:
                 pass  # Resizes and the bottom-right cell can interrupt a draw.
+
+        def put(y, x, row, width):
+            """Draw a segment row clipped to width; return the x after it."""
+            for text, style in fit_row(row, width):
+                write(y, x, text, cell_width(text), style)
+                x += cell_width(text)
+            return x
+
+        def box(top, left, height, box_width, style, title=(), right=(), footnote=()):
+            """Rounded frame with a title, a right-hand label and a bottom-right note."""
+            inner = box_width - 2
+            if inner < 2 or height < 2:
+                return
+            write(top, left, "╭" + "─" * inner + "╮", box_width, style)
+            for y in range(top + 1, top + height - 1):
+                write(y, left, "│" + " " * inner + "│", box_width, style)
+            write(top + height - 1, left, "╰" + "─" * inner + "╯", box_width, style)
+            used = 0
+            if title:
+                used = put(top, left + 2, [(" ", style), *title, (" ", style)], inner - 2) - left
+            if right:
+                right = fit_row([(" ", style), *right, (" ", style)], inner - used - 1)
+                if right:
+                    put(top, left + box_width - 2 - cell_width(row_text(right)), right, inner)
+            if footnote:
+                footnote = fit_row([(" ", style), *footnote, (" ", style)], inner - 2)
+                put(top + height - 1, left + box_width - 2 - cell_width(row_text(footnote)),
+                    footnote, inner)
+
+        def chrome(title, crumb="", buttons=()):
+            """Title row and rule for full-screen views; returns button positions."""
+            height, width = window.getmaxyx()
+            x, placed = width - 2, {}
+            for label, style in reversed(buttons):
+                x -= cell_width(label)
+                write(0, x, label, cell_width(label), style)
+                placed[label] = x
+                x -= 2
+            row = [("✻ ", "accent"), (title, "title")]
+            if crumb:
+                row.append(("  " + crumb, "muted"))
+            put(0, 2, row, x - 2)
+            write(1, 2, "─" * (width - 4), width - 4, "faint")
+            return placed
+
+        def footer(left, right=()):
+            height, width = window.getmaxyx()
+            room = width - 4
+            right = fit_row(list(right), room)
+            right_width = cell_width(row_text(right))
+            room -= right_width + (2 if right_width else 0)
+            # Drop whole hints rather than cutting one in half.
+            while cell_width(row_text(left)) > room and ("  ·  ", "faint") in left:
+                left = left[: len(left) - 1 - left[::-1].index(("  ·  ", "faint"))]
+            if left and left[0][1] == "key" and cell_width(row_text(left)) > room:
+                left = []
+            put(height - 1, 2, left, room)
+            if right:
+                put(height - 1, width - 2 - right_width, right, right_width)
 
         def run_command(line):
             """Dispatch through the same backend as typed commands; False means quit."""
@@ -788,6 +1061,11 @@ def run_tui(session):
                 session.current_group = None
                 if len(groups) == 1:
                     run_command(f"/group open {next(iter(groups))}")
+
+        def cycle_filter(step):
+            nonlocal scroll
+            select_filter(FILTERS[(FILTERS.index(session.display_filter) + step) % len(FILTERS)])
+            scroll = 0
 
         def native_picker(*, folder=False):
             """Release the terminal for the desktop dialog, then restore input."""
@@ -1022,7 +1300,9 @@ def run_tui(session):
                         if notice.startswith("[chat]")
                         else "muted"
                     )
-                    add(notice, kind, stamp=notice.startswith("["))
+                    if kind == "error":
+                        notice = re.sub(r"^\[(?:error|auth_error|protocol_error)\] ", "", notice)
+                    add(notice, kind, stamp=notice.startswith("[") or kind == "error")
                     if kind == "dm":
                         direct_dirty = True
                     if (
@@ -1045,6 +1325,10 @@ def run_tui(session):
                     incoming = chat_sender(notice) not in (None, "you") and not (
                         chat_sender(notice) or ""
                     ).startswith("you ->")
+                    if incoming and category in unread and session.display_filter not in {
+                        "all", category
+                    }:
+                        unread[category] += 1
                     if (
                         scroll
                         and incoming
@@ -1065,6 +1349,8 @@ def run_tui(session):
                         direct_unseen += 1
                 except Empty:
                     break
+            if session.display_filter in unread:
+                unread[session.display_filter] = 0
             if session.display_filter != last_filter:
                 # Leaving Direct must never keep a peer route (or its draft)
                 # active; drafts are stored per peer and restored on return.
@@ -1079,33 +1365,33 @@ def run_tui(session):
             if copy_picker is not None:
                 height, width = window.getmaxyx()
                 window.erase()
-                write(0, 2, "Copy message", width - 4, "accent")
                 count = len(copy_picker.messages)
-                write(
-                    1,
-                    2,
+                chrome(
+                    "Copy message",
                     f"{copy_picker.selected + 1} of {count}"
                     if count
                     else "No messages to copy in this view.",
-                    width - 4,
                 )
                 list_size = min(5, max(1, height // 4))
                 start = max(0, copy_picker.selected - list_size + 1)
                 for y, index in enumerate(range(start, min(count, start + list_size)), 3):
                     entry = copy_picker.messages[index]
-                    write(
+                    chosen = index == copy_picker.selected
+                    put(
                         y,
                         2,
-                        ("› " if index == copy_picker.selected else "  ")
-                        + safe_display(entry.label + " · " + entry.text),
+                        [
+                            ("› " if chosen else "  ", "accent"),
+                            (safe_display(entry.label), "selected" if chosen else "muted"),
+                            ("  " + safe_display(entry.text), "text" if chosen else "muted"),
+                        ],
                         width - 4,
-                        "selected" if index == copy_picker.selected else "muted",
                     )
                 preview_y = 4 + list_size
-                write(preview_y - 1, 2, "─" * max(0, width - 4), width - 4)
+                write(preview_y - 1, 2, "─" * max(0, width - 4), width - 4, "faint")
                 visible = max(1, height - preview_y - 4)
                 preview = (
-                    wrap_cells(
+                    wrap_words(
                         safe_display(copy_picker.messages[copy_picker.selected].text),
                         max(1, width - 4),
                     )
@@ -1116,20 +1402,16 @@ def run_tui(session):
                 for y, line in enumerate(
                     preview[copy_picker.scroll : copy_picker.scroll + visible], preview_y
                 ):
-                    write(y, 2, line, width - 4)
+                    write(y, 2, line, width - 4, "text")
                 if copy_picker.notice:
                     feedback, style = copy_picker.notice
                     for y, line in enumerate(
-                        wrap_cells(safe_display(feedback), max(1, width - 4))[:2], height - 4
+                        wrap_words(safe_display(feedback), max(1, width - 4))[:2], height - 4
                     ):
-                        write(y, 2, line, width - 4, style)
+                        write(y, 2, ("✓ " if style == "success" else "✗ ") + line, width - 4, style)
                 write(height - 2, 2, "[Copy message]" if count else "", width - 4, "accent")
-                write(
-                    height - 1,
-                    2,
-                    "↑↓ choose · C/Enter copy · PgUp/Dn preview · Esc back",
-                    width - 4,
-                )
+                footer(hint_row([("↑↓", "choose"), ("c/Enter", "copy"),
+                                 ("PgUp/PgDn", "preview"), ("Esc", "back")]))
                 try:
                     curses.curs_set(0)
                     window.refresh()
@@ -1170,41 +1452,45 @@ def run_tui(session):
             if history_browser is not None:
                 height, width = window.getmaxyx()
                 window.erase()
-                visible = max(1, height - 6)
-                write(0, 2, "History", width - 24, "accent")
+                visible = max(1, height - 5)
                 can_copy = (
                     history_browser.level == "messages"
                     and not history_browser.error
                     and history_browser.pending_delete is None
                 )
-                if can_copy:
-                    write(0, width - 21, "[Copy]", 6, "accent")
-                write(0, width - 12, "[Delete]", 8, "error")
-                write(1, 2, history_browser.breadcrumb, width - 4, "accent")
-                write(
-                    2,
-                    2,
-                    history_browser.notice
-                    or (
-                        "Choose a person"
-                        if history_browser.level == "people"
-                        else "Your login sessions"
-                        if history_browser.level == "sessions"
-                        else ""
-                    ),
-                    width - 4,
+                placed = chrome(
+                    "History",
+                    history_browser.breadcrumb,
+                    ([("[Copy]", "accent")] if can_copy else []) + [("[Delete]", "error")],
                 )
+                list_tabs = []
+                if history_browser.level in {"sessions", "people"}:
+                    x = 2
+                    for level, label in (("sessions", " Sessions "), ("people", " People ")):
+                        style = "pill" if history_browser.level == level else "muted"
+                        write(2, x, label, len(label), style)
+                        list_tabs.append((x, x + len(label), level))
+                        x += len(label) + 1
+                    subtitle = (
+                        "Choose a person" if history_browser.level == "people"
+                        else "Your login sessions"
+                    )
+                    put(3, 2, [(history_browser.notice or subtitle,
+                                "success" if history_browser.notice else "muted")], width - 4)
+                elif history_browser.notice:
+                    write(2, 2, "✓ " + history_browser.notice, width - 4, "success")
                 page, start = history_browser.page(width - 4, visible)
-                for y, (line, style) in enumerate(page, 4):
-                    write(y, 2, line, width - 4, style)
+                for y, row in enumerate(page, 4):
+                    put(y, 2, row, width - 4)
                 hint = (
-                    "↑↓ scroll · F9 copy · Del delete · Esc back"
+                    hint_row([("↑↓", "scroll"), ("F9", "copy"), ("Del", "delete"), ("Esc", "back")])
                     if history_browser.level == "messages"
-                    else "↑↓ choose · Enter open · Del delete · Tab lists · Esc back"
+                    else hint_row([("↑↓", "choose"), ("Enter", "open"), ("Tab", "sessions/people"),
+                                   ("Del", "delete"), ("Esc", "back")])
                 )
                 if history_browser.pending_delete is not None:
-                    hint = "Y delete · Esc / N cancel"
-                write(height - 1, 2, hint, width - 4)
+                    hint = hint_row([("Y", "delete"), ("Esc/N", "cancel")])
+                footer(hint)
                 try:
                     curses.curs_set(0)
                 except curses.error:
@@ -1258,31 +1544,33 @@ def run_tui(session):
                         history_browser.open()
                     elif key == curses.KEY_MOUSE:
                         _, mx, my, _, button = curses.getmouse()
-                        if (
-                            button & getattr(curses, "BUTTON1_CLICKED", 0)
-                            and my == 0
-                            and width - 12 <= mx < width - 4
-                        ):
+                        clicked = button & getattr(curses, "BUTTON1_CLICKED", 0)
+                        delete_x = placed.get("[Delete]")
+                        copy_x = placed.get("[Copy]")
+                        if clicked and my == 0 and delete_x is not None and delete_x <= mx < delete_x + 8:
                             history_browser.request_delete()
-                        elif button & getattr(curses, "BUTTON1_CLICKED", 0) and can_copy:
-                            if my == 0 and width - 21 <= mx < width - 15:
+                        elif clicked and my == 0 and copy_x is not None and copy_x <= mx < copy_x + 6:
+                            copy_picker = CopyPicker(
+                                transcript_copy_messages(history_browser.transcript)
+                            )
+                        elif clicked and my == 2 and list_tabs:
+                            for left, right, level in list_tabs:
+                                if left <= mx < right and level != history_browser.level:
+                                    history_browser.switch_list()
+                        elif clicked and can_copy and 2 <= mx < width - 2 and 4 <= my < 4 + len(page):
+                            index = start + my - 4
+                            mapping = getattr(history_browser, "_row_messages", [])
+                            if index < len(mapping) and mapping[index] is not None:
                                 copy_picker = CopyPicker(
-                                    transcript_copy_messages(history_browser.transcript)
+                                    transcript_copy_messages(history_browser.transcript),
+                                    mapping[index],
                                 )
-                            elif 2 <= mx < width - 2 and 4 <= my < 4 + len(page):
-                                index = start + my - 4
-                                mapping = getattr(history_browser, "_row_messages", [])
-                                if index < len(mapping) and mapping[index] is not None:
-                                    copy_picker = CopyPicker(
-                                        transcript_copy_messages(history_browser.transcript),
-                                        mapping[index],
-                                    )
                         elif button & getattr(curses, "BUTTON4_PRESSED", 0):
                             history_browser.move(-3)
                         elif button & getattr(curses, "BUTTON5_PRESSED", 0):
                             history_browser.move(3)
                         elif (
-                            button & getattr(curses, "BUTTON1_CLICKED", 0)
+                            clicked
                             and 2 <= mx < width - 2
                             and 4 <= my < 4 + len(page)
                             and history_browser.level != "messages"
@@ -1298,18 +1586,18 @@ def run_tui(session):
             if show_help:
                 height, width = window.getmaxyx()
                 window.erase()
-                rows = help_lines(max(10, width - 4), session.client.role)
+                chrome("Help", "commands and shortcuts")
+                rows = help_lines(max(10, width - 4), session.client.role)[2:]
                 visible = max(1, height - 4)
                 help_scroll = min(help_scroll, max(0, len(rows) - visible))
-                for y, (line, style) in enumerate(rows[help_scroll : help_scroll + visible], 1):
-                    write(y, 2, line, width - 4, style)
-                write(
-                    height - 1,
-                    2,
-                    "↑↓ / PgUp/PgDn scroll · Ctrl+C / Esc back to chat",
-                    width - 4,
-                    "muted",
+                for y, (line, style) in enumerate(rows[help_scroll : help_scroll + visible], 2):
+                    put(y, 2, help_segments(line, style), width - 4)
+                position = (
+                    f"{min(100, 100 * (help_scroll + visible) // max(1, len(rows)))}%"
+                    if len(rows) > visible else ""
                 )
+                footer(hint_row([("↑↓/PgUp/PgDn", "scroll"), ("Esc", "back to chat")]),
+                       [(position, "faint")])
                 try:
                     curses.curs_set(0)
                 except curses.error:
@@ -1338,6 +1626,8 @@ def run_tui(session):
                     help_scroll = max(0, help_scroll - visible)
                 elif key == curses.KEY_NPAGE:
                     help_scroll += visible
+                elif key in (curses.KEY_HOME, curses.KEY_END):
+                    help_scroll = 0 if key == curses.KEY_HOME else len(rows)
                 continue
             client = session.client
             with client._lock:
@@ -1372,7 +1662,8 @@ def run_tui(session):
             height, width = window.getmaxyx()
             window.erase()
             if height < 12 or width < 40:
-                write(0, 0, "Enlarge terminal to 40 x 12; Ctrl+C exits", width - 1)
+                write(0, 0, "✻ Enlarge the terminal to 40 × 12", width - 1, "accent")
+                write(1, 0, "Ctrl+C exits", width - 1, "muted")
                 window.refresh()
                 try:
                     if window.get_wch() in ("\x03", "\x04"):
@@ -1380,96 +1671,123 @@ def run_tui(session):
                 except curses.error:
                     pass
                 continue
-            sidebar = 24 if sidebar_enabled and width >= 76 else 0
-            chat_width = width - sidebar - 4
-            popup_height = min(6, len(options), max(0, height - 12))
+            # Geometry: header 0, tabs 1, rule 2, content from 3, then the
+            # optional dock and suggestions, the input box and the footer.
+            sidebar = 26 if sidebar_enabled and width >= 80 else 0
+            main_right = width - sidebar if sidebar else width
+            chat_width = main_right - 4
+            box_top = height - 4
             input_y = height - 3
-            popup_y = input_y - popup_height - 1
-            dock_height = min(3, len(transfers), max(0, height - popup_height - 10))
+            popup_height = min(6, len(options), max(0, height - 12))
+            popup_y = box_top - popup_height
+            # Offers sort first so active transfers cannot push Accept buttons away.
+            dock_rows = sorted(transfers, key=lambda row: row["status"] != "offer")
+            dock_height = (
+                0 if sidebar else min(3, len(dock_rows), max(0, height - popup_height - 10))
+            )
             dock_y = popup_y - dock_height
-            capacity = max(1, dock_y - 5)
             if direct_scroll == 0:
                 direct_unseen = 0
             new_count = direct_unseen if direct_peer is not None else unseen if scroll else 0
-            title = f"LAN-COLLAB · {username or 'disconnected'} · {len(users)} online"
-            if session.display_filter == "groups" and current_group:
-                title += f" · #{current_group}"
-                if group_owners.get(current_group) == username:
-                    title += " (owner)"
-            if new_count:
-                title += f" · ↓ {new_count} new message{'s' if new_count != 1 else ''}"
-            write(0, 2, title, width - 4, "accent")
             server, connection, rtt, loss = network_status(
                 client, session.udp, getattr(session, "server_host", None)
             )
             closed = client.state is ClientState.CLOSED
-            write(1, 2, server, width - 4)
-            write(2, 2, f"{connection} {rtt}", width - 4, "error" if closed else "muted")
-            write(height - 2, 2, f"{loss} | F4", width - 4, "muted")
-            tabs = (
-                ("all", "1:All"),
-                ("global", "2:Global"),
-                ("groups", "3:Groups"),
-                ("dm", "4:Direct"),
-                ("files", "5:Files"),
-            )
-            if width < 58:
-                tabs = tuple((name, label if name == "groups" else label[:3]) for name, label in tabs)
             hits = []
             copy_entries = []
             row_copy_indices = []
+
+            # Header: brand and identity on the left, live connection on the right.
+            left = [("✻ ", "accent"), ("LAN Collab", "title"), ("  ", ""),
+                    (safe_display(username or "disconnected"), "text")]
+            if role == "admin":
+                left.append((" · admin", "admin"))
+            left.append((f" · {len(users)} online", "muted"))
+            dot = [("● ", "error" if closed else "success"
+                    if client.state is ClientState.AUTHENTICATED else "file")]
+            for right in (
+                dot + [(connection, "muted"), ("  ", ""), (rtt, "muted"), ("  ", ""), (server, "faint")],
+                dot + [(connection, "muted"), ("  ", ""), (rtt, "muted")],
+                dot + [(connection, "muted")],
+                [],
+            ):
+                if cell_width(row_text(left + right)) + 2 <= width - 4:
+                    break
+            put(0, 2, spread_row(left, right, width - 4), width - 4)
+            # Without room in the header, the server address rides on the input box.
+            server_note = [] if (server, "faint") in right else [(server, "faint")]
+
+            def tab_strip(padded):
+                row, spans, x = [], [], 0
+                for category, label in TABS:
+                    active = session.display_filter == category
+                    segments = [(f" {label} " if padded or active else label,
+                                 "pill" if active else "muted")]
+                    count = unread.get(category, 0)
+                    if count and not active:
+                        segments.append((f"{'' if padded else ' '}{min(count, 99)}", "accent"))
+                    size = cell_width(row_text(segments))
+                    spans.append((x, x + size, category))
+                    row += segments + [(" ", "")]
+                    x += size + 1
+                return row, x - 1, spans
+
+            strip, strip_width, spans = tab_strip(True)
+            if strip_width > chat_width:
+                strip, strip_width, spans = tab_strip(False)
+            put(1, 2, strip, chat_width)
+            for start_x, end_x, category in spans:
+                hits.append((1, 2 + start_x, 2 + end_x, ("filter", category)))
+            write(2, 2, "─" * (width - 4), width - 4, "faint")
 
             def append_card(rows, card, label, text):
                 index = len(copy_entries)
                 copy_entries.append(CopyMessage(label, text))
                 rows.extend(card)
-                row_copy_indices.extend(index if line.strip() else None for _, line, _ in card)
+                row_copy_indices.extend(index if row_text(row).strip() else None for row in card)
 
-            def copy_hit(y, row_index):
-                if row_index < len(row_copy_indices) and row_copy_indices[row_index] is not None:
-                    hits.append(
-                        (y, 2, 2 + chat_width, ("copy_message", row_copy_indices[row_index]))
-                    )
+            def append_plain(rows, extra):
+                rows.extend(extra)
+                row_copy_indices.extend([None] * len(extra))
 
-            tab_x = 2
-            for category, label in tabs:
-                write(
-                    3,
-                    tab_x,
-                    label,
-                    len(label),
-                    "selected" if session.display_filter == category else "muted",
-                )
-                hits.append((3, tab_x, tab_x + len(label), ("filter", category)))
-                tab_x += len(label) + 2
-            if (
-                session.display_filter == "groups" and current_group in groups
-                and tab_x + 11 <= width - sidebar - 2
-            ):
-                write(3, tab_x, "[Send file]", 11, "accent")
-                hits.append((3, tab_x, tab_x + 11, ("send_group_file", current_group)))
-                tab_x += 12
-            owner = group_owners.get(current_group)
-            if session.display_filter == "groups" and current_group in groups and owner is not None:
-                label = "[Manage]" if owner == username else "[Leave]"
-                action = (
-                    ("group_menu", current_group) if owner == username
-                    else ("confirm_group", "leave", current_group)
-                )
-                if tab_x + len(label) <= width - sidebar - 2:
-                    write(3, tab_x, label, len(label), "accent")
-                    hits.append((3, tab_x, tab_x + len(label), action))
+            def draw_rows(rows, top, offset):
+                """Newest rows at the bottom of the view; offset counts rows scrolled up."""
+                capacity = max(1, dock_y - top)
+                offset = min(offset, max(0, len(rows) - capacity))
+                end = len(rows) - offset
+                first = max(0, end - capacity)
+                for y, row in enumerate(rows[first:end], top):
+                    index = first + y - top
+                    if index < len(row_copy_indices) and row_copy_indices[index] is not None:
+                        hits.append((y, 2, 2 + chat_width, ("copy_message", row_copy_indices[index])))
+                    put(y, 2, row, chat_width)
+                return offset
+
+            def header_bar(y, left, buttons=()):
+                """Page header with right-aligned buttons that fit beside it."""
+                x = 2 + chat_width
+                room = 2 + cell_width(row_text(left)) + 2
+                for label, style, action in reversed(buttons):
+                    if x - cell_width(label) < room:
+                        break
+                    x -= cell_width(label)
+                    write(y, x, label, cell_width(label), style)
+                    hits.append((y, x, x + cell_width(label), action))
+                    x -= 1
+                put(y, 2, left, x - 2)
+
+            content_capacity = max(1, dock_y - 4)
             if session.display_filter == "dm":
                 refresh_direct()
                 if direct_peer is None:
-                    write(4, 2, "Conversations", width - 4, "accent")
-                    body_start = 5
+                    header_bar(3, [("Conversations", "title"),
+                                   (f"  {len(direct_conversations or [])}", "faint")])
                     if not direct_conversations:
-                        write(
-                            5, 2, "No private conversations yet. Open one from ONLINE.", width - 4
-                        )
+                        put(4, 2, [("No private conversations yet.", "muted")], chat_width)
+                        put(5, 2, [("Pick someone in ONLINE or press ", "muted"), ("F7", "key"),
+                                   (" to start one.", "muted")], chat_width)
                     else:
-                        visible = max(1, capacity)
+                        visible = max(1, content_capacity // 2)
                         start = max(
                             0,
                             min(
@@ -1477,41 +1795,43 @@ def run_tui(session):
                                 len(direct_conversations) - visible,
                             ),
                         )
-                        for y, index in enumerate(
-                            range(start, min(len(direct_conversations), start + visible)),
-                            body_start,
+                        for slot, index in enumerate(
+                            range(start, min(len(direct_conversations), start + visible))
                         ):
+                            y = 4 + 2 * slot
                             peer, timestamp, text = direct_conversations[index]
-                            label = (
-                                ("› " if index == direct_selected else "  ")
-                                + safe_display(peer)
-                                + "  "
-                                + display_time(timestamp)
-                                + "  "
-                                + safe_display(text)
-                            )
-                            write(
-                                y,
-                                2,
-                                fit_cells(label, chat_width),
-                                chat_width,
-                                "selected" if index == direct_selected else "muted",
-                            )
-                            hits.append((y, 2, width - 2, ("direct_peer", peer)))
+                            chosen = index == direct_selected
+                            online = peer in users
+                            name = [
+                                ("› " if chosen else "  ", "accent"),
+                                ("● " if online else "○ ", "success" if online else "faint"),
+                                (safe_display(peer),
+                                 "selected" if chosen else sender_style_name(peer, username)),
+                            ]
+                            put(y, 2, spread_row(name, [(display_time(timestamp), "muted")],
+                                                 chat_width), chat_width)
+                            put(y + 1, 2, [("    ", ""), (safe_display(text),
+                                                         "text" if chosen else "muted")],
+                                chat_width)
+                            hits.append((y, 2, 2 + chat_width, ("direct_peer", peer)))
+                            hits.append((y + 1, 2, 2 + chat_width, ("direct_peer", peer)))
                 else:
                     online = direct_peer in users
-                    write(
-                        4,
-                        2,
-                        f"[Back] ← {direct_peer} · "
-                        + ("online" if online else "offline · new messages stored"),
-                        chat_width,
-                        "accent" if online else "muted",
+                    header_bar(
+                        3,
+                        [
+                            ("← Back", "accent"),
+                            ("   ", ""),
+                            ("● " if online else "○ ", "success" if online else "faint"),
+                            (safe_display(direct_peer), sender_style_name(direct_peer, username)),
+                            ("  " + ("online" if online else "offline · messages wait for them"),
+                             "muted"),
+                        ],
+                        [("[Send file]", "accent", ("send_file", direct_peer))] if online else (),
                     )
-                    hits.append((4, 2, 2 + len("[Back]"), ("direct_back", None)))
-                    body_start = 5
+                    hits.append((3, 2, 8, ("direct_back", None)))
                     if direct_page_error is not None:
-                        write(body_start, 2, direct_page_error, chat_width, "error")
+                        put(4, 2, [("✗ " + direct_page_error, "error")], chat_width)
                     else:
                         rows = []
                         for timestamp, direction, _kind, peer, text in direct_page_rows or []:
@@ -1524,46 +1844,58 @@ def run_tui(session):
                                     text,
                                     None,
                                     chat_width,
-                                    session.client.username,
+                                    username,
                                 ),
                                 f"{display_time(timestamp)} · {sender}",
                                 text,
                             )
                         if not rows:
-                            rows = [("", "No private messages in this conversation yet.", "muted")]
-                        direct_scroll = min(direct_scroll, max(0, len(rows) - capacity))
-                        end = len(rows) - direct_scroll
-                        for y, (pre, line, style) in enumerate(
-                            rows[max(0, end - capacity) : end], body_start
-                        ):
-                            copy_hit(y, max(0, end - capacity) + y - body_start)
-                            if pre:
-                                write(y, 2, pre, chat_width, "muted")
-                            write(
-                                y,
-                                2 + cell_width(pre),
-                                line,
-                                chat_width - cell_width(pre),
-                                style,
-                            )
+                            append_plain(rows, [[("No messages yet — say hello below.", "muted")]])
+                        direct_scroll = draw_rows(rows, 4, direct_scroll)
             elif session.display_filter == "groups" and current_group is None:
-                write(4, 2, "Groups - click a name or press Enter", chat_width, "accent")
+                header_bar(3, [("Groups", "title"), ("  click a name or press Enter", "muted")])
                 if not group_names:
-                    hint = "No groups yet. Use /group create NAME USER..."
-                    for y, text in enumerate(wrap_cells(hint, chat_width)[:capacity], 5):
-                        write(y, 2, text, chat_width, "muted")
-                start = max(0, group_selected - capacity + 1)
-                for y, index in enumerate(range(start, min(len(group_names), start + capacity)), 5):
+                    put(4, 2, [("No groups yet.", "muted")], chat_width)
+                    put(5, 2, [("Create one: ", "muted"), ("/group create NAME USER…", "key")],
+                        chat_width)
+                start = max(0, group_selected - content_capacity + 1)
+                for y, index in enumerate(
+                    range(start, min(len(group_names), start + content_capacity)), 4
+                ):
                     name = group_names[index]
-                    label = f"#{name} ({len(groups[name])} members)"
-                    write(y, 2, label, chat_width, "selected" if index == group_selected else "accent")
+                    chosen = index == group_selected
+                    owner = group_owners.get(name)
+                    detail = f"{len(groups[name])} members" + (
+                        " · you own it" if owner == username
+                        else f" · owner {safe_display(owner)}" if owner else ""
+                    )
+                    put(y, 2, spread_row(
+                        [("› " if chosen else "  ", "accent"),
+                         ("#" + name, "selected" if chosen else "text")],
+                        [(detail, "muted")], chat_width), chat_width)
                     hits.append((y, 2, 2 + chat_width, ("command", f"/group open {name}")))
             else:
-                body_start = 4
+                body_start = 3
                 if session.display_filter == "groups":
-                    write(4, 2, "[Groups] Back to group list", chat_width, "accent")
-                    hits.append((4, 2, min(2 + chat_width, 28), ("group_back",)))
-                    body_start = 5
+                    owner = group_owners.get(current_group)
+                    buttons = []
+                    if current_group in groups:
+                        buttons.append(("[Send file]", "accent", ("send_group_file", current_group)))
+                        if owner is not None:
+                            buttons.append(
+                                ("[Manage]", "accent", ("group_menu", current_group))
+                                if owner == username
+                                else ("[Leave]", "error", ("confirm_group", "leave", current_group))
+                            )
+                    header_bar(
+                        3,
+                        [("← Groups", "accent"), ("   ", ""), ("#" + current_group, "title"),
+                         (f"  {len(groups.get(current_group, ()))} members", "muted")]
+                        + ([("  · owner", "faint")] if owner == username else []),
+                        buttons,
+                    )
+                    hits.append((3, 2, 10, ("group_back",)))
+                    body_start = 4
                 rows = []
                 if session.display_filter == "groups" and group_page_rows is not None:
                     for timestamp, direction, _kind, _peer, text in group_page_rows:
@@ -1579,6 +1911,10 @@ def run_tui(session):
                             text,
                         )
                 for stamp, message, kind, original_text in messages:
+                    if kind == "welcome":
+                        if session.display_filter == "all":
+                            append_plain(rows, welcome_rows(chat_width, username))
+                        continue
                     if (
                         session.display_filter != "all"
                         and notice_category(message) != session.display_filter
@@ -1596,168 +1932,193 @@ def run_tui(session):
                         channel = f"#{group}" if group else "DM" if notice_category(message) == "dm" else "All"
                         append_card(
                             rows,
-                            message_rows(
-                                stamp,
-                                sender,
-                                text,
-                                channel,
-                                chat_width,
-                                session.client.username,
-                            ),
+                            message_rows(stamp, sender, text, channel, chat_width, username),
                             f"{stamp} · {sender} · {channel}",
                             original_text if original_text is not None else text,
                         )
                     else:
-                        prefix = f"{stamp}  " if stamp else ""
                         display = re.sub(r"^\[(?:file|presence|admin|display)\] ", "", message)
-                        for pre, line in wrap_prefixed(prefix, display, chat_width):
-                            rows.append((pre, line, kind))
-                            row_copy_indices.append(None)
+                        append_plain(rows, notice_rows(stamp, display, kind, chat_width))
                 if not rows and session.display_filter == "files":
-                    rows = [("", "No files shared yet. Choose a person to send a file.", "muted")]
+                    append_plain(rows, [[("No files shared yet. ", "muted"), ("F7", "key"),
+                                         (" → choose a person → Send file.", "muted")]])
+                if not rows and session.display_filter == "global":
+                    append_plain(rows, [[("No messages for everyone yet.", "muted")]])
                 if not rows and session.display_filter == "groups":
-                    hint = f"No messages in #{current_group} yet."
-                    rows = [("", text, "muted") for text in wrap_cells(hint, chat_width)]
-                scroll = min(scroll, max(0, len(rows) - capacity))
+                    append_plain(rows, [[(f"No messages in #{current_group} yet.", "muted")]])
+                scroll = draw_rows(rows, body_start, scroll)
                 if scroll == 0:
                     unseen = 0
-                end = len(rows) - scroll
-                for y, (pre, line, style) in enumerate(rows[max(0, end - capacity) : end], body_start):
-                    copy_hit(y, max(0, end - capacity) + y - body_start)
-                    if pre:
-                        write(y, 2, pre, chat_width, "muted")
-                    write(
-                        y,
-                        2 + cell_width(pre),
-                        line,
-                        chat_width - cell_width(pre),
-                        style,
-                    )
-            # Offers sort first so active transfers cannot push Approve/Accept
-            # buttons out of the visible dock.
-            dock_rows = sorted(transfers, key=lambda row: row["status"] != "offer")
             if sidebar:
-                x = width - sidebar
-                for y in range(3, dock_y):
-                    write(y, x - 1, "│", 1)
-                sidebar_rows = [("ONLINE", "accent", None, None)]
-                sidebar_rows += [
-                    ("● " + name, "success", "user", name)
-                    for name in users[: max(1, (dock_y - 12) // 2)]
-                ]
-                if groups:
-                    sidebar_rows.append(("GROUPS", "accent", None, None))
-                    sidebar_rows += [(f"#{name}", "accent", "group", name) for name in list(groups)[:4]]
+                separator = width - sidebar
+                side_x, side_width = separator + 2, sidebar - 4
+                write(2, separator, "┬", 1, "faint")
+                for y in range(3, box_top):
+                    write(y, separator, "│", 1, "faint")
+                # Rows are (segments, [(start, end, action)]); actionable
+                # sections come first so buttons never fall off the bottom.
+                side = []
+
+                def heading(label, count, style="heading"):
+                    if side:
+                        side.append(([], []))
+                    side.append(([(label, style), (f"  {count}", "faint")], []))
+
                 if dock_rows:
-                    sidebar_rows += [("FILES", "accent", None, None)]
-                for row in dock_rows[:2]:
-                    sidebar_rows.append((f"{row['peer']}: {row['name']}", "file", None, None))
-                    if row["status"] == "offer":
-                        sidebar_rows.append(
-                            ("[Accept] [Reject]", "file", "file_buttons", row["id"])
-                        )
-                    else:
-                        sidebar_rows.append((transfer_summary(row), "file", None, None))
+                    heading("TRANSFERS", len(dock_rows), "file")
+                    for row in dock_rows[:3]:
+                        arrow = "↓ " if row.get("direction") == "in" else "↑ "
+                        name_width = cell_width(arrow + safe_display(row["name"]) + " · ")
+                        side.append((
+                            [(arrow, "file"), (safe_display(row["name"]), "text"),
+                             (" · " + safe_display(row["peer"]), "muted")],
+                            [(name_width, name_width + cell_width(row["peer"]),
+                              ("person", "user", row["peer"]))]
+                            if row["peer"] in users and valid_username(row["peer"]) else [],
+                        ))
+                        if row["status"] == "offer":
+                            side.append((
+                                [("  ", ""), ("[Accept]", "success"), (" ", ""), ("[Reject]", "error")],
+                                [(2, 10, ("accept_file", row["id"])),
+                                 (11, 19, ("command", f"/reject {row['id']}"))],
+                            ))
+                        else:
+                            bar = transfer_bar(row, side_width - 2)
+                            side.append(([("  ", "")] + (bar or [(transfer_summary(row), "muted")]), []))
                 if role == "admin" and pending:
-                    sidebar_rows += [(f"PENDING ({len(pending)})", "admin", None, None)]
+                    heading("PENDING", len(pending), "admin")
                     for name in pending:
-                        sidebar_rows.append((name, "admin", "pending", name))
-                        if sidebar - 3 >= 19:
-                            sidebar_rows.append(("[Approve] [Reject]", "admin", "buttons", name))
-                for y, (label, style, kind, name) in enumerate(
-                    sidebar_rows[: max(0, dock_y - 3)], 3
-                ):
-                    if kind == "file_buttons":
-                        write(y, x + 1, "[Accept]", 8, "success")
-                        write(y, x + 10, "[Reject]", 8, "error")
-                        hits.append((y, x + 1, x + 9, ("accept_file", name)))
-                        hits.append((y, x + 10, x + 18, ("command", f"/reject {name}")))
-                        continue
-                    if kind == "buttons" and valid_username(name):
-                        write(y, x + 1, "[Approve]", sidebar - 3, "success")
-                        reject_x = x + 1 + 9 + 1
-                        write(y, reject_x, "[Reject]", width - reject_x - 2, "error")
-                        hits.append((y, x + 1, x + 10, ("command", f"/approve {name}")))
-                        hits.append(
-                            (y, reject_x, reject_x + 8, ("command", f"/reject-user {name}"))
-                        )
-                        continue
-                    text = safe_display(label)
-                    visible_label = fit_cells(text, sidebar - 3)
-                    write(y, x + 1, visible_label, sidebar - 3, style)
-                    if name is not None and valid_username(name):
-                        action = (
-                            ("command", f"/group open {name}") if kind == "group"
-                            else ("person", kind, name)
-                        )
-                        hits.append((y, x + 1, x + 1 + cell_width(visible_label), action))
-            # The dock always keeps rows for offers: Accept/Reject stay
-            # clickable even when the sidebar has more people than fits.
-            for y, row in enumerate(dock_rows[:dock_height], dock_y):
-                if row["status"] == "offer" and not sidebar:
-                    buttons = "[Accept] [Reject]"
-                    room = max(1, width - 4 - cell_width(buttons) - 1)
-                    label = fit_cells(
-                        f"INCOMING {safe_display(row['peer'])}: {safe_display(row['name'])}", room
+                        valid = valid_username(name)
+                        side.append((
+                            [("◆ ", "admin"), (safe_display(name), "text")],
+                            [(0, 2 + cell_width(name), ("person", "pending", name))] if valid else [],
+                        ))
+                        if valid and side_width >= 20:
+                            side.append((
+                                [("  ", ""), ("[Approve]", "success"), (" ", ""), ("[Reject]", "error")],
+                                [(2, 11, ("command", f"/approve {name}")),
+                                 (12, 20, ("command", f"/reject-user {name}"))],
+                            ))
+                heading("ONLINE", len(users), "heading")
+                people = [
+                    (
+                        [("● ", "success"), (safe_display(name), "text")],
+                        [(0, 2 + cell_width(name), ("person", "user", name))]
+                        if valid_username(name) else [],
                     )
-                    accept_x = 2 + cell_width(label) + 1
+                    for name in users
+                ] or [([("nobody else yet", "faint")], [])]
+                group_rows = []
+                if groups:
+                    group_rows.append(([], []))
+                    group_rows.append(([("GROUPS", "heading"), (f"  {len(groups)}", "faint")], []))
+                    for name in sorted(groups):
+                        group_rows.append((
+                            spread_row([("#" + name, "accent" if name == current_group else "text")],
+                                       [(str(len(groups[name])), "faint")], side_width),
+                            [(0, side_width, ("command", f"/group open {name}"))],
+                        ))
+                available = box_top - 3
+                room = available - len(side) - min(len(group_rows), 4)
+                if len(people) > room:
+                    hidden = len(people) - max(1, room - 1)
+                    people = people[: max(1, room - 1)] + [
+                        ([(f"+{hidden} more · ", "faint"), ("F7", "key")], [])
+                    ]
+                side += people + group_rows
+                for y, (segments, actions) in enumerate(side[:available], 3):
+                    put(y, side_x, segments, side_width)
+                    for start_x, end_x, action in actions:
+                        hits.append((y, side_x + start_x, side_x + end_x, action))
+            for y, row in enumerate(dock_rows[:dock_height], dock_y):
+                arrow = "↓ " if row.get("direction") == "in" else "↑ "
+                if row["status"] == "offer":
+                    buttons = "[Accept] [Reject]"
+                    room = max(1, chat_width - cell_width(buttons) - 1)
+                    label = fit_row([(arrow, "file"), (safe_display(row["peer"]), "text"),
+                                     (" sends ", "muted"), (safe_display(row["name"]), "file")], room)
+                    accept_x = 2 + cell_width(row_text(label)) + 1
                     reject_x = accept_x + cell_width("[Accept]") + 1
-                    write(y, 2, label, width - 4, "muted")
+                    put(y, 2, label, room)
                     write(y, accept_x, "[Accept]", width - accept_x - 2, "success")
                     write(y, reject_x, "[Reject]", width - reject_x - 2, "error")
                     hits.append((y, accept_x, accept_x + 8, ("accept_file", row["id"])))
                     hits.append((y, reject_x, reject_x + 8, ("command", f"/reject {row['id']}")))
                 else:
-                    label = (
-                        f"{fit_cells(row['name'], 20)} · {row['peer']} · {transfer_summary(row)}"
-                    )
-                    write(y, 2, safe_display(label), width - 4, "file")
+                    label = [(arrow, "file"), (fit_cells(safe_display(row["name"]), 24), "text"),
+                             (" · " + safe_display(row["peer"]) + "  ", "muted")]
+                    bar = transfer_bar(row, max(0, min(30, chat_width - cell_width(row_text(label)))))
+                    put(y, 2, label + (bar or [(transfer_summary(row), "muted")]), chat_width)
             if popup_height:
                 start = max(0, selection - popup_height + 1)
+                column = min(
+                    30,
+                    max(cell_width(option.value + " " + option.usage) for option in options) + 3,
+                )
                 for row, index in enumerate(range(start, min(len(options), start + popup_height))):
                     option = options[index]
-                    label = f"{'›' if index == selection else ' '} {option.value} {option.usage}"
-                    if width >= 75:
-                        label = f"{label:<30} {option.description}"
-                    write(
-                        popup_y + row,
-                        2,
-                        label,
-                        width - 4,
-                        "selected" if index == selection else "muted",
-                    )
-                    hits.append(
-                        (
-                            popup_y + row,
-                            2,
-                            min(width - 2, 2 + cell_width(label)),
-                            ("suggestion", index),
-                        )
-                    )
-            write(input_y - 1, 2, "─" * (width - 4), width - 4)
-            write(input_y, 2, "› ", 2, "accent")
+                    chosen = index == selection
+                    usage = " " + option.usage if option.usage else ""
+                    segments = [
+                        ("› " if chosen else "  ", "accent"),
+                        (option.value, "accent" if chosen else "text"),
+                        (usage, "muted"),
+                    ]
+                    if chat_width >= 50:
+                        gap = max(2, column - cell_width(option.value + usage))
+                        segments += [(" " * gap, ""),
+                                     (option.description, "text" if chosen else "muted")]
+                        if option.admin:
+                            segments.append(("  admin", "admin"))
+                    put(popup_y + row, 2, segments, chat_width)
+                    hits.append((popup_y + row, 2, 2 + chat_width, ("suggestion", index)))
+            # The input box title always names where plain text will go.
+            if composer.text.startswith("/"):
+                target, border = [("command", "accent")], "accent"
+            elif composer.text.startswith("@"):
+                target, border = [("private message", "dm")], "dm"
+            elif session.display_filter == "groups":
+                target = (
+                    [("to ", "muted"), ("#" + current_group, "success")]
+                    if current_group else [("choose a group first", "muted")]
+                )
+                border = "faint"
+            elif direct_peer is not None:
+                target, border = [("private to ", "muted"), (direct_peer, "dm")], "faint"
+            elif session.display_filter == "dm":
+                target, border = [("open a conversation first", "muted")], "faint"
+            else:
+                target, border = [("to ", "muted"), ("everyone", "accent")], "faint"
+            scrolled = (
+                direct_scroll if direct_peer is not None
+                else scroll if session.display_filter != "dm" else 0
+            )
+            status = (
+                [(f"↓ {new_count} new message{'s' if new_count != 1 else ''}", "accent"),
+                 (" · PgDn", "muted")]
+                if new_count
+                else [("scrolled up · PgDn", "muted")]
+                if scrolled
+                else []
+            )
+            box(box_top, 1, 3, width - 2, border, target, status, server_note)
+            write(input_y, 3, "›", 1, "accent")
             # Keep the edit cursor visible, including wide CJK characters.
+            room = width - 8
             offset = 0
-            while cell_width(composer.text[offset : composer.cursor]) > width - 7:
+            while cell_width(composer.text[offset : composer.cursor]) > room - 1:
                 offset += 1
             visible = composer.text[offset:]
             placeholder = (
                 f"Message #{current_group}" if session.display_filter == "groups" and current_group
                 else "Choose a group above" if session.display_filter == "groups"
-                else
-                f"Message {direct_peer} privately, or / for commands"
+                else f"Message {direct_peer} privately, or / for commands"
                 if direct_peer is not None
                 else "Open a conversation, or / for commands"
                 if session.display_filter == "dm"
                 else "Message everyone, or / for commands"
             )
-            write(
-                input_y,
-                4,
-                visible or placeholder,
-                width - 6,
-                "accent" if visible else "muted",
-            )
+            write(input_y, 5, visible or placeholder, room, "text" if visible else "faint")
             guidance = composer_guidance(composer.text)
             if composer.text.startswith("/reply "):
                 guidance = (
@@ -1773,13 +2134,8 @@ def run_tui(session):
                 else ""
             )
             if ghost and composer.cursor == len(composer.text):
-                write(
-                    input_y,
-                    4 + cell_width(visible),
-                    ghost,
-                    max(0, width - 5 - cell_width(visible)),
-                    "muted",
-                )
+                write(input_y, 5 + cell_width(visible), ghost,
+                      max(0, room - cell_width(visible)), "faint")
             entries = []
             if menu is not None:
                 kind, target = menu[0], menu[1]
@@ -1789,7 +2145,7 @@ def run_tui(session):
                     ]
                     if role == "admin":
                         entries += [
-                            (f"pending {name}", ("open_pending", name))
+                            (f"◆ {name} (pending)", ("open_pending", name))
                             for name in pending
                             if valid_username(name)
                         ]
@@ -1837,9 +2193,11 @@ def run_tui(session):
                     if menu[0] == "people"
                     else f"Pending: {menu[1]}"
                     if menu[0] == "pending"
+                    else f"#{menu[1]}"
+                    if menu[0] == "group"
                     else menu[1]
                 )
-                menu_visible = min(len(entries), max(1, input_y - 6))
+                menu_visible = min(len(entries), max(1, box_top - 5))
                 menu_start = min(
                     max(0, menu[2] - menu_visible + 1),
                     max(0, len(entries) - menu_visible),
@@ -1848,66 +2206,67 @@ def run_tui(session):
                     title = f"{title} {menu[2] + 1}/{len(entries)}"
                 menu_width = min(
                     width - 4,
-                    max([cell_width(title)] + [cell_width("  " + label) for label, _ in entries])
-                    + 4,
+                    max([cell_width(title) + 6] + [cell_width(label) + 7 for label, _ in entries]),
                 )
-                menu_height = menu_visible + 1
+                menu_height = menu_visible + 2
                 anchor_x, anchor_y = menu[3], menu[4]
                 if anchor_x is None:
                     menu_x = max(2, (width - menu_width) // 2)
-                    menu_y = max(4, (height - menu_height) // 2)
+                    menu_y = max(3, (box_top - menu_height) // 2)
                 else:
                     menu_x = min(max(2, anchor_x), width - menu_width - 2)
-                    menu_y = min(max(4, anchor_y), input_y - 1 - menu_height)
-                if menu_width >= 12 and menu_y >= 4:
-                    write(menu_y, menu_x, " " * menu_width, menu_width, "muted")
-                    write(menu_y, menu_x + 2, title, menu_width - 4, "accent")
+                    menu_y = min(max(3, anchor_y), box_top - menu_height)
+                if menu_width >= 12 and menu_y >= 3:
+                    box(menu_y, menu_x, menu_height, menu_width, "accent", [(title, "title")])
                     for menu_offset, (label, _) in enumerate(
                         entries[menu_start : menu_start + menu_visible]
                     ):
                         row = menu_y + 1 + menu_offset
                         index = menu_start + menu_offset
-                        write(
-                            row,
-                            menu_x + 1,
-                            " " * (menu_width - 2),
-                            menu_width - 2,
-                            "muted",
+                        chosen = index == menu[2]
+                        style = (
+                            "highlight" if chosen
+                            else "error" if label.startswith(DESTRUCTIVE) else "text"
                         )
-                        write(
-                            row,
-                            menu_x + 2,
-                            ("› " if index == menu[2] else "  ") + label,
-                            menu_width - 4,
-                            "selected" if index == menu[2] else "muted",
-                        )
+                        if chosen:
+                            write(row, menu_x + 1, " " * (menu_width - 2), menu_width - 2, style)
+                        put(row, menu_x + 2, [("› " if chosen else "  ", style), (label, style)],
+                            menu_width - 4)
                         hits.append((row, menu_x, menu_x + menu_width, ("menu_item", index)))
                 else:
                     menu = None
-            hint_style = "muted"
-            if direct_flash is not None and monotonic() < direct_flash[2]:
-                hint, hint_style = direct_flash[0], direct_flash[1]
-            else:
-                hint = (
-                    "↑↓ choose · Enter select · Esc close"
-                    if menu is not None
-                    else "↑↓ choose · Tab complete · Enter use · Esc dismiss"
-                    if options
-                    else "Enter send · Esc inbox · F9 copy · PgUp scroll · F1 help"
-                    if direct_peer is not None
-                    else "↑↓ choose · Enter open · Esc dismiss · / cmds · F1 Help"
-                    if session.display_filter == "dm"
-                    else "Up/Down select · Enter open · Click a group"
-                    if session.display_filter == "groups" and current_group is None
-                    else guidance
-                    if guidance
-                    else "Enter send · F1 help · F8 history · F9 copy · PgUp scroll"
-                )
+            loss_hint = [(loss, "muted"), ("  ", ""), ("F4", "key"), (" test", "muted")]
             if closed:
-                hint, hint_style = "Disconnected - press any key to exit", "error"
-            write(height - 1, 2, hint, width - 4, hint_style)
+                hint = [("Disconnected — press any key to exit", "error")]
+            elif direct_flash is not None and monotonic() < direct_flash[2]:
+                glyph = "✗ " if direct_flash[1] == "error" else ""
+                hint = [(glyph + direct_flash[0], direct_flash[1])]
+            elif menu is not None:
+                hint = hint_row([("↑↓", "choose"), ("Enter", "select"), ("Esc", "close")])
+            elif options:
+                hint = hint_row([("↑↓", "choose"), ("Tab", "complete"), ("Enter", "use"),
+                                 ("Esc", "dismiss")])
+            elif guidance:
+                hint = [(guidance, "muted")]
+            elif direct_peer is not None:
+                hint = hint_row([("Enter", "send"), ("Esc", "inbox"), ("F9", "copy"),
+                                 ("PgUp", "scroll"), ("F1", "help")])
+            elif session.display_filter == "dm":
+                hint = hint_row([("↑↓", "choose"), ("Enter", "open"), ("F7", "people"),
+                                 ("F1", "help")])
+            elif session.display_filter == "groups" and current_group is None:
+                hint = hint_row([("↑↓", "choose"), ("Enter", "open"), ("Tab", "next tab")])
+            else:
+                hint = hint_row([("Enter", "send"), ("/", "commands"), ("Tab", "tabs"),
+                                 ("F7", "people"), ("F8", "history"), ("F1", "help")])
+            for right in (loss_hint, [(loss, "muted")], []):
+                if cell_width(row_text(right)) <= width - 4 - min(16, cell_width(row_text(hint))):
+                    break
+            if hint and hint[0][1] != "key":
+                right = []  # Errors and notices need the whole footer.
+            footer(hint, right)
             try:
-                window.move(input_y, 4 + cell_width(composer.text[offset : composer.cursor]))
+                window.move(input_y, 5 + cell_width(composer.text[offset : composer.cursor]))
                 window.refresh()
                 key = window.get_wch()
             except curses.error:
@@ -1975,10 +2334,7 @@ def run_tui(session):
             elif key == getattr(curses, "KEY_F2", -2):
                 sidebar_enabled = not sidebar_enabled
             elif key == getattr(curses, "KEY_F3", -3):
-                select_filter(FILTERS[
-                    (FILTERS.index(session.display_filter) + 1) % len(FILTERS)
-                ])
-                scroll = 0
+                cycle_filter(1)
             elif key == getattr(curses, "KEY_F4", -4):
                 start_probe()
             elif key == getattr(curses, "KEY_F5", -5):
@@ -1999,6 +2355,10 @@ def run_tui(session):
                 session.execute(parse_command("/clear"))
             elif key == "\t" and options:
                 composer.replace(options[selection].value + " ")
+            elif key == "\t" and not composer.text:
+                cycle_filter(1)
+            elif key == getattr(curses, "KEY_BTAB", -998) and not composer.text:
+                cycle_filter(-1)
             elif key in ("\n", "\r", curses.KEY_ENTER):
                 if options and composer.text != options[selection].value:
                     composer.replace(options[selection].value + " ")
@@ -2032,7 +2392,27 @@ def run_tui(session):
                 else:
                     line = composer.take()
                     if line:
-                        if line.strip().lower() == "/help":
+                        if line.split(maxsplit=1)[0].lower() == "/theme":
+                            words = line.split()[1:]
+                            choice = (
+                                words[0].lower() if words
+                                else "light" if theme == "dark" else "dark"
+                            )
+                            if len(words) > 1 or choice not in THEMES:
+                                add("Usage: /theme [dark|light]", "error")
+                            else:
+                                theme = choice
+                                styles.clear()
+                                styles.update(apply_theme(curses, window, theme))
+                                window.clearok(True)
+                                add(
+                                    f"Switched to the {theme} theme."
+                                    if save_theme(theme)
+                                    else f"Switched to the {theme} theme for this session "
+                                    "(could not save the preference).",
+                                    "success",
+                                )
+                        elif line.strip().lower() == "/help":
                             show_help = True
                             help_scroll = 0
                         elif line.split(maxsplit=1)[0].lower() == "/history":
@@ -2099,18 +2479,18 @@ def run_tui(session):
                 composer.delete_word()
             elif key == curses.KEY_PPAGE:
                 if direct_peer is not None:
-                    direct_scroll += capacity
+                    direct_scroll += content_capacity
                 elif session.display_filter == "groups" and current_group is None:
-                    group_selected = max(0, group_selected - capacity)
+                    group_selected = max(0, group_selected - content_capacity)
                 else:
-                    scroll += capacity
+                    scroll += content_capacity
             elif key == curses.KEY_NPAGE:
                 if direct_peer is not None:
-                    direct_scroll = max(0, direct_scroll - capacity)
+                    direct_scroll = max(0, direct_scroll - content_capacity)
                 elif session.display_filter == "groups" and current_group is None:
-                    group_selected = min(len(group_names) - 1, group_selected + capacity)
+                    group_selected = min(len(group_names) - 1, group_selected + content_capacity)
                 else:
-                    scroll = max(0, scroll - capacity)
+                    scroll = max(0, scroll - content_capacity)
             elif key == curses.KEY_MOUSE:
                 try:
                     _, mouse_x, mouse_y, _, bstate = curses.getmouse()
@@ -2178,7 +2558,10 @@ def run_tui(session):
                             elif hit[0] == "filter":
                                 select_filter(hit[1])
                                 scroll = 0
-                            elif hit[0] in {"command", "accept_file", "send_group_file", "group_menu", "confirm_group", "group_back"}:
+                            elif hit[0] in {
+                                "command", "accept_file", "send_file", "send_group_file",
+                                "group_menu", "confirm_group", "group_back",
+                            }:
                                 if not perform(hit):
                                     return
                             elif hit[0] == "suggestion" and 0 <= hit[1] < len(options):

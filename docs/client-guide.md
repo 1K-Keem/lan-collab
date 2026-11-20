@@ -180,11 +180,39 @@ happen before connecting, so user typing does not consume the authentication dea
 | `/pending`, `/approve USER`, `/reject-user USER` | Admin account approval |
 | `/net` | UDP RTT and probe-loss measurement |
 | `/help`, `/quit`, `/logout` | Open the help screen, close app, or forget login |
+| `/theme [dark\|light]` | TUI only: switch colors (toggles without a name); remembered |
 
-The TUI opens with the slanted LAN-COLLAB ASCII wordmark and uses a colored conversation area,
-your account, online count, and an online-users sidebar on wide terminals. Color is optional:
-set `NO_COLOR=1` to keep a monochrome display. Redirected startup output has no banner
-or ANSI color sequences.
+The TUI layout, top to bottom:
+
+```text
+ ✻ LAN Collab  alice · 2 online           ● TCP/TLS: connected  RTT: 4.1 ms  Server: …
+  All   Global   Groups   Direct 2  Files                      ← tabs, unread badges
+ ─────────────────────────────────────────────────────┬───────────────────────────
+ ● bob  All · 10:22                                    │ TRANSFERS  1
+   hello everyone                                      │ ↓ notes.pdf · bob
+                                                       │   [Accept] [Reject]
+ › You  All · 10:23                                    │ ONLINE  2
+   hi bob                                              │ ● bob
+╭─ to everyone ────────────────────────────────────────────────────────────────────╮
+│ › Message everyone, or / for commands                                            │
+╰──────────────────────────────────────────────────────────── Server: 10.0.0.5:40000 ╯
+ Enter send · / commands · Tab tabs · F7 people       UDP probe loss: 0.0%  F4 test
+```
+
+- The header shows your account, the online count and the live TCP/TLS state; the
+  footer shows UDP probe loss. When the header is too narrow, the server address moves
+  to the bottom edge of the input box.
+- The input box title always names where plain text goes: **to everyone**,
+  **private to bob**, **to #study**, or **command** while typing `/`.
+- Tabs show a count of new messages that arrived while you were in another tab.
+- The sidebar (wide terminals, F2 toggles it) lists actionable items first: transfers
+  with Accept/Reject and progress bars, pending accounts for admins, then people
+  online and your groups.
+- Two themes: `/theme light` or `/theme dark` switches instantly and is remembered;
+  `lancollab --theme light` sets it at startup and `LANCOLLAB_THEME=light` overrides it
+  for one run. On 256-color terminals the theme paints its own background. Set
+  `NO_COLOR=1` for a monochrome display. Redirected startup output has no banner or
+  ANSI color sequences.
 
 - Type `/` to browse commands with descriptions; admin commands appear for admins.
 - Use Up/Down to choose a suggestion and Tab to complete it. Enter completes a partial
@@ -198,7 +226,7 @@ or ANSI color sequences.
   deletes the word before the cursor.
 - Up/Down recall submitted input when the suggestion menu is closed; Esc dismisses the menu.
 - PageUp/PageDown or the mouse wheel scroll the conversation. While scrolled up, the
-  header shows how many new messages arrived (`↓ 3 new messages`).
+  input box shows how many new messages arrived (`↓ 3 new messages · PgDn`).
 - Right-click (or left-click) another online user to open **Direct message / Send file**.
   Your own account is hidden from the online interaction list and People menu.
   Choose with a click or Up/Down + Enter; Esc closes the menu. Direct message opens
@@ -209,15 +237,15 @@ or ANSI color sequences.
   Native dialogs temporarily release curses; closing, cancelling or failing a dialog
   restores terminal keyboard/mouse input and redraws the workspace.
   **F7** opens the People menu when the terminal captures right-clicks or no mouse is available.
-- Incoming offers show **Accept / Reject** in the right **ACTIVE TRANSFERS** panel.
+- Incoming offers show **Accept / Reject** in the right **TRANSFERS** panel.
   Accept opens a folder picker: choose a directory to accept and save this file there;
   Cancel leaves the offer pending. Each file can use a different folder without changing
   the default. With the sidebar hidden or a narrow terminal, the same buttons appear in
   the bottom dock. `/accept ID` and F6 retain the default download folder.
   Admin pending accounts show **Approve / Reject** controls; they still require admin
   permission. Slash commands remain available on narrow terminals.
-- Chat messages have a sender-colored heading, a body rail, and space between messages.
-  Your messages use a bold accent. Short `DM` / `All` labels identify the channel,
+- Chat messages have a sender-colored heading (`●` for others, `›` for you), an indented
+  body wrapped at word boundaries, and space between messages. Your messages use the accent. Short `DM` / `All` labels identify the channel,
   and the sender and boundaries remain clear with `NO_COLOR=1`.
 - `F1` or `/help` opens the help screen — a separate full-screen view, not lines in
   the chat. Scroll it with `↑↓` / `PgUp` / `PgDn`; `Ctrl+C` or `Esc` returns to the
@@ -228,10 +256,10 @@ remains available without `--tui`.
 
 ### Direct conversations
 
-Select **4:Direct** to browse people you have exchanged private messages with, most
+Select **Direct** (Alt+4) to browse people you have exchanged private messages with, most
 recent first. Click a conversation or select it with Up/Down and Enter to open its
 message page. Type and Enter to send directly to that peer; no `/msg` prefix is needed.
-Use the Back control or Esc to return to the conversation list. To start with someone
+Use **← Back** or Esc to return to the conversation list. To start with someone
 new, choose Direct message from their online-user menu (F7 is the keyboard route).
 
 The page combines private messages across your saved login sessions, including
@@ -355,9 +383,9 @@ Use `/group create study bob carol` to create a group with yourself, Bob and Car
 Names are case-sensitive, with 1-32 letters, digits, underscores, dots or hyphens.
 Members must have approved accounts, but may be offline when the group is created.
 Run `/groups` to refresh your list; CLI users can select one with `/group open study`.
-In the TUI, select **3:Groups** (Alt+3/F3), then click a group or use Up/Down + Enter.
+In the TUI, select **Groups** (Alt+3/F3), then click a group or use Up/Down + Enter.
 A sole group opens automatically; an existing selection is remembered when returning.
-Click **[Groups]** or press Esc inside a group to return to the list and choose another.
+Click **← Groups** or press Esc inside a group to return to the list and choose another.
 The list works without the sidebar and scrolls with PageUp/PageDown or the mouse wheel.
 You can also click a group under **GROUPS** in the sidebar.
 Plain text in that view goes only to the selected group; without a selection it is
@@ -443,7 +471,7 @@ not success until receiver verification completes.
 Tab completes `@username`, pending usernames after `/approve` and `/reject-user`, and
 transfer short IDs after file actions. Ambiguous IDs are rejected; enter more characters.
 Category tabs can be clicked or selected with Alt+1/2/3/4/5, so ordinary numeric chat input
-still works. F3 cycles filters. F1 opens help; F4 probes TCP and UDP; F5 lists transfers;
+still works. F3, or Tab/Shift+Tab with an empty input, cycles filters. F1 opens help; F4 probes TCP and UDP; F5 lists transfers;
 F6 accepts the sole pending offer (asks for an ID through an error if there are several).
 Ctrl+W deletes the previous word, Ctrl+K deletes to the end, and Ctrl+L clears the display.
 Chat colors distinguish senders; file, admin and error notices also have distinct styles.

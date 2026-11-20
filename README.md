@@ -179,6 +179,7 @@ other members, with extra account-review commands; the server process stays runn
 | Task | Command or action |
 | --- | --- |
 | Find commands | Type `/` for suggestions; `/help` or F1 opens detailed help |
+| Light or dark colors | `/theme light` / `/theme dark` in the TUI, or `lancollab --theme light` |
 | Group chat | `/all Hello everyone` (or plain text in the TUI outside Direct) |
 | Private chat | `/msg bob Hello`, `@bob Hello`, or open Bob's Direct page |
 | Create a private group | `/group create study bob carol` (you are included) |
@@ -193,7 +194,7 @@ other members, with extra account-review commands; the server process stays runn
 | Choose a save folder | `/accept 4b44b161 "~/Downloads/Study notes"` |
 | Accept into the default folder | `/accept 4b44b161`; omit the ID if only one offer is pending |
 | Choose a folder visually | Click **Accept** on an incoming offer |
-| Review saved chats | `/history`; use **4:Direct** for private conversation pages |
+| Review saved chats | `/history`; use the **Direct** tab for private conversation pages |
 | Close and remember login | `/quit` |
 | Forget the saved login | `/logout` |
 
