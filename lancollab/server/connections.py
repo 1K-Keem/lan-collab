@@ -9,6 +9,7 @@ from time import monotonic
 
 from lancollab.common.codec import MessageError, ProtocolError, RequestIdTracker
 from lancollab.common.contracts import Envelope, OutboundEvent, SessionIdentity
+from lancollab.common.netinfo import local_ipv4_addresses
 from lancollab.common.socket_transport import SocketTransport
 from lancollab.common.tls import HANDSHAKE_TIMEOUT, tls_failure_detail
 from lancollab.server.outbound import OutboundQueue
@@ -17,6 +18,21 @@ from lancollab.server.application import CollabServer
 from lancollab.server.discovery import bind_discovery_socket, serve_discovery
 
 LOG = logging.getLogger(__name__)
+
+
+def address_banner(port, addresses=None):
+    """Startup lines telling clients which IP to use; VM/VPN adapters listed last."""
+    addresses = local_ipv4_addresses() if addresses is None else addresses
+    if not addresses:
+        return ["No LAN address found; clients on this machine can use --host 127.0.0.1"]
+    port_arg = "" if port == 40000 else f" --port {port}"
+    lines = [f"LAN address: {addresses[0]}  (clients: lancollab --host {addresses[0]}{port_arg})"]
+    if len(addresses) > 1:
+        lines.append(
+            "Other adapters (VMware/VirtualBox/VPN, usually unreachable from other machines): "
+            + ", ".join(addresses[1:])
+        )
+    return lines
 
 
 class ConnectionServer:
@@ -99,6 +115,8 @@ class ConnectionServer:
             LOG.info(
                 "TCP port %s; UDP port %s; capacity %s", self.port, self.udp_port, self.max_clients
             )
+            for line in address_banner(self.port):
+                LOG.info("%s", line)
             while not self.stop.is_set():
                 try:
                     raw, address = self.listener.accept()

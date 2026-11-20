@@ -43,7 +43,7 @@ def connect_client(index, args, trusted_cert):
                 endpoint = discovery.discover(broadcast_host=args.discovery_address)
             if endpoint is None:
                 raise ConnectionError(
-                    "No valid DISCOVER_REPLY within 1.5s; check UDP responder or use --host"
+                    "No valid DISCOVER_REPLY; check UDP responder or use --host"
                 )
             report(
                 name,

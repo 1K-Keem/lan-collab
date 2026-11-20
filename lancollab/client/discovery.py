@@ -5,12 +5,14 @@ The server responder and verified TCP/TLS connection live in separate modules.
 """
 
 from dataclasses import dataclass
+import ipaddress
 import json
 import socket
 from time import monotonic
 from typing import Any, Callable
 from uuid import uuid4
 
+from lancollab.common.netinfo import local_ipv4_addresses
 from lancollab.common.udp_validation import (
     UDP_MAX_BYTES,
     UDP_PORT,
@@ -34,6 +36,34 @@ class NetworkQuality:
     received: int
     loss_percent: float
     last_rtt_ms: float | None
+
+
+LIMITED_BROADCAST = "255.255.255.255"
+# Netmasks are not portable to read from the stdlib, so guess the common LAN sizes.
+_GUESSED_PREFIXES = range(16, 25)
+
+
+def broadcast_targets(local_addresses: list[str]) -> list[str]:
+    """Limited broadcast first, then subnet-directed broadcasts for private adapters.
+
+    Windows with several adapters (VPN, VMware, VirtualBox) may send
+    255.255.255.255 out of only one of them, and some Wi-Fi networks drop it;
+    a directed broadcast such as 10.127.255.255 is routed out the right adapter.
+    """
+    targets = [LIMITED_BROADCAST]
+    for address in local_addresses:
+        try:
+            ip = ipaddress.IPv4Address(address)
+        except ValueError:
+            continue
+        if not ip.is_private or ip.is_loopback or ip.is_link_local:
+            continue
+        for prefix in _GUESSED_PREFIXES:
+            network = ipaddress.IPv4Network(f"{ip}/{prefix}", strict=False)
+            target = str(network.broadcast_address)
+            if target != address and target not in targets:
+                targets.append(target)
+    return targets
 
 
 class DiscoveryClient:
@@ -96,14 +126,25 @@ class DiscoveryClient:
         self._socket.sendto(data, (host, self.udp_port))
 
     def discover(
-        self, *, timeout: float = 1.5, broadcast_host: str = "255.255.255.255"
+        self,
+        *,
+        timeout: float = 4.0,
+        broadcast_host: str | None = None,
+        attempts: int = 4,
     ) -> ServerEndpoint | None:
-        if timeout <= 0:
-            raise ValueError("timeout must be positive")
-        self._send(
-            {"version": 1, "type": "DISCOVER", "instance_id": self.instance_id},
-            broadcast_host,
+        """Send DISCOVER to ``broadcast_host``, or to every likely LAN broadcast if omitted.
+
+        Shared Wi-Fi often delays (~1.5 s) or drops broadcasts, so the request is
+        resent ``attempts`` times across ``timeout`` and the first reply wins.
+        """
+        if timeout <= 0 or attempts < 1:
+            raise ValueError("timeout and attempts must be positive")
+        hosts = (
+            [broadcast_host]
+            if broadcast_host is not None
+            else broadcast_targets(local_ipv4_addresses())
         )
+        request = {"version": 1, "type": "DISCOVER", "instance_id": self.instance_id}
 
         def valid(message: dict[str, Any], source: str) -> bool:
             return (
@@ -112,11 +153,22 @@ class DiscoveryClient:
                 and bool(source)
             )
 
-        received = self._wait_for(timeout=timeout, predicate=valid)
-        if received is None:
-            return None
-        message, host = received
-        return ServerEndpoint(host, message["tcp_port"], message["server_name"], True)
+        for _attempt in range(attempts):
+            error: OSError | None = None
+            delivered = False
+            for host in hosts:
+                try:
+                    self._send(request, host)
+                    delivered = True
+                except OSError as exc:
+                    error = exc
+            if not delivered and error is not None:
+                raise error
+            received = self._wait_for(timeout=timeout / attempts, predicate=valid)
+            if received is not None:
+                message, host = received
+                return ServerEndpoint(host, message["tcp_port"], message["server_name"], True)
+        return None
 
     def heartbeat(self, host: str, *, timeout: float = 1.0) -> NetworkQuality:
         if not host or timeout <= 0:

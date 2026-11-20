@@ -2,7 +2,13 @@ import json
 import socket
 import unittest
 
-from lancollab.client.discovery import DiscoveryClient, ServerEndpoint, select_server
+from lancollab.client.discovery import (
+    DiscoveryClient,
+    ServerEndpoint,
+    broadcast_targets,
+    select_server,
+)
+from lancollab.server.connections import address_banner
 
 
 class FakeDatagramSocket:
@@ -72,6 +78,43 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(found, ServerEndpoint("192.0.2.21", 40000, "test-server", True))
         self.assertEqual(self.sock.sent[0][0]["type"], "DISCOVER")
         self.assertEqual(self.sock.sent[0][1], ("255.255.255.255", 40001))
+
+    def test_broadcast_targets_include_directed_subnets(self):
+        targets = broadcast_targets(["10.127.5.255", "192.168.56.1", "127.0.0.1", "8.8.8.8"])
+        self.assertEqual(targets[0], "255.255.255.255")
+        self.assertIn("10.127.255.255", targets)  # campus Wi-Fi /16
+        self.assertIn("192.168.56.255", targets)  # VM host-only /24
+        self.assertNotIn("10.127.5.255", targets)  # never our own address
+        self.assertFalse(any(t.startswith(("127.", "8.")) for t in targets))
+        self.assertEqual(len(targets), len(set(targets)))
+
+    def test_explicit_broadcast_host_only(self):
+        self.client.discover(broadcast_host="127.0.0.1")
+        self.assertEqual({address for _msg, address in self.sock.sent}, {("127.0.0.1", 40001)})
+
+    def test_discover_resends_until_reply(self):
+        self.assertIsNone(self.client.discover(broadcast_host="10.0.0.255", attempts=3))
+        self.assertEqual(len(self.sock.sent), 3)
+        self.sock.sent.clear()
+        self.sock.queue(
+            {
+                "version": 1,
+                "type": "DISCOVER_REPLY",
+                "instance_id": self.client.instance_id,
+                "server_name": "test-server",
+                "tcp_port": 40000,
+            }
+        )
+        self.assertIsNotNone(self.client.discover(broadcast_host="10.0.0.255", attempts=3))
+        self.assertEqual(len(self.sock.sent), 1)
+
+    def test_server_banner_prefers_default_route_address(self):
+        lines = address_banner(40000, ["10.127.29.195", "192.168.56.1"])
+        self.assertIn("lancollab --host 10.127.29.195", lines[0])
+        self.assertNotIn("192.168.56.1", lines[0])
+        self.assertIn("192.168.56.1", lines[1])
+        self.assertIn("--port 40500", address_banner(40500, ["10.0.0.5"])[0])
+        self.assertIn("127.0.0.1", address_banner(40000, [])[0])
 
     def test_timeout_manual_fallback(self):
         self.assertIsNone(self.client.discover())
