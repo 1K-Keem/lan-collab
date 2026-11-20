@@ -101,6 +101,8 @@ _DETAILED_HELP = (
     "HELP AND EXIT",
     "/help — Show this command reference.",
     "  Example: /help",
+    "/theme [dark|light] — TUI only: switch colors; the choice is remembered.",
+    "  Example: /theme light. Without a name it toggles. Also: lancollab --theme light",
     "/quit — Close the app; keep your remembered login.",
     "  Example: /quit",
     "/logout — Sign out and forget this device.",

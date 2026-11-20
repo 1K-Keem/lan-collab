@@ -61,7 +61,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tui", action="store_true", help="Full-screen terminal UI (requires curses)"
     )
+    parser.add_argument(
+        "--theme", choices=("dark", "light"), help="Color theme for the TUI; remembered"
+    )
     args = parser.parse_args(argv)
+    if args.theme:
+        from lancollab.client.settings import save_theme
+
+        save_theme(args.theme)
     if args.tui:
         try:
             import curses  # noqa: F401

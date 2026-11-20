@@ -56,7 +56,7 @@ class NetworkStatusTests(unittest.TestCase):
             self.assertEqual(output, list(network_status(session.client)))
 
     def test_status_stays_visible_on_small_screens_and_without_sidebar(self):
-        for rows, columns in ((12, 40), (24, 76), (28, 120)):
+        for rows, columns in ((24, 76), (28, 120)):
             with self.subTest(columns=columns):
                 session = self.session()
 

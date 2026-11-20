@@ -8,7 +8,7 @@ from unittest.mock import patch
 from lancollab.client.application import ClientState, Notice
 from lancollab.client.cli import ConsoleSession, parse_command
 from lancollab.client.history import HistoryStore
-from lancollab.client.tui import HistoryBrowser, cell_width, message_rows, run_tui
+from lancollab.client.tui import HistoryBrowser, cell_width, message_rows, row_text, run_tui
 from tests.fake_transport import FakeTransport
 from tests.test_tui_context_menu import FakeWindow, click, expect, fake_curses
 
@@ -110,7 +110,7 @@ class HistoryBrowserTests(unittest.TestCase):
         browser.back()
         self.assertEqual(browser.level, "people")
         self.assertEqual(browser.selected, 0)
-        self.assertNotIn("All messages", " ".join(label for label, _ in browser.items()))
+        self.assertNotIn("All messages", " ".join(row_text(row) for row in browser.items()))
         direct = HistoryBrowser(self.session, ("bob",))
         self.assertEqual(direct.transcript, browser.transcript)
 
@@ -118,8 +118,8 @@ class HistoryBrowserTests(unittest.TestCase):
         browser = HistoryBrowser(self.session, ("bob",))
         for width in (76, 36, 16):
             page, _ = browser.page(width, 1000)
-            self.assertTrue(all(cell_width(line) <= width for line, _ in page))
-            text = "\n".join(line for line, _ in page)
+            self.assertTrue(all(cell_width(row_text(row)) <= width for row in page))
+            text = "\n".join(row_text(row) for row in page)
             self.assertNotIn("carol", text)
             self.assertNotIn("secret", text)
             self.assertNotIn("CHAT_PRIVATE", text)
@@ -127,29 +127,29 @@ class HistoryBrowserTests(unittest.TestCase):
         browser.page(76, 8)
         browser.move(10**9)
         page, _ = browser.page(76, 8)
-        self.assertIn("public from bob", "\n".join(line for line, _ in page))
+        self.assertIn("public from bob", "\n".join(row_text(row) for row in page))
         browser.move(-(10**9))
         page, _ = browser.page(76, 8)
-        self.assertIn("old message 0", "\n".join(line for line, _ in page))
+        self.assertIn("old message 0", "\n".join(row_text(row) for row in page))
 
     def test_transcripts_open_at_latest_and_allow_scrolling_up(self):
         for args, latest in [(("bob",), "public from bob"), (("show", "old"), "public from carol")]:
             browser = HistoryBrowser(self.session, args)
             page, start = browser.page(76, 8)
             self.assertGreater(start, 0)
-            self.assertIn(latest, " ".join(line for line, _ in page))
+            self.assertIn(latest, " ".join(row_text(row) for row in page))
             browser.move(-3)
             _, earlier = browser.page(76, 8)
             self.assertLess(earlier, start)
             browser.move(-(10**9))
             page, start = browser.page(76, 8)
             self.assertEqual(start, 0)
-            self.assertIn("old message 0", " ".join(line for line, _ in page))
+            self.assertIn("old message 0", " ".join(row_text(row) for row in page))
             browser.back()
             if args == ("bob",):
                 browser.open()
                 page, _ = browser.page(76, 8)
-                self.assertIn(latest, " ".join(line for line, _ in page))
+                self.assertIn(latest, " ".join(row_text(row) for row in page))
 
     def test_plain_commands_list_people_and_show_one_peer(self):
         self.session.execute(parse_command("/history people"))
@@ -182,7 +182,7 @@ class HistoryBrowserTests(unittest.TestCase):
                 resize,
                 expect(lambda w: "hello now" in w.all_text(), "\x1b"),
                 expect(lambda w: "Your login sessions" in w.all_text(), "\t"),
-                expect(lambda w: "Choose a person" in w.all_text(), click("bob ·")),
+                expect(lambda w: "Choose a person" in w.all_text(), click("bob  ")),
                 expect(lambda w: "public from bob" in w.all_text(), lambda w: w.module.KEY_HOME),
                 expect(lambda w: "old message 0" in w.all_text(), "\x1b"),
                 expect(lambda w: "Choose a person" in w.all_text(), "\x1b"),
@@ -330,12 +330,12 @@ class MessageCardTests(unittest.TestCase):
     def test_sender_boundaries_and_unicode_wrapping(self):
         for width in (16, 40, 76):
             rows = message_rows("12:30", "bob", "你好 " * 20, "DM", width, "alice")
-            self.assertTrue(all(cell_width(line) <= width for _, line, _ in rows))
-            self.assertTrue(rows[0][1].startswith("● bob"))
-            self.assertEqual(rows[-1][1], "")
+            self.assertTrue(all(cell_width(row_text(row)) <= width for row in rows))
+            self.assertTrue(row_text(rows[0]).startswith("● bob"))
+            self.assertEqual(rows[-1], [])
         rows = message_rows("12:30", "you -> bob", "hello", "DM", 76, "alice")
-        self.assertIn("You -> bob", rows[0][1])
-        self.assertEqual(rows[0][2], "accent")
+        self.assertIn("You -> bob", row_text(rows[0]))
+        self.assertEqual(rows[0][1], ("You -> bob", "accent"))
 
 
 if __name__ == "__main__":

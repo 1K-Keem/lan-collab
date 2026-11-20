@@ -370,7 +370,7 @@ class GroupFileTests(unittest.TestCase):
 
     def test_click_groups_opens_the_only_group_and_routes_plain_text(self):
         run(self.shell, [
-            click("3:Groups"),
+            click("Groups"),
             expect(lambda w: self.shell.current_group == "study", "hello\n"),
             "\x03",
         ])
@@ -380,7 +380,7 @@ class GroupFileTests(unittest.TestCase):
     def test_multiple_groups_open_by_click_without_a_command_on_small_screen(self):
         self.client.groups["other"] = ["alice", "eve"]
         run(self.shell, [
-            click("3:Groups"),
+            click("Groups"),
             expect(lambda w: self.shell.current_group is None, click("#other")),
             expect(lambda w: self.shell.current_group == "other", "hello\n"),
             "\x03",
@@ -390,20 +390,20 @@ class GroupFileTests(unittest.TestCase):
     def test_keyboard_can_open_groups_beyond_the_visible_list(self):
         self.client.groups = {f"g{i:02}": ["alice", "bob"] for i in range(20)}
         run(self.shell, [
-            click("3:Groups"),
+            click("Groups"),
             lambda w: w.module.KEY_NPAGE,
             lambda w: w.module.KEY_DOWN,
             "\n",
-            expect(lambda w: self.shell.current_group == "g04", "\x03"),
+            expect(lambda w: self.shell.current_group == "g05", "\x03"),
         ], rows=12, columns=40)
 
     def test_back_to_list_keeps_group_drafts_separate(self):
         self.client.groups["other"] = ["alice", "eve"]
         run(self.shell, [
-            click("3:Groups"), click("#other"), "other draft",
-            click("[Groups]"),
+            click("Groups"), click("#other"), "other draft",
+            click("← Groups"),
             expect(lambda w: self.shell.current_group is None, click("#study")),
-            expect(lambda w: "other draft" not in w.input_text(), click("[Groups]")),
+            expect(lambda w: "other draft" not in w.input_text(), click("← Groups")),
             click("#other"),
             expect(lambda w: "other draft" in w.input_text(), "\x03"),
         ])
@@ -419,8 +419,8 @@ class GroupFileTests(unittest.TestCase):
             return ""
 
         run(self.shell, [
-            click("3:Groups"), click("#study"), revoke,
-            expect(lambda w: self.shell.current_group is None and "Groups - click" in w.all_text(),
+            click("Groups"), click("#study"), revoke,
+            expect(lambda w: self.shell.current_group is None and "click a name or press Enter" in w.all_text(),
                    "\x03"),
         ])
         with self.assertRaises(TimeoutError):
@@ -428,15 +428,15 @@ class GroupFileTests(unittest.TestCase):
 
     def test_escape_returns_to_list_even_with_one_group(self):
         run(self.shell, [
-            click("3:Groups"), "\x1b", timeout,
-            expect(lambda w: self.shell.current_group is None and "Groups - click" in w.all_text(),
+            click("Groups"), "\x1b", timeout,
+            expect(lambda w: self.shell.current_group is None and "click a name or press Enter" in w.all_text(),
                    "\x03"),
         ])
 
     def test_empty_group_list_keeps_errors_visible(self):
         self.client.groups = {}
         run(self.shell, [
-            click("3:Groups"),
+            click("Groups"),
             expect(lambda w: "No groups yet" in w.all_text(), "/unknown\n"),
             expect(lambda w: "Unknown command" in w.all_text(), "\x03"),
         ])
@@ -455,8 +455,8 @@ class GroupTerminalTests(unittest.TestCase):
         session.display_filter = "all"
 
         def ordered(window):
-            tabs = window.lines[3]
-            labels = ("1:All", "2:Global", "3:Groups", "4:Direct", "5:Files")
+            tabs = window.lines[1]
+            labels = ("All", "Global", "Groups", "Direct", "Files")
             return [tabs.index(label) for label in labels] == sorted(tabs.index(label) for label in labels)
 
         run(session, [
@@ -487,7 +487,7 @@ class GroupTerminalTests(unittest.TestCase):
         session = self.session()
         session.current_group = None
         run(session, [
-            expect(lambda w: "3:Groups" in w.all_text(), "hello\n"),
+            expect(lambda w: "Groups" in w.all_text(), "hello\n"),
             expect(lambda w: "hello" in w.input_text() and "Choose a group first" in w.all_text(),
                    "\x03"),
         ], rows=16, columns=40)

@@ -23,9 +23,7 @@ class AuthFormTests(unittest.TestCase):
                 "alice",
                 "\t",
                 "secret123",
-                expect(
-                    lambda w: "secret123" not in w.all_text() and "*********" in w.all_text(), "\t"
-                ),
+                expect(lambda w: "secret123" not in w.all_text() and "•" * 9 in w.all_text(), "\t"),
                 " ",
                 "\t",
                 "\n",
@@ -34,7 +32,7 @@ class AuthFormTests(unittest.TestCase):
         assert result == ("login", "alice", "secret123", True)
         result, _ = check(
             [
-                click("[ Sign up ]"),
+                click("Sign up"),
                 "bob",
                 "\t",
                 "password123",
