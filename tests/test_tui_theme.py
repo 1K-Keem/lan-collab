@@ -37,12 +37,15 @@ class ThemeSettingsTests(unittest.TestCase):
     def test_theme_command_switches_saves_and_never_reaches_the_server(self):
         session = FakeSession()
         with patch.dict("os.environ", {}, clear=True):
-            run(session, [
-                "/theme light\n",
-                expect(lambda w: "light theme" in w.all_text(), "/theme\n"),
-                expect(lambda w: "dark theme" in w.all_text(), "/theme blue\n"),
-                expect(lambda w: "Usage: /theme" in w.all_text(), "\x03"),
-            ])
+            run(
+                session,
+                [
+                    "/theme light\n",
+                    expect(lambda w: "light theme" in w.all_text(), "/theme\n"),
+                    expect(lambda w: "dark theme" in w.all_text(), "/theme blue\n"),
+                    expect(lambda w: "Usage: /theme" in w.all_text(), "\x03"),
+                ],
+            )
             self.assertEqual(settings.load_theme(), "dark")
         self.assertEqual(session.executed, [])
 
@@ -60,13 +63,18 @@ class UnreadBadgeTests(unittest.TestCase):
             session.output("[All] carol: hi all")
             return window.module.KEY_RESIZE
 
-        run(session, [
-            click("Global"),
-            arrive,
-            expect(lambda w: "Direct 1" in w.lines[1] and "Global 1" not in w.lines[1],
-                   click("Direct")),
-            expect(lambda w: "Direct 1" not in w.lines[1], "\x03"),
-        ])
+        run(
+            session,
+            [
+                click("Global"),
+                arrive,
+                expect(
+                    lambda w: "Direct 1" in w.lines[1] and "Global 1" not in w.lines[1],
+                    click("Direct"),
+                ),
+                expect(lambda w: "Direct 1" not in w.lines[1], "\x03"),
+            ],
+        )
 
 
 class WrapWordsTests(unittest.TestCase):

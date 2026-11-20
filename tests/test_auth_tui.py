@@ -23,9 +23,7 @@ class AuthFormTests(unittest.TestCase):
                 "alice",
                 "\t",
                 "secret123",
-                expect(
-                    lambda w: "secret123" not in w.all_text() and "•" * 9 in w.all_text(), "\t"
-                ),
+                expect(lambda w: "secret123" not in w.all_text() and "•" * 9 in w.all_text(), "\t"),
                 " ",
                 "\t",
                 "\n",

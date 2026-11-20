@@ -65,7 +65,9 @@ def prompt_auth(server, message="", username="", choice="login"):
             room = min(56, width - left - 2)
             for row, line in enumerate(banner_lines(room)[:4]):
                 write(top + row, left, line, room, "accent")
-            put(top + 4, left, [("● ", "faint"), (safe_display("Server: " + server), "muted")], room)
+            put(
+                top + 4, left, [("● ", "faint"), (safe_display("Server: " + server), "muted")], room
+            )
             x = left
             for value, label in (("login", " Log in "), ("signup", " Sign up ")):
                 write(top + 5, x, label, len(label), "pill" if mode == value else "muted")
@@ -83,8 +85,11 @@ def prompt_auth(server, message="", username="", choice="login"):
                     continue
                 y, editor = positions[name], fields[name]
                 focused = focus == name
-                label = {"username": "Username", "password": "Password",
-                         "confirm": "Confirm password"}[name]
+                label = {
+                    "username": "Username",
+                    "password": "Password",
+                    "confirm": "Confirm password",
+                }[name]
                 write(y, left, label, room, "title" if focused else "muted")
                 text = editor.text if name == "username" else "•" * len(editor.text)
                 offset = max(0, editor.cursor - (room - 5))
@@ -95,19 +100,26 @@ def prompt_auth(server, message="", username="", choice="login"):
                 if focused:
                     cursor = (y + 1, left + 2 + cell_width(text[offset : editor.cursor]))
             if mode == "login":
-                put(top + 13, left, [
-                    ("[x]" if remember else "[ ]", "accent" if remember else "muted"),
-                    (" Remember me on this device",
-                     "text" if focus == "remember" else "muted"),
-                ], room)
+                put(
+                    top + 13,
+                    left,
+                    [
+                        ("[x]" if remember else "[ ]", "accent" if remember else "muted"),
+                        (" Remember me on this device", "text" if focus == "remember" else "muted"),
+                    ],
+                    room,
+                )
                 hits.append((top + 13, left, left + 30, "remember"))
             label = " Create account → " if mode == "signup" else " Log in → "
             write(top + 16, left, label, room, "pill" if focus == "submit" else "accent")
             hits.append((top + 16, left, left + len(label), "submit"))
-            for index, line in enumerate(wrap_words(safe_display(error), room - 2)[:2] if error else []):
+            for index, line in enumerate(
+                wrap_words(safe_display(error), room - 2)[:2] if error else []
+            ):
                 write(top + 18 + index, left, ("✗ " if index == 0 else "  ") + line, room, "error")
-            hints = hint_row([("Tab", "next"), ("F2", "log in/sign up"), ("Enter", "go"),
-                              ("Esc", "exit")])
+            hints = hint_row(
+                [("Tab", "next"), ("F2", "log in/sign up"), ("Enter", "go"), ("Esc", "exit")]
+            )
             while cell_width(row_text(hints)) > room and len(hints) > 2:
                 hints = hints[:-3]
             put(top + 21, left, hints, room)
